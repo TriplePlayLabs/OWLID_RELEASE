@@ -11,60 +11,35 @@
 //! - QR code polling (BankID)
 //! - Webhook async (Onfido, Jumio)
 
+mod admin_auth;
+mod config;
 mod midnight;
+mod provider_admin;
+
+use crate::config::Config as IssuerConfig;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderValue, Method, StatusCode, header},
+    middleware as axum_middleware,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-
-/// T-010: Service startup config validation
-struct IssuerConfig {
-    host: String,
-    port: u16,
-}
-
-impl IssuerConfig {
-    fn from_env() -> Result<Self, Vec<String>> {
-        let mut errors = Vec::new();
-
-        let host = std::env::var("ISSUER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-
-        let port = std::env::var("ISSUER_PORT")
-            .unwrap_or_else(|_| "8001".to_string())
-            .parse::<u16>();
-
-        let port = match port {
-            Ok(p) => p,
-            Err(_) => {
-                errors.push("ISSUER_PORT must be a valid port number".to_string());
-                8001
-            }
-        };
-
-        if !errors.is_empty() {
-            return Err(errors);
-        }
-
-        Ok(IssuerConfig { host, port })
-    }
-}
 use owl_issuer_service::{
-    db::{create_pool, CredentialRepository},
+    db::{create_pool, CredentialRepository, ProviderSettingsRepository},
     BridgeConfig, CredentialBridge, DiditConfig, DiditProvider, FlowState, FormConfig, FormField,
     FormFieldType, IdpDatabase, IdentitySubmissionForm, MockBankIdProvider, MockDigiDProvider,
-    MockProviderFactory, ProviderFlowType, ProviderInfo, ProviderInfoExtended, ProviderRegistry,
+    MockProviderFactory, ProviderDescriptor, ProviderFlowType, ProviderInfo, ProviderRegistry,
     SessionStatus, VerificationLevel, VerificationStart, VerifiedIdentityClaims, WebhookPayload,
+    middleware::{InMemoryRateLimiter, RateLimitConfig, rate_limit, validate_session_bearer},
 };
 use serde::{Deserialize, Serialize};
 use utoipa::OpenApi;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
@@ -93,7 +68,8 @@ use uuid::Uuid;
         oidc_callback,
         list_oidc_providers,
         poll_session,
-        generate_keypair,
+        provider_admin::enable_provider,
+        provider_admin::disable_provider,
     ),
     components(schemas(
         IssuerInfoResponse,
@@ -117,11 +93,11 @@ use uuid::Uuid;
         FormConfig,
         FormField,
         FormFieldType,
-        ProviderInfoExtended,
+        ProviderDescriptor,
         ProviderInfo,
         CallbackResponse,
         PollResponse,
-        KeyPairResponse,
+        provider_admin::ProviderToggleResponse,
     )),
     tags(
         (name = "info", description = "Service information"),
@@ -130,11 +106,52 @@ use uuid::Uuid;
         (name = "credentials", description = "Credential issuance"),
         (name = "oidc", description = "OpenID Connect"),
         (name = "callbacks", description = "Provider callbacks"),
-        (name = "internal", description = "Internal polling"),
-        (name = "utilities", description = "Utility endpoints"),
+        (name = "polling", description = "Session-status polling for QR / webhook providers"),
     )
 )]
 struct ApiDoc;
+
+fn build_cors_layer() -> CorsLayer {
+    let dev_default = [
+        "http://localhost:5000",
+        "http://localhost:5001",
+        "http://localhost:4000",
+        "http://127.0.0.1:5000",
+        "http://127.0.0.1:5001",
+        "http://127.0.0.1:4000",
+    ];
+    let configured: Vec<String> = std::env::var("CORS_ALLOWED_ORIGINS")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let origins: Vec<HeaderValue> = if configured.is_empty() {
+        dev_default.iter().filter_map(|o| o.parse().ok()).collect()
+    } else {
+        configured.iter().filter_map(|o| o.parse().ok()).collect()
+    };
+
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::HeaderName::from_static("x-correlation-id"),
+        ])
+        .allow_credentials(true)
+}
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -147,6 +164,8 @@ struct AppState {
     issuer_private_key: String,
     /// Midnight sidecar client (None if MIDNIGHT_ENABLED=false)
     midnight: Option<Arc<midnight::MidnightSidecar>>,
+    /// In-flight OIDC authorization requests, keyed by `state`.
+    oidc_state: owl_issuer_service::oidc_state::OidcStateStore,
 }
 
 #[tokio::main]
@@ -165,13 +184,14 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Starting OwlID Issuer Service...");
 
-    // T-010: Validate all config upfront
-    let issuer_config = IssuerConfig::from_env().unwrap_or_else(|errors| {
-        for err in &errors {
-            tracing::error!("Configuration error: {}", err);
+    // Validate every env var upfront, fail fast on missing required ones.
+    let issuer_config = IssuerConfig::from_env().unwrap_or_else(|err| {
+        for e in &err.0 {
+            tracing::error!("config error: {}", e);
         }
         std::process::exit(1);
     });
+    info!("\n{}", issuer_config);
 
     // Initialize in-memory IdP database (for sessions, claims)
     let db = Arc::new(IdpDatabase::new());
@@ -201,9 +221,17 @@ async fn main() -> anyhow::Result<()> {
         reg.provider_ids().join(", ")
     };
 
-    // Try to connect to PostgreSQL for credential storage (optional)
-    // Prefer service-specific URL, fallback to shared DATABASE_URL
-    let credential_bridge = match std::env::var("ISSUER_DATABASE_URL")
+    // Try to connect to PostgreSQL for credential storage (optional). Prefer
+    // service-specific URL, fallback to shared DATABASE_URL. The pool is
+    // shared with the provider-settings repository below so admin toggle
+    // endpoints can persist their state in the same database without
+    // opening a second pool.
+    let bridge_config = BridgeConfig {
+        include_raw_fields: true,
+        include_derived_proofs: true,
+        include_metadata: true,
+    };
+    let (credential_bridge, db_pool) = match std::env::var("ISSUER_DATABASE_URL")
         .or_else(|_| std::env::var("DATABASE_URL"))
     {
         Ok(database_url) => {
@@ -211,44 +239,171 @@ async fn main() -> anyhow::Result<()> {
             match create_pool(&database_url).await {
                 Ok(pool) => {
                     info!("Database connection established");
-                    CredentialBridge::with_config(BridgeConfig {
-                        include_raw_fields: true,
-                        include_derived_proofs: true,
-                        include_metadata: true,
-                    }).with_credential_repo(CredentialRepository::new(pool))
+                    let bridge = CredentialBridge::with_config(bridge_config.clone())
+                        .with_credential_repo(CredentialRepository::new(pool.clone()));
+                    (bridge, Some(pool))
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to connect to database: {}. Credential storage disabled.", e);
-                    CredentialBridge::with_config(BridgeConfig {
-                        include_raw_fields: true,
-                        include_derived_proofs: true,
-                        include_metadata: true,
-                    })
+                    tracing::warn!(
+                        "Failed to connect to database: {}. Credential storage and provider toggles disabled.",
+                        e
+                    );
+                    (CredentialBridge::with_config(bridge_config.clone()), None)
                 }
             }
         }
         Err(_) => {
-            info!("ISSUER_DATABASE_URL not set. Credential storage disabled.");
-            CredentialBridge::with_config(BridgeConfig {
-                include_raw_fields: true,
-                include_derived_proofs: true,
-                include_metadata: true,
-            })
+            info!("ISSUER_DATABASE_URL not set. Credential storage and provider toggles disabled.");
+            (CredentialBridge::with_config(bridge_config.clone()), None)
         }
     };
 
+    // Seed the registry's disabled-set from `provider_settings` so the last
+    // operator decision survives restarts.
+    if let Some(ref pool) = db_pool {
+        let repo = ProviderSettingsRepository::new(pool.clone());
+        match repo.list().await {
+            Ok(rows) => {
+                let disabled = rows
+                    .into_iter()
+                    .filter(|r| !r.enabled)
+                    .map(|r| r.provider_id)
+                    .collect::<Vec<_>>();
+                if !disabled.is_empty() {
+                    info!("Disabled providers from DB: {}", disabled.join(", "));
+                }
+                let reg = registry.read().await;
+                reg.set_disabled(disabled);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load provider_settings: {}", e);
+            }
+        }
+    }
+
     let credential_bridge = Arc::new(credential_bridge);
 
-    // For PoC, generate an issuer key on startup if not provided.
-    // In production, this would be securely stored and managed.
-    let issuer_private_key = std::env::var("ISSUER_PRIVATE_KEY")
+    // Issuer signing key resolution. Order:
+    //   1. ISSUER_PRIVATE_KEY env (operator-managed, prod path).
+    //   2. Most recent active row in `issuer_keys` (persisted dev key).
+    //   3. Generate a fresh keypair and persist it into the table.
+    //
+    // Without (2), every restart minted a new key and credentials issued
+    // before the restart became "Untrusted issuer" against the
+    // verification-service's `trusted_issuers` registry.
+    let issuer_private_key = if let Ok(env_key) = std::env::var("ISSUER_PRIVATE_KEY")
         .or_else(|_| std::env::var("IDP_ISSUER_PRIVATE_KEY"))
-        .unwrap_or_else(|_| {
-            let keypair = owl_crypto::KeyPair::generate();
-            let private_key = hex::encode(keypair.to_bytes());
-            info!("Generated new issuer keypair. Public key: {}", keypair.public_key().to_hex());
-            private_key
+    {
+        env_key
+    } else if let Some(ref pool) = db_pool {
+        let repo = owl_issuer_service::db::IssuerKeysRepository::new(pool.clone());
+        match repo.get_active().await {
+            Ok(Some(existing)) => {
+                info!(
+                    "Loaded persisted issuer keypair. Public key: {}",
+                    existing.public_key_hex
+                );
+                existing.private_key_hex
+            }
+            Ok(None) => {
+                let keypair = owl_crypto::KeyPair::generate();
+                let private_key_hex = hex::encode(keypair.to_bytes());
+                let public_key_hex = keypair.public_key().to_hex();
+                info!(
+                    "Generated new issuer keypair (none persisted). Public key: {}",
+                    public_key_hex
+                );
+                if let Err(e) = repo
+                    .insert(&owl_issuer_service::db::IssuerKey {
+                        public_key_hex: public_key_hex.clone(),
+                        private_key_hex: private_key_hex.clone(),
+                    })
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to persist generated issuer keypair: {}. The next restart will mint another one.",
+                        e
+                    );
+                }
+                private_key_hex
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to read issuer_keys table ({}); falling back to ephemeral keypair.",
+                    e
+                );
+                let keypair = owl_crypto::KeyPair::generate();
+                info!(
+                    "Generated ephemeral issuer keypair. Public key: {}",
+                    keypair.public_key().to_hex()
+                );
+                hex::encode(keypair.to_bytes())
+            }
+        }
+    } else {
+        let keypair = owl_crypto::KeyPair::generate();
+        info!(
+            "Generated ephemeral issuer keypair (no DB available). Public key: {}",
+            keypair.public_key().to_hex()
+        );
+        hex::encode(keypair.to_bytes())
+    };
+
+    // Auto-register the active pubkey with the verification-service so
+    // freshly-issued credentials verify out of the box. The call uses an
+    // admin-permission API key (env: VERIFICATION_ADMIN_API_KEY, falling
+    // back to the seeded dev key for local development). Idempotent: the
+    // verification-service's `add_trusted_issuer` upserts on
+    // `public_key`, so multiple boots don't pollute the table.
+    {
+        let pubkey_hex = owl_crypto::KeyPair::from_bytes(
+            &hex::decode(&issuer_private_key).expect("issuer private key must be hex"),
+        )
+        .expect("issuer private key must be a valid Ed25519 seed")
+        .public_key()
+        .to_hex();
+        let verification_url = std::env::var("VERIFICATION_SERVICE_URL")
+            .unwrap_or_else(|_| "http://localhost:8000".to_string());
+        let admin_key = std::env::var("VERIFICATION_ADMIN_API_KEY").unwrap_or_else(|_| {
+            "owlid_sk_test_dev0000000000000000000000000000000000000000".to_string()
         });
+        let issuer_name = std::env::var("ISSUER_NAME")
+            .unwrap_or_else(|_| "OwlID Issuer Service".to_string());
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .expect("reqwest client");
+            let body = serde_json::json!({
+                "publicKey": pubkey_hex,
+                "name": issuer_name,
+            });
+            let resp = client
+                .post(format!("{}/trusted-issuers", verification_url.trim_end_matches('/')))
+                .bearer_auth(&admin_key)
+                .json(&body)
+                .send()
+                .await;
+            match resp {
+                Ok(r) if r.status().is_success() => {
+                    info!("Registered issuer pubkey with verification-service: {}", pubkey_hex);
+                }
+                Ok(r) => {
+                    tracing::warn!(
+                        "Auto-register issuer pubkey failed with status {}: {}",
+                        r.status(),
+                        r.text().await.unwrap_or_default()
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Auto-register issuer pubkey unreachable ({}). Add it via /trusted-issuers manually.",
+                        e
+                    );
+                }
+            }
+        });
+    }
 
     // Initialize Midnight sidecar client
     let midnight_config = midnight::MidnightConfig::from_env();
@@ -274,6 +429,21 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    let oidc_state = owl_issuer_service::oidc_state::OidcStateStore::default();
+    {
+        let store = oidc_state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let cleaned = store.cleanup().await;
+                if cleaned > 0 {
+                    tracing::debug!("Cleaned up {} expired OIDC state entries", cleaned);
+                }
+            }
+        });
+    }
+
     let state = AppState {
         db,
         factory,
@@ -281,7 +451,24 @@ async fn main() -> anyhow::Result<()> {
         credential_bridge,
         issuer_private_key,
         midnight: midnight_client.clone(),
+        oidc_state,
     };
+
+    // Background cleanup of expired sessions + claims. Without this the
+    // in-memory `Database` accumulates rows for every abandoned flow.
+    {
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let cleaned = db.cleanup_expired().await;
+                if cleaned > 0 {
+                    tracing::debug!("Cleaned up {} expired issuer sessions", cleaned);
+                }
+            }
+        });
+    }
 
     // T-003: Self-register issuer on-chain only if explicitly opted in
     let auto_register = std::env::var("MIDNIGHT_AUTO_REGISTER_ISSUER")
@@ -324,11 +511,12 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Midnight auto-registration disabled. Set MIDNIGHT_AUTO_REGISTER_ISSUER=true to enable.");
     }
 
-    // Build CORS layer
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // Build CORS layer from CORS_ALLOWED_ORIGINS, falling back to the
+    // local-dev frontend origins so a fresh checkout still works.
+    let cors = build_cors_layer();
+
+    let rate_config = RateLimitConfig::from_env();
+    let rate_limiter = InMemoryRateLimiter::new(rate_config);
 
     // T-017: Load OIDC providers
     let oidc_providers = owl_issuer_service::oidc::load_oidc_providers();
@@ -338,37 +526,72 @@ async fn main() -> anyhow::Result<()> {
         info!("Loaded {} OIDC provider(s)", oidc_providers.len());
     }
 
-    // Build router
-    let app = Router::new()
-        // OpenAPI spec + Swagger UI
-        .merge(utoipa_swagger_ui::SwaggerUi::new("/swagger-ui").url("/openapi.json", ApiDoc::openapi()))
-        // Health and info
-        .route("/health", get(health))
-        .route("/issuer-info", get(get_issuer_info))
-        .route("/providers", get(list_providers))
-        // Session management
-        .route("/sessions", post(create_session))
+    // Routes that need a per-session bearer minted at /sessions create time.
+    // These all carry the session UUID in the path; the middleware reads it
+    // out and matches the supplied Authorization: Bearer header.
+    let session_scoped = Router::new()
         .route("/sessions/{id}", get(get_session))
         .route("/sessions/{id}/submit", post(submit_identity))
         .route("/sessions/{id}/claims", get(get_claims))
         .route("/sessions/{id}/issue", post(issue_credential))
-        // Auto-verify with sample data (for testing mock providers)
         .route("/sessions/{id}/auto-verify", post(auto_verify))
-        // Complete verification (for webhook_async providers like Didit)
         .route("/sessions/{id}/complete", post(complete_verification))
-        // Provider callbacks
+        .route("/polling/{session_id}", get(poll_session))
+        .layer(axum_middleware::from_fn_with_state(
+            state.db.clone(),
+            validate_session_bearer,
+        ));
+
+    // Operator-only routes. Gated by the verification-service-issued admin
+    // session JWT (`owlid_admin_token` cookie or Authorization: Bearer).
+    // Wired only when a DB pool is available, since persistence of the
+    // toggle state lives in `provider_settings`.
+    let admin_router = if let Some(ref pool) = db_pool {
+        let admin_state = provider_admin::ProviderAdminState {
+            registry: state.registry.clone(),
+            db_pool: pool.clone(),
+        };
+        Some(
+            Router::new()
+                .route(
+                    "/admin/providers/{id}/enable",
+                    post(provider_admin::enable_provider),
+                )
+                .route(
+                    "/admin/providers/{id}/disable",
+                    post(provider_admin::disable_provider),
+                )
+                .layer(axum_middleware::from_fn(admin_auth::require_admin))
+                .with_state(admin_state),
+        )
+    } else {
+        None
+    };
+
+    let mut app = Router::new()
+        .merge(utoipa_swagger_ui::SwaggerUi::new("/swagger-ui").url("/openapi.json", ApiDoc::openapi()))
+        .route("/health", get(health))
+        .route("/issuer-info", get(get_issuer_info))
+        .route("/providers", get(list_providers))
+        .route("/sessions", post(create_session))
         .route("/callbacks/saml", post(handle_saml_callback))
         .route("/callbacks/webhook/{provider}", post(handle_webhook))
-        // T-017: OIDC auth routes
         .route("/auth/login/{provider}", get(oidc_login))
         .route("/auth/callback/{provider}", get(oidc_callback))
         .route("/auth/providers", get(list_oidc_providers))
-        // Polling status (internal, called by background task)
-        .route("/internal/poll/{session_id}", get(poll_session))
-        // Utilities
-        .route("/keypair", post(generate_keypair))
-        .layer(cors)
+        .merge(session_scoped)
         .with_state(state);
+
+    if let Some(admin_router) = admin_router {
+        app = app.merge(admin_router);
+    }
+
+    let app = app
+        .layer(axum_middleware::from_fn_with_state(
+            rate_limiter,
+            rate_limit,
+        ))
+        .layer(cors);
 
     // Use validated config
     let addr = format!("{}:{}", issuer_config.host, issuer_config.port);
@@ -414,11 +637,19 @@ async fn get_issuer_info(State(state): State<AppState>) -> Json<IssuerInfoRespon
 }
 
 /// List available identity providers (with flow type info)
-#[utoipa::path(get, path = "/providers", tag = "providers", responses((status = 200, description = "List of available identity providers", body = Vec<serde_json::Value>)))]
-async fn list_providers(State(state): State<AppState>) -> Json<Vec<ProviderInfoExtended>> {
+#[utoipa::path(
+    get,
+    path = "/providers",
+    tag = "providers",
+    responses(
+        (status = 200, description = "List of available identity providers", body = Vec<ProviderInfo>)
+    )
+)]
+async fn list_providers(State(state): State<AppState>) -> Json<Vec<ProviderInfo>> {
     let registry = state.registry.read().await;
     Json(registry.list())
 }
+
 
 /// Request to create a verification session
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -436,6 +667,9 @@ struct CreateSessionResponse {
     flow_type: ProviderFlowType,
     status: SessionStatus,
     expires_at: String,
+    /// Per-session bearer token. Send as `Authorization: Bearer <token>`
+    /// on every subsequent `/sessions/{id}/*` and `/polling/{id}` call.
+    session_token: String,
     /// Flow-specific start data
     #[serde(flatten)]
     start_data: VerificationStart,
@@ -452,6 +686,12 @@ async fn create_session(
     let provider = registry.get(&request.provider_id).ok_or_else(|| {
         ApiError::NotFound(format!("Provider not found: {}", request.provider_id))
     })?;
+    if !registry.is_enabled(&request.provider_id) {
+        return Err(ApiError::BadRequest(format!(
+            "Provider {} is currently disabled by the operator",
+            request.provider_id
+        )));
+    }
 
     // Create session with flow type
     let flow_type = provider.provider_type();
@@ -479,6 +719,7 @@ async fn create_session(
         flow_type,
         status: session.status,
         expires_at: session.expires_at.to_rfc3339(),
+        session_token: session.session_token,
         start_data,
     }))
 }
@@ -660,32 +901,36 @@ async fn issue_credential(
     Path(id): Path<Uuid>,
     Json(request): Json<IssueCredentialRequest>,
 ) -> Result<Json<IssueCredentialResponse>, ApiError> {
-    // Get session and verify it's verified
-    let session = state
-        .db
-        .get_session(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Session not found: {}", id)))?;
+    // Atomically claim the issuance slot before signing. `try_claim_issuance`
+    // verifies the session is `Verified` and flips `credential_issued`
+    // false→true inside a single write lock; if two requests race, only one
+    // succeeds. Without this, `Document::issue` produces a fresh salt per
+    // call so the UNIQUE(root_hash) constraint can't dedupe.
+    state.db.try_claim_issuance(id).await.map_err(|err| match err {
+        owl_issuer_service::IdpError::SessionNotFound(_) => {
+            ApiError::NotFound(format!("Session not found: {}", id))
+        }
+        owl_issuer_service::IdpError::InvalidSessionState { actual, .. } => {
+            ApiError::BadRequest(format!("Cannot issue credential: {}", actual))
+        }
+        other => ApiError::Internal(other.to_string()),
+    })?;
 
-    if session.status != SessionStatus::Verified {
-        return Err(ApiError::BadRequest(format!(
-            "Session not verified (status: {:?})",
-            session.status
-        )));
-    }
+    let claims = match state.db.get_claims(id).await? {
+        Some(c) => c,
+        None => {
+            // Restore the slot so a corrected retry can still proceed.
+            let _ = state
+                .db
+                .update_session(id, |s| s.credential_issued = false)
+                .await;
+            return Err(ApiError::Internal("Claims not found".to_string()));
+        }
+    };
 
-    // Get claims
-    let claims = state
-        .db
-        .get_claims(id)
-        .await?
-        .ok_or_else(|| ApiError::Internal("Claims not found".to_string()))?;
-
-    // Use server's configured issuer key
     let issuer_key = state.issuer_private_key.clone();
 
-    // Issue credential directly via bridge (no HTTP call)
-    let proof_document = state
+    let proof_document = match state
         .credential_bridge
         .issue_credential(
             &claims,
@@ -693,14 +938,20 @@ async fn issue_credential(
             &request.owner_public_key,
             request.key_algorithm.to_signature_algorithm(),
         )
-        .await?;
+        .await
+    {
+        Ok(doc) => doc,
+        Err(err) => {
+            let _ = state
+                .db
+                .update_session(id, |s| s.credential_issued = false)
+                .await;
+            return Err(err.into());
+        }
+    };
 
-    // Serialize to JSON for response
     let credential = serde_json::to_value(&proof_document)
         .map_err(|e| ApiError::Internal(format!("Serialization error: {}", e)))?;
-
-    // Mark credential as issued
-    state.db.mark_credential_issued(id).await?;
 
     // Fire-and-forget: anchor identity commitment on-chain
     if let Some(ref midnight) = state.midnight {
@@ -1224,10 +1475,10 @@ struct CallbackResponse {
     redirect_url: Option<String>,
 }
 
-/// Poll session status (for QR polling flows)
+/// Poll session status (for QR polling flows like BankID, Didit webhook).
 #[utoipa::path(
     get,
-    path = "/internal/poll/{session_id}",
+    path = "/polling/{session_id}",
     params(
         ("session_id" = Uuid, Path, description = "Session ID"),
     ),
@@ -1236,7 +1487,7 @@ struct CallbackResponse {
         (status = 400, description = "Bad request"),
         (status = 404, description = "Session not found"),
     ),
-    tag = "internal"
+    tag = "polling"
 )]
 async fn poll_session(
     State(state): State<AppState>,
@@ -1340,36 +1591,6 @@ struct PollResponse {
 }
 
 // ============================================================================
-// Utilities
-// ============================================================================
-
-/// Generate a new keypair (for testing)
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-struct KeyPairResponse {
-    public_key: String,
-    private_key: String,
-}
-
-#[utoipa::path(
-    post,
-    path = "/keypair",
-    responses(
-        (status = 200, description = "Generated keypair", body = serde_json::Value),
-    ),
-    tag = "utilities"
-)]
-async fn generate_keypair() -> Json<KeyPairResponse> {
-    use owl_crypto::KeyPair;
-
-    let kp = KeyPair::generate();
-    Json(KeyPairResponse {
-        public_key: kp.public_key().to_hex(),
-        private_key: hex::encode(kp.to_bytes()),
-    })
-}
-
-// ============================================================================
 // T-017: OIDC Auth Handlers
 // ============================================================================
 
@@ -1409,6 +1630,7 @@ struct OidcProviderInfo {
     tag = "oidc"
 )]
 async fn oidc_login(
+    State(app): State<AppState>,
     Path(provider_id): Path<String>,
 ) -> Result<Json<OidcLoginResponse>, ApiError> {
     let providers = owl_issuer_service::oidc::load_oidc_providers();
@@ -1417,7 +1639,6 @@ async fn oidc_login(
         .find(|p| p.provider_id == provider_id)
         .ok_or_else(|| ApiError::NotFound(format!("OIDC provider not found: {}", provider_id)))?;
 
-    // Generate PKCE challenge
     let code_verifier: String = (0..43)
         .map(|_| {
             let idx = rand::random::<u8>() % 62;
@@ -1434,17 +1655,24 @@ async fn oidc_login(
     hasher.update(code_verifier.as_bytes());
     let code_challenge = base64_url_encode(&hasher.finalize());
 
-    // Generate state and nonce
     let state = Uuid::new_v4().to_string();
     let nonce = Uuid::new_v4().to_string();
 
-    // Discover authorization endpoint
+    app.oidc_state
+        .insert(owl_issuer_service::oidc_state::StoredOidcState {
+            state: state.clone(),
+            code_verifier,
+            nonce: nonce.clone(),
+            provider_id: provider_id.clone(),
+            created_at: std::time::Instant::now(),
+        })
+        .await;
+
     let discovery_url = format!(
         "{}/.well-known/openid-configuration",
         config.issuer_url.trim_end_matches('/')
     );
 
-    // Build the auth URL (we return it to the client to redirect)
     let auth_url = owl_issuer_service::oidc::build_auth_url(
         &config,
         &format!("{}/authorize", config.issuer_url.trim_end_matches('/')),
@@ -1475,8 +1703,6 @@ struct OidcCallbackQuery {
     state: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
-    /// PKCE code verifier (passed from client that initiated the flow)
-    code_verifier: Option<String>,
 }
 
 /// OIDC callback - handles the authorization code callback
@@ -1490,7 +1716,6 @@ struct OidcCallbackQuery {
         ("state" = Option<String>, Query, description = "State parameter"),
         ("error" = Option<String>, Query, description = "Error code"),
         ("error_description" = Option<String>, Query, description = "Error description"),
-        ("code_verifier" = Option<String>, Query, description = "PKCE code verifier"),
     ),
     responses(
         (status = 200, description = "OIDC callback processed", body = OidcCallbackResponse),
@@ -1500,10 +1725,10 @@ struct OidcCallbackQuery {
     tag = "oidc"
 )]
 async fn oidc_callback(
+    State(app): State<AppState>,
     Path(provider_id): Path<String>,
     Query(query): Query<OidcCallbackQuery>,
 ) -> Result<Json<OidcCallbackResponse>, ApiError> {
-    // Check for errors from the provider
     if let Some(error) = query.error {
         let desc = query.error_description.unwrap_or_default();
         return Err(ApiError::BadRequest(format!(
@@ -1512,36 +1737,49 @@ async fn oidc_callback(
         )));
     }
 
-    let code = query.code.ok_or_else(|| {
-        ApiError::BadRequest("Missing authorization code".to_string())
-    })?;
+    let code = query
+        .code
+        .ok_or_else(|| ApiError::BadRequest("Missing authorization code".to_string()))?;
+    let received_state = query
+        .state
+        .ok_or_else(|| ApiError::BadRequest("Missing state parameter".to_string()))?;
 
-    // Find the provider config
+    let stored = app
+        .oidc_state
+        .take(&received_state)
+        .await
+        .ok_or_else(|| ApiError::BadRequest("Invalid or expired state".to_string()))?;
+    if stored.provider_id != provider_id {
+        return Err(ApiError::BadRequest(
+            "State does not match callback provider".to_string(),
+        ));
+    }
+
     let providers = owl_issuer_service::oidc::load_oidc_providers();
     let config = providers
         .into_iter()
         .find(|p| p.provider_id == provider_id)
         .ok_or_else(|| ApiError::NotFound(format!("OIDC provider not found: {}", provider_id)))?;
 
-    // Discover endpoints
     let discovery = owl_issuer_service::oidc::discover(&config.issuer_url)
         .await
         .map_err(|e| ApiError::BadRequest(format!("OIDC discovery failed: {}", e)))?;
 
-    // Exchange authorization code for tokens
-    // Note: In production, the code_verifier should be retrieved from server-side session
-    // storage keyed by the state parameter. For now we accept it from the query.
-    let code_verifier = query.code_verifier.unwrap_or_default();
     let token_response = owl_issuer_service::oidc::exchange_code(
         &config,
         &discovery.token_endpoint,
         &code,
-        &code_verifier,
+        &stored.code_verifier,
     )
     .await
     .map_err(|e| ApiError::BadRequest(format!("Token exchange failed: {}", e)))?;
 
-    // Fetch user claims from userinfo endpoint if available
+    let id_token = token_response
+        .id_token
+        .as_ref()
+        .ok_or_else(|| ApiError::BadRequest("Provider returned no id_token".to_string()))?;
+    verify_id_token(id_token, &config.client_id, &discovery.issuer, &stored.nonce)?;
+
     let claims = if let Some(ref userinfo_endpoint) = discovery.userinfo_endpoint {
         owl_issuer_service::oidc::fetch_userinfo(userinfo_endpoint, &token_response.access_token)
             .await
@@ -1550,15 +1788,96 @@ async fn oidc_callback(
         std::collections::HashMap::new()
     };
 
-    // Map provider claims to OwlID claims
     let mapped_claims = owl_issuer_service::oidc::map_claims(&claims, &config.claim_mappings);
 
     Ok(Json(OidcCallbackResponse {
         provider_id,
         claims: mapped_claims,
-        has_id_token: token_response.id_token.is_some(),
+        has_id_token: true,
         message: "Authentication successful. Claims extracted from provider.".to_string(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct IdTokenClaims {
+    iss: String,
+    aud: serde_json::Value,
+    exp: i64,
+    #[serde(default)]
+    nbf: Option<i64>,
+    #[serde(default)]
+    nonce: Option<String>,
+}
+
+/// Decode the OIDC `id_token`, verify `iss`, `aud`, `exp`, optional `nbf`,
+/// and the bound `nonce`. Signature verification is intentionally disabled
+/// here — the `code` was redeemed over TLS at the discovered token endpoint,
+/// so the token's authenticity is bound to that channel; the JWT body is
+/// only re-checked for tampering between provider and us. JWKS-backed
+/// signature validation is a follow-up.
+fn verify_id_token(
+    id_token: &str,
+    expected_audience: &str,
+    expected_issuer: &str,
+    expected_nonce: &str,
+) -> Result<(), ApiError> {
+    use jsonwebtoken::{Algorithm, DecodingKey, Validation};
+
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.insecure_disable_signature_validation();
+    validation.validate_aud = false;
+    validation.validate_exp = true;
+    validation.validate_nbf = true;
+    validation.required_spec_claims = std::collections::HashSet::new();
+    validation.algorithms = vec![
+        Algorithm::RS256,
+        Algorithm::RS384,
+        Algorithm::RS512,
+        Algorithm::ES256,
+        Algorithm::ES384,
+        Algorithm::HS256,
+    ];
+
+    let key = DecodingKey::from_secret(&[]);
+    let data = jsonwebtoken::decode::<IdTokenClaims>(id_token, &key, &validation)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid id_token: {}", e)))?;
+    let claims = data.claims;
+
+    if claims.iss != expected_issuer {
+        return Err(ApiError::BadRequest(format!(
+            "id_token issuer mismatch: expected {}, got {}",
+            expected_issuer, claims.iss
+        )));
+    }
+
+    let aud_ok = match &claims.aud {
+        serde_json::Value::String(s) => s == expected_audience,
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|v| v.as_str() == Some(expected_audience)),
+        _ => false,
+    };
+    if !aud_ok {
+        return Err(ApiError::BadRequest(
+            "id_token audience does not contain client_id".to_string(),
+        ));
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    if claims.exp <= now {
+        return Err(ApiError::BadRequest("id_token expired".to_string()));
+    }
+    if let Some(nbf) = claims.nbf
+        && now < nbf
+    {
+        return Err(ApiError::BadRequest("id_token not yet valid".to_string()));
+    }
+
+    match claims.nonce.as_deref() {
+        Some(n) if n == expected_nonce => Ok(()),
+        Some(_) => Err(ApiError::BadRequest("id_token nonce mismatch".to_string())),
+        None => Err(ApiError::BadRequest("id_token missing nonce".to_string())),
+    }
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]

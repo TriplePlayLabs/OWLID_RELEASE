@@ -4,6 +4,7 @@ pub mod challenges;
 pub mod credentials;
 pub mod issuers;
 pub mod revocations;
+pub mod system_settings;
 pub mod verification_logs;
 
 pub use api_keys::ApiKeyRepository;
@@ -12,4 +13,5 @@ pub use challenges::ChallengeRepository;
 pub use credentials::{CredentialRepository, IssuedCredential};
 pub use issuers::IssuerRepository;
 pub use revocations::{RevocationCache, RevocationRepository};
+pub use system_settings::SystemSettingsRepository;
 pub use verification_logs::VerificationLogRepository;

@@ -294,6 +294,16 @@ fn token_to_cbor(token: &Token) -> Result<CborValue, ProofSystemError> {
         entries.push((int_key(12), int_val(p.signer_threshold as i64)));
     }
 
+    // 13: available_predicates — omit when empty
+    if !p.available_predicates.is_empty() {
+        let preds: Vec<CborValue> = p
+            .available_predicates
+            .iter()
+            .map(|s| CborValue::Text(s.clone()))
+            .collect();
+        entries.push((int_key(13), CborValue::Array(preds)));
+    }
+
     Ok(CborValue::Map(entries))
 }
 
@@ -336,24 +346,26 @@ fn encode_merkle_proof(mp: &MerkleProof) -> CborValue {
         })
         .collect();
 
-    // Compact sibling encoding (unchanged)
-    let mut hash_concat = Vec::with_capacity(mp.sibling_hashes().len() * 32);
-    let mut meta_packed = Vec::with_capacity(mp.sibling_hashes().len());
-    for s in mp.sibling_hashes() {
-        hash_concat.extend_from_slice(s.hash());
-        meta_packed.push(((s.level() as u8) << 4) | (s.position() as u8 & 0x0F));
-    }
+    // Siblings: array of [level, position, hash] triples. Earlier revisions
+    // packed level+position into a single byte (4 bits each), which silently
+    // truncated positions ≥16 — breaking verification for credentials with
+    // more than 16 attributes. CBOR ints carry the full range.
+    let siblings: Vec<CborValue> = mp
+        .sibling_hashes()
+        .iter()
+        .map(|s| {
+            CborValue::Array(vec![
+                int_val(s.level() as i64),
+                int_val(s.position() as i64),
+                CborValue::Bytes(s.hash().to_vec()),
+            ])
+        })
+        .collect();
 
     // Only leaves + siblings — no root_hash (field 0 removed)
     CborValue::Map(vec![
         (int_key(0), CborValue::Array(leaves)),
-        (
-            int_key(1),
-            CborValue::Array(vec![
-                CborValue::Bytes(hash_concat),
-                CborValue::Bytes(meta_packed),
-            ]),
-        ),
+        (int_key(1), CborValue::Array(siblings)),
     ])
 }
 
@@ -555,6 +567,18 @@ fn cbor_to_token(cbor: &CborValue) -> Result<Token, ProofSystemError> {
         None => DEFAULT_THRESHOLD,
     };
 
+    // 13: available_predicates — default empty
+    let available_predicates = match cbor_map_try_get(map, 13) {
+        Some(CborValue::Array(items)) => items
+            .iter()
+            .filter_map(|v| match v {
+                CborValue::Text(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
     // Derive signers from subjects (issuerKey + ownerKey / ownerKeys)
     let signers = derive_signers(&subjects);
 
@@ -572,6 +596,7 @@ fn cbor_to_token(cbor: &CborValue) -> Result<Token, ProofSystemError> {
         signer_threshold,
         zk_proofs,
         committed_attributes,
+        available_predicates,
     };
 
     Ok(Token::from_parts(payload, owner_signature, owner_signatures, hmac))
@@ -679,30 +704,67 @@ fn decode_merkle_proof(
         proof_leaves.push(ProofLeaf::new(key, hash, position));
     }
 
-    // 1: siblings
+    // 1: siblings — current format is an array of [level, position, hash]
+    // triples. Legacy format (in-flight short-TTL tokens during a rolling
+    // deploy) was [bytes(hash_concat), bytes(meta_packed)] with level+position
+    // packed into 4 bits each; decoded here for compatibility but no longer
+    // emitted.
     let siblings_val = cbor_as_array(cbor_map_get(map, 1)?)?;
-    let mut sibling_hashes = Vec::new();
-    if siblings_val.len() == 2 {
-        let hash_concat = cbor_as_bytes(&siblings_val[0])?;
-        let meta_packed = cbor_as_bytes(&siblings_val[1])?;
-        if hash_concat.len() != meta_packed.len() * 32 {
-            return Err(ProofSystemError::InvalidProof(
-                "sibling hash/meta length mismatch".into(),
-            ));
-        }
-        for (i, &meta) in meta_packed.iter().enumerate() {
-            let level = (meta >> 4) as usize;
-            let position = (meta & 0x0F) as usize;
-            let hash: [u8; 32] = hash_concat[i * 32..(i + 1) * 32]
-                .try_into()
-                .map_err(|_| {
-                    ProofSystemError::InvalidProof("sibling hash must be 32 bytes".into())
-                })?;
-            sibling_hashes.push(SiblingHash::new(level, position, hash));
-        }
-    }
+    let sibling_hashes = if is_legacy_packed_siblings(siblings_val) {
+        decode_legacy_packed_siblings(siblings_val)?
+    } else {
+        decode_sibling_triples(siblings_val)?
+    };
 
     Ok(MerkleProof::from_parts(root_hash, proof_leaves, sibling_hashes))
+}
+
+fn is_legacy_packed_siblings(items: &[CborValue]) -> bool {
+    items.len() == 2
+        && matches!(items[0], CborValue::Bytes(_))
+        && matches!(items[1], CborValue::Bytes(_))
+}
+
+fn decode_legacy_packed_siblings(
+    items: &[CborValue],
+) -> Result<Vec<SiblingHash>, ProofSystemError> {
+    let hash_concat = cbor_as_bytes(&items[0])?;
+    let meta_packed = cbor_as_bytes(&items[1])?;
+    if hash_concat.len() != meta_packed.len() * 32 {
+        return Err(ProofSystemError::InvalidProof(
+            "sibling hash/meta length mismatch".into(),
+        ));
+    }
+    let mut out = Vec::with_capacity(meta_packed.len());
+    for (i, &meta) in meta_packed.iter().enumerate() {
+        let level = (meta >> 4) as usize;
+        let position = (meta & 0x0F) as usize;
+        let hash: [u8; 32] = hash_concat[i * 32..(i + 1) * 32]
+            .try_into()
+            .map_err(|_| ProofSystemError::InvalidProof("sibling hash must be 32 bytes".into()))?;
+        out.push(SiblingHash::new(level, position, hash));
+    }
+    Ok(out)
+}
+
+fn decode_sibling_triples(items: &[CborValue]) -> Result<Vec<SiblingHash>, ProofSystemError> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let triple = cbor_as_array(item)?;
+        if triple.len() != 3 {
+            return Err(ProofSystemError::InvalidProof(
+                "sibling must be [level, position, hash]".into(),
+            ));
+        }
+        let level = cbor_as_i64(&triple[0])? as usize;
+        let position = cbor_as_i64(&triple[1])? as usize;
+        let hash_bytes = cbor_as_bytes(&triple[2])?;
+        let hash: [u8; 32] = hash_bytes
+            .try_into()
+            .map_err(|_| ProofSystemError::InvalidProof("sibling hash must be 32 bytes".into()))?;
+        out.push(SiblingHash::new(level, position, hash));
+    }
+    Ok(out)
 }
 
 fn decode_subjects(

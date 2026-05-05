@@ -29,6 +29,7 @@ pub async fn health() -> &'static str {
 
 /// Response containing a server-generated challenge
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ChallengeResponse {
     /// Server-generated challenge (hex, 16 chars). Valid for 5 minutes.
     challenge: String,
@@ -106,17 +107,13 @@ pub async fn verify_token(
 
     let challenge = &request.challenge;
 
-    // Validate server-generated challenge: must exist, not expired, not already used
-    match state.challenges.validate_server_challenge(challenge).await {
-        Ok(true) => { /* valid server challenge */ }
-        Ok(false) => {
-            observability::record_token_verified(false, verify_start.elapsed().as_secs_f64());
-            return Ok(Json(VerifyResponse {
-                valid: false,
-                error: Some("Invalid or expired challenge. Get a fresh one from GET /verify/challenge".to_string()),
-                subjects: None,
-            }));
-        }
+    // A challenge is valid if it's either:
+    //   1. A pending_challenges row from `GET /verify/challenge` (legacy flow), OR
+    //   2. The nonce of an active presentation session (QR / WS flow).
+    // Both are one-shot: the row is consumed on first match.
+    let challenge_ok = match state.challenges.validate_server_challenge(challenge).await {
+        Ok(true) => true,
+        Ok(false) => state.presentations.consume_nonce(challenge).await,
         Err(e) => {
             tracing::warn!("Challenge validation error: {}", e);
             return Ok(Json(VerifyResponse {
@@ -125,6 +122,17 @@ pub async fn verify_token(
                 subjects: None,
             }));
         }
+    };
+
+    if !challenge_ok {
+        observability::record_token_verified(false, verify_start.elapsed().as_secs_f64());
+        return Ok(Json(VerifyResponse {
+            valid: false,
+            error: Some(
+                "Invalid or expired challenge. Use GET /verify/challenge or a presentation-session nonce.".to_string(),
+            ),
+            subjects: None,
+        }));
     }
 
     // Get trusted issuers from database
@@ -156,7 +164,12 @@ pub async fn verify_token(
         .collect();
 
     // Verify token (includes revocation checking via cache)
-    match request_token.verify(&trusted_issuers, &challenge, state.revocations.cache()) {
+    match request_token.verify(
+        &trusted_issuers,
+        &challenge,
+        state.revocations.cache(),
+        &state.webauthn_expected_origins,
+    ) {
         Ok(_) => {
             let subjects = serde_json::to_value(request_token.subjects())?;
 
@@ -253,6 +266,7 @@ pub async fn verify_token(
 
 /// Request to add a trusted issuer
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AddTrustedIssuerRequest {
     public_key: String,
     name: String,
@@ -278,7 +292,7 @@ pub struct AddTrustedIssuerResponse {
         (status = 200, description = "Issuer added", body = AddTrustedIssuerResponse),
         (status = 400, description = "Invalid input"),
     ),
-    tag = "issuers"
+    tag = "admin-issuers"
 )]
 pub async fn add_trusted_issuer(
     State(state): State<AppState>,
@@ -358,6 +372,7 @@ pub async fn list_trusted_issuers(
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct TrustedIssuerInfo {
     public_key: String,
     name: String,
@@ -367,6 +382,7 @@ pub struct TrustedIssuerInfo {
 
 /// Request to revoke a credential
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct RevokeCredentialRequest {
     credential_id: String,
     issuer_public_key: String,
@@ -383,7 +399,7 @@ pub struct RevokeCredentialRequest {
         (status = 200, description = "Credential revoked"),
         (status = 400, description = "Invalid input"),
     ),
-    tag = "revocations"
+    tag = "admin-revocations"
 )]
 pub async fn revoke_credential(
     State(state): State<AppState>,
@@ -438,7 +454,7 @@ pub async fn revoke_credential(
         (status = 200, description = "Credential suspended"),
         (status = 400, description = "Invalid input"),
     ),
-    tag = "revocations"
+    tag = "admin-revocations"
 )]
 pub async fn suspend_credential(
     State(state): State<AppState>,
@@ -485,6 +501,7 @@ pub async fn suspend_credential(
 
 /// Reactivate a credential
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ReactivateCredentialRequest {
     credential_id: String,
 }
@@ -497,7 +514,7 @@ pub struct ReactivateCredentialRequest {
         (status = 200, description = "Credential reactivated"),
         (status = 400, description = "Invalid input"),
     ),
-    tag = "revocations"
+    tag = "admin-revocations"
 )]
 pub async fn reactivate_credential(
     State(state): State<AppState>,
@@ -539,11 +556,13 @@ pub async fn reactivate_credential(
 
 /// Check revocation status
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CheckRevocationRequest {
     credential_id: String,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CheckRevocationResponse {
     credential_id: String,
     status: String,
@@ -573,52 +592,73 @@ pub async fn check_revocation(
     }))
 }
 
+/// One row of the revocation registry as exposed to admin clients.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RevocationEntry {
+    pub credential_id: String,
+    pub status: String,
+    pub reason: Option<String>,
+    /// RFC 3339 timestamp; `None` for credentials that were suspended but
+    /// never permanently revoked (kept for symmetry with the row shape).
+    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// List revoked credentials
 #[utoipa::path(
     get,
     path = "/revocations/list",
     responses(
-        (status = 200, description = "List of revoked credentials"),
+        (status = 200, description = "List of revoked credentials", body = Vec<RevocationEntry>),
     ),
     tag = "revocations"
 )]
 pub async fn list_revoked(
     State(state): State<AppState>,
-) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+) -> Result<Json<Vec<RevocationEntry>>, ApiError> {
     let revocations = state.revocations.list(Some("revoked".to_string())).await?;
-
-    let list: Vec<serde_json::Value> = revocations.into_iter()
-        .map(|r| serde_json::json!({
-            "credential_id": r.credential_id,
-            "status": r.status,
-            "revoked_at": r.revoked_at,
-            "reason": r.reason,
-        }))
+    let list: Vec<RevocationEntry> = revocations
+        .into_iter()
+        .map(|r| RevocationEntry {
+            credential_id: r.credential_id,
+            status: r.status,
+            reason: r.reason,
+            revoked_at: r.revoked_at,
+        })
         .collect();
-
     Ok(Json(list))
 }
 
 /// Get metrics
+/// Snapshot of the verification service's running metrics.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsResponse {
+    pub total_verifications: i64,
+    pub successful_verifications: i64,
+    pub failed_verifications: i64,
+    /// Successful / total, rounded to two decimal places.
+    pub success_rate: f64,
+}
+
 #[utoipa::path(
     get,
     path = "/metrics",
     responses(
-        (status = 200, description = "Service metrics"),
+        (status = 200, description = "Service metrics", body = MetricsResponse),
     ),
-    tag = "monitoring"
+    tag = "metrics"
 )]
 pub async fn get_metrics(
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let metrics = state.verification_logs.get_current_metrics().await?;
-
-    Ok(Json(serde_json::json!({
-        "total_verifications": metrics.total_verifications,
-        "successful_verifications": metrics.successful_verifications,
-        "failed_verifications": metrics.failed_verifications,
-        "success_rate": metrics.success_rate(),
-    })))
+) -> Result<Json<MetricsResponse>, ApiError> {
+    let m = state.verification_logs.get_current_metrics().await?;
+    Ok(Json(MetricsResponse {
+        total_verifications: m.total_verifications,
+        successful_verifications: m.successful_verifications,
+        failed_verifications: m.failed_verifications,
+        success_rate: m.success_rate(),
+    }))
 }
 
 /// API Error type

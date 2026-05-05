@@ -3,11 +3,17 @@ import { useState } from 'react'
 import { ShieldCheck, Plus, Copy } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
-import { Button } from '~/components/ui/button'
-import { Input } from '~/components/ui/input'
-import { Label } from '~/components/ui/label'
-import { Badge } from '~/components/ui/badge'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@owlid/ui/components/ui/card'
+import { Button } from '@owlid/ui/components/ui/button'
+import { Input } from '@owlid/ui/components/ui/input'
+import { Label } from '@owlid/ui/components/ui/label'
+import { Badge } from '@owlid/ui/components/ui/badge'
 import {
   Table,
   TableBody,
@@ -15,7 +21,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '~/components/ui/table'
+} from '@owlid/ui/components/ui/table'
 import {
   Dialog,
   DialogContent,
@@ -25,8 +31,8 @@ import {
   DialogTrigger,
   DialogFooter,
   DialogClose,
-} from '~/components/ui/dialog'
-import { Textarea } from '~/components/ui/textarea'
+} from '@owlid/ui/components/ui/dialog'
+import { Textarea } from '@owlid/ui/components/ui/textarea'
 import { useTrustedIssuers, useAddTrustedIssuer } from '~/hooks/use-verification'
 
 export const Route = createFileRoute('/issuers')({

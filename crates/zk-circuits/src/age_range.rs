@@ -80,10 +80,7 @@ pub fn prove(
     threshold: u64,
 ) -> Result<ZkProof, ZkError> {
     if age < threshold {
-        return Err(ZkError::InvalidInput(format!(
-            "Age {} is less than threshold {}",
-            age, threshold
-        )));
+        return Err(ZkError::PreconditionFailed);
     }
 
     let circuit = AgeRangeCircuit {

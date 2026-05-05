@@ -17,7 +17,7 @@
 //! - Get Decision: GET {base_url}/v3/session/{session_id}/decision/
 
 use crate::error::{IdpError, PendingDetails, Result, VerificationWarning};
-use crate::models::{ProviderInfo, VerificationLevel};
+use crate::models::{ProviderDescriptor, VerificationLevel};
 use crate::normalizer::RawProviderClaims;
 use crate::provider::{
     DigitalIdentityProvider, ProviderFlowType, VerificationStart, WebhookPayload,
@@ -323,8 +323,8 @@ impl DigitalIdentityProvider for DiditProvider {
         ProviderFlowType::WebhookAsync
     }
 
-    fn info(&self) -> ProviderInfo {
-        ProviderInfo {
+    fn info(&self) -> ProviderDescriptor {
+        ProviderDescriptor {
             id: "didit".to_string(),
             name: "Didit KYC".to_string(),
             description: "Decentralized identity verification with document and liveness checks"

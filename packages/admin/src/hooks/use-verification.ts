@@ -1,52 +1,65 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  getVerificationApi,
   getIssuersApi,
-  getRevocationsApi,
   getMonitoringApi,
+  getRevocationsApi,
+  getVerificationApi,
+  type CheckRevocationRequest,
+  type CheckRevocationResponse,
+  type RevocationEntry,
+  type TrustedIssuerInfo,
+  type VerifyResponse,
+} from '@owlid/verifier-client'
+import {
+  getAdminIssuersApi,
+  getAdminRevocationsApi,
   getGdprApi,
-} from '~/lib/api'
-import type {
-  TrustedIssuerInfo,
-  AddTrustedIssuerRequest,
-  AddTrustedIssuerResponse,
-  RevokeCredentialRequest,
-  ReactivateCredentialRequest,
-  CheckRevocationRequest,
-  CheckRevocationResponse,
-  VerifyResponse,
-} from '@owlid/sdk'
+  getMetricsApi,
+  type AddTrustedIssuerRequest,
+  type AddTrustedIssuerResponse,
+  type MetricsResponse,
+  type ReactivateCredentialRequest,
+  type RevokeCredentialRequest,
+} from '@owlid/admin-client'
 
 // ---------------------------------------------------------------------------
-// Health
+// Health (public read — verifier-client surface)
 // ---------------------------------------------------------------------------
+
+/**
+ * Result of a health probe. `ok` is the boolean outcome; `latencyMs` is the
+ * wall-clock round-trip the SPA observed and is rendered in the status card
+ * so the operator can spot a degraded link before it goes down outright.
+ */
+export interface HealthProbe {
+  ok: boolean
+  latencyMs: number
+}
 
 export function useVerificationHealth() {
-  return useQuery({
+  return useQuery<HealthProbe>({
     queryKey: ['verification', 'health'],
-    queryFn: () => getMonitoringApi().health(),
-    refetchInterval: 30_000,
+    queryFn: async () => {
+      const started = performance.now()
+      try {
+        await getMonitoringApi().health()
+        return { ok: true, latencyMs: Math.round(performance.now() - started) }
+      } catch {
+        return { ok: false, latencyMs: Math.round(performance.now() - started) }
+      }
+    },
+    refetchInterval: 15_000,
   })
 }
 
 // ---------------------------------------------------------------------------
-// Metrics — getMetrics() returns void in the generated client, so use raw
+// Metrics (admin)
 // ---------------------------------------------------------------------------
 
-export interface VerificationMetrics {
-  totalVerifications: number
-  successfulVerifications: number
-  failedVerifications: number
-  successRate: number
-}
-
 export function useMetrics() {
-  return useQuery<VerificationMetrics>({
+  return useQuery<MetricsResponse>({
     queryKey: ['verification', 'metrics'],
-    queryFn: async () => {
-      const resp = await getMonitoringApi().getMetricsRaw()
-      return (await resp.raw.json()) as VerificationMetrics
-    },
+    queryFn: () => getMetricsApi().getMetrics(),
     refetchInterval: 10_000,
   })
 }
@@ -59,13 +72,16 @@ export function useTrustedIssuers() {
   return useQuery<TrustedIssuerInfo[]>({
     queryKey: ['verification', 'issuers'],
     queryFn: () => getIssuersApi().listTrustedIssuers(),
+    // Operators may add issuers from another seat; keep the listing
+    // fresh without forcing manual refresh.
+    refetchInterval: 30_000,
   })
 }
 
 export function useAddTrustedIssuer() {
   const qc = useQueryClient()
   return useMutation<AddTrustedIssuerResponse, Error, AddTrustedIssuerRequest>({
-    mutationFn: (req) => getIssuersApi().addTrustedIssuer({ addTrustedIssuerRequest: req }),
+    mutationFn: (req) => getAdminIssuersApi().addTrustedIssuer({ addTrustedIssuerRequest: req }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['verification', 'issuers'] }),
   })
 }
@@ -74,28 +90,19 @@ export function useAddTrustedIssuer() {
 // Revocations
 // ---------------------------------------------------------------------------
 
-export interface RevocationEntry {
-  credentialId: string
-  status: string
-  reason?: string
-  revokedAt: string
-}
-
 export function useRevokedCredentials() {
   return useQuery<RevocationEntry[]>({
     queryKey: ['verification', 'revocations'],
-    queryFn: async () => {
-      // listRevoked() returns void in the generated client — use raw
-      const resp = await getRevocationsApi().listRevokedRaw()
-      return (await resp.raw.json()) as RevocationEntry[]
-    },
+    queryFn: () => getRevocationsApi().listRevoked(),
+    refetchInterval: 30_000,
   })
 }
 
 export function useRevokeCredential() {
   const qc = useQueryClient()
   return useMutation<void, Error, RevokeCredentialRequest>({
-    mutationFn: (req) => getRevocationsApi().revokeCredential({ revokeCredentialRequest: req }),
+    mutationFn: (req) =>
+      getAdminRevocationsApi().revokeCredential({ revokeCredentialRequest: req }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['verification', 'revocations'] }),
   })
 }
@@ -103,7 +110,8 @@ export function useRevokeCredential() {
 export function useSuspendCredential() {
   const qc = useQueryClient()
   return useMutation<void, Error, RevokeCredentialRequest>({
-    mutationFn: (req) => getRevocationsApi().suspendCredential({ revokeCredentialRequest: req }),
+    mutationFn: (req) =>
+      getAdminRevocationsApi().suspendCredential({ revokeCredentialRequest: req }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['verification', 'revocations'] }),
   })
 }
@@ -112,7 +120,7 @@ export function useReactivateCredential() {
   const qc = useQueryClient()
   return useMutation<void, Error, ReactivateCredentialRequest>({
     mutationFn: (req) =>
-      getRevocationsApi().reactivateCredential({ reactivateCredentialRequest: req }),
+      getAdminRevocationsApi().reactivateCredential({ reactivateCredentialRequest: req }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['verification', 'revocations'] }),
   })
 }

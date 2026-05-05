@@ -35,6 +35,21 @@ export declare class Credential {
    */
   prepare(request: ProofRequest, ttlSeconds: number): PreparedToken
   /**
+   * Evaluate each requested predicate against this credential's plaintext
+   * values, without producing a ZK proof. Drives consent UI: shows the
+   * holder which requirements they meet before they approve a presentation.
+   *
+   * Pure-local evaluation — no proof, no network, no value disclosed.
+   *
+   * @param request - The same `ProofRequest` you would pass to `prepare()`.
+   * @returns JSON array `[{ attribute, op, satisfied }]`, one entry per
+   * predicate in request order.
+   * @throws Only on malformed inputs (bad date format, unknown dataset).
+   * Predicate-not-satisfied is reported as `satisfied: false`, not an
+   * error.
+   */
+  evaluatePredicates(request: ProofRequest): string
+  /**
    * Get the Merkle root hash of this credential's attributes.
    *
    * This is the unique fingerprint of the credential content. Used as the
@@ -409,6 +424,25 @@ export interface ProofRequest {
   /** Random challenge string for replay prevention (hex from server). */
   challenge: string
 }
+
+/**
+ * True when the running build expects proving keys to be supplied at
+ * runtime via `setProvingKeyBytes`. Browser/WASM builds return true;
+ * native NAPI builds return false (keys embedded).
+ */
+export declare function provingKeysRequired(): boolean
+
+/**
+ * Hand a serialized Groth16 proving key to the underlying lib. On
+ * native builds keys are embedded so this is a no-op (kept for a
+ * single TS surface). On WASM builds the SDK MUST call this once per
+ * circuit before generating a proof of that type.
+ *
+ * `circuit` is one of `"age_range"`, `"kyc_status"`, `"nationality"`.
+ * `bytes` is the `ark-serialize` compressed proving key produced by
+ * the keygen binary, fetched at runtime by the JS SDK.
+ */
+export declare function setProvingKeyBytes(circuit: string, bytes: Buffer): void
 
 /**
  * Hash data with SHA-256.

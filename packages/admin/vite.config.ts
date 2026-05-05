@@ -7,6 +7,8 @@ import tailwindcss from '@tailwindcss/vite'
 import { nitroV2Plugin } from '@tanstack/nitro-v2-vite-plugin'
 
 const config = defineConfig({
+  // Workspace-root .env (shared VITE_* across services + frontends).
+  envDir: '../..',
   server: {
     allowedHosts: ['.trycloudflare.com', '.sashoush.dev'],
   },

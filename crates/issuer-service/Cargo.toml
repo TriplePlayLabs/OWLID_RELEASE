@@ -39,6 +39,9 @@ axum               = { version = "0.8", features = ["macros"] }
 tower-http         = { version = "0.6", features = ["cors", "trace"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# JWT decoding (id_token validation in OIDC callback)
+jsonwebtoken = "9"
+
 # HTTP client (for external provider APIs)
 reqwest = { version = "0.12", features = ["json"] }
 
@@ -48,6 +51,9 @@ rand.workspace = true
 # Crypto & Proof System (for direct credential issuance)
 owl-crypto       = { path = "../crypto" }
 owl-proof-system = { path = "../proof-system" }
+# zk-circuits — canonical source of EU member-state set used by the
+# nationality Merkle tree. Exposed via GET /eu-countries.
+owl-zk-circuits = { path = "../zk-circuits" }
 
 # OpenAPI
 utoipa.workspace            = true

@@ -1,10 +1,10 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useState } from 'react'
 import { Key, Lock, Loader2, Fingerprint, Shield } from 'lucide-react'
 import { toast } from 'sonner'
-import { Button } from '~/components/ui/button'
+import { Button } from '@owlid/ui/components/ui/button'
 import { StepCard } from '~/components/identity/StepCard'
-import { IdentityHeader } from '~/components/identity/IdentityHeader'
-import { useIdentityContext } from '~/contexts/identity-context'
+import { useIdentity } from '~/hooks/use-identity'
 import { useWebAuthn } from '~/hooks/use-webauthn'
 import { storage } from '@owlid/sdk'
 
@@ -14,15 +14,9 @@ export const Route = createFileRoute('/_identity/login')({
 
 function LoginPage() {
   const navigate = useNavigate()
-  const {
-    credentialId,
-    isRegistered,
-    isLoggedIn,
-    isLoading,
-    setIsLoading,
-    completeLogin,
-    resetDemo,
-  } = useIdentityContext()
+  const { credentialId, isRegistered } = useIdentity()
+  const [isLoading, setIsLoading] = useState(false)
+  const [isLoggedIn, setIsLoggedIn] = useState(false)
 
   const { authenticate } = useWebAuthn()
 
@@ -39,7 +33,7 @@ function LoginPage() {
       const assertion = await authenticate(credentialId)
 
       if (assertion) {
-        completeLogin()
+        setIsLoggedIn(true)
         toast.success('Login Successful', {
           description: 'Identity verified via Passkey.',
         })
@@ -62,17 +56,9 @@ function LoginPage() {
     }
   }
 
-  const handleReset = () => {
-    if (confirm('This will clear your local identity and reset. Continue?')) {
-      resetDemo()
-    }
-  }
-
   return (
-    <>
-      <IdentityHeader onReset={handleReset} />
-
-      <div className="space-y-4 w-full max-w-md mx-auto">
+    <div className="my-auto w-full max-w-md mx-auto px-4 py-8">
+      <div className="space-y-4">
         {/* Step 1: Complete */}
         <StepCard
           isActive={false}
@@ -118,6 +104,6 @@ function LoginPage() {
           description="Connect a provider to create your digital ID."
         />
       </div>
-    </>
+    </div>
   )
 }

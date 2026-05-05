@@ -3,11 +3,17 @@ import { useState } from 'react'
 import { Users, Search, Clock } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
-import { Button } from '~/components/ui/button'
-import { Input } from '~/components/ui/input'
-import { Label } from '~/components/ui/label'
-import { Badge } from '~/components/ui/badge'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@owlid/ui/components/ui/card'
+import { Button } from '@owlid/ui/components/ui/button'
+import { Input } from '@owlid/ui/components/ui/input'
+import { Label } from '@owlid/ui/components/ui/label'
+import { Badge } from '@owlid/ui/components/ui/badge'
 import { useSession } from '~/hooks/use-issuer'
 
 export const Route = createFileRoute('/sessions')({

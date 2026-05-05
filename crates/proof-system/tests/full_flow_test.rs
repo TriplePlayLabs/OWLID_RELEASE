@@ -71,20 +71,20 @@ fn test_complete_credential_flow_with_merkle_proofs() {
     let registry = RevocationRegistry::new();
     let trusted_issuers = vec![issuer.public_key()];
 
-    let verify_result = token.verify(&trusted_issuers, challenge, &registry);
+    let verify_result = token.verify(&trusted_issuers, challenge, &registry, &[]);
     assert!(verify_result.is_ok(), "Token verification failed: {:?}", verify_result.err());
     println!("8. Token verified successfully!");
 
     // Step 6: Verify with wrong challenge (should fail)
     let wrong_challenge = "wrong_challenge";
-    let verify_result = token.verify(&trusted_issuers, wrong_challenge, &registry);
+    let verify_result = token.verify(&trusted_issuers, wrong_challenge, &registry, &[]);
     assert!(verify_result.is_err(), "Token should fail with wrong challenge");
     println!("9. Wrong challenge correctly rejected");
 
     // Step 7: Verify with untrusted issuer (should fail)
     let fake_issuer = KeyPair::generate();
     let untrusted_issuers = vec![fake_issuer.public_key()];
-    let verify_result = token.verify(&untrusted_issuers, challenge, &registry);
+    let verify_result = token.verify(&untrusted_issuers, challenge, &registry, &[]);
     assert!(verify_result.is_err(), "Token should fail with untrusted issuer");
     println!("10. Untrusted issuer correctly rejected");
 
@@ -94,7 +94,7 @@ fn test_complete_credential_flow_with_merkle_proofs() {
         issuer.public_key().to_hex(),
         Some("License suspended".to_string()),
     );
-    let verify_result = token.verify(&trusted_issuers, challenge, &registry);
+    let verify_result = token.verify(&trusted_issuers, challenge, &registry, &[]);
     assert!(verify_result.is_err(), "Token should fail when revoked");
     println!("11. Revoked credential correctly rejected");
 
@@ -103,7 +103,7 @@ fn test_complete_credential_flow_with_merkle_proofs() {
         root_hash,
         issuer.public_key().to_hex(),
     );
-    let verify_result = token.verify(&trusted_issuers, challenge, &registry);
+    let verify_result = token.verify(&trusted_issuers, challenge, &registry, &[]);
     assert!(verify_result.is_ok(), "Token should succeed after reactivation");
     println!("12. Reactivated credential verified successfully");
 
@@ -158,12 +158,12 @@ fn test_attempt_to_forge_token_attributes() {
     let trusted_issuers = vec![issuer.public_key()];
 
     // This should fail because the Merkle proof won't match the forged value
-    let result = forged_token.verify(&trusted_issuers, challenge, &registry);
+    let result = forged_token.verify(&trusted_issuers, challenge, &registry, &[]);
     assert!(result.is_err(), "Forged attribute should be rejected");
     println!("3. Forged attribute correctly detected and rejected");
 
     // Verify original token still works
-    let result = token.verify(&trusted_issuers, challenge, &registry);
+    let result = token.verify(&trusted_issuers, challenge, &registry, &[]);
     assert!(result.is_ok(), "Original token should still work");
     println!("4. Original token still verifies correctly");
 
@@ -232,20 +232,20 @@ fn test_multiple_credentials_same_owner() {
     let trusted1 = vec![issuer1.public_key()];
     let trusted2 = vec![issuer2.public_key()];
 
-    assert!(license_token.verify(&trusted1, challenge, &registry).is_ok());
-    assert!(diploma_token.verify(&trusted2, challenge, &registry).is_ok());
+    assert!(license_token.verify(&trusted1, challenge, &registry, &[]).is_ok());
+    assert!(diploma_token.verify(&trusted2, challenge, &registry, &[]).is_ok());
     println!("3. Both tokens verify correctly with their respective issuers");
 
     // License token should fail with university issuer
-    assert!(license_token.verify(&trusted2, challenge, &registry).is_err());
+    assert!(license_token.verify(&trusted2, challenge, &registry, &[]).is_err());
     // Diploma token should fail with DMV issuer
-    assert!(diploma_token.verify(&trusted1, challenge, &registry).is_err());
+    assert!(diploma_token.verify(&trusted1, challenge, &registry, &[]).is_err());
     println!("4. Cross-issuer verification correctly fails");
 
     // Both should work with combined trusted issuers list
     let all_trusted = vec![issuer1.public_key(), issuer2.public_key()];
-    assert!(license_token.verify(&all_trusted, challenge, &registry).is_ok());
-    assert!(diploma_token.verify(&all_trusted, challenge, &registry).is_ok());
+    assert!(license_token.verify(&all_trusted, challenge, &registry, &[]).is_ok());
+    assert!(diploma_token.verify(&all_trusted, challenge, &registry, &[]).is_ok());
     println!("5. Both tokens verify with combined trusted issuer list");
 
     println!("\n=== Multiple credentials test passed! ===");

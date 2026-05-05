@@ -1,6 +1,11 @@
-import { useState } from 'react'
-import { CheckSquare, Square, Shield, X, User } from 'lucide-react'
-import { PRESENTATION_PREDICATES, type PresentationPredicate } from '@owlid/sdk'
+import { useEffect, useState } from 'react'
+import { CheckSquare, Square, Shield, X, User, Loader2 } from 'lucide-react'
+import type { PresentationPredicate } from '@owlid/sdk'
+import { Button } from '@owlid/ui/components/ui/button'
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@owlid/ui/components/ui/card'
+import { Input } from '@owlid/ui/components/ui/input'
+import { Label } from '@owlid/ui/components/ui/label'
+import { listPredicates, type PredicateInfo } from '../api'
 
 interface PredicateSelectorProps {
   onSubmit: (predicates: PresentationPredicate[], verifierName: string) => void
@@ -10,99 +15,123 @@ interface PredicateSelectorProps {
 export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [verifierName, setVerifierName] = useState('Verifier')
+  const [registry, setRegistry] = useState<PredicateInfo[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    listPredicates()
+      .then((preds) => {
+        if (!cancelled) setRegistry(preds)
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const toggle = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev)
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
     })
   }
 
   const handleSubmit = () => {
-    const predicates = PRESENTATION_PREDICATES.filter((p) => selected.has(p.id))
+    if (!registry) return
+    const predicates: PresentationPredicate[] = registry
+      .filter((p) => selected.has(p.id))
+      .map((p) => ({ id: p.id, label: p.label }))
     onSubmit(predicates, verifierName.trim() || 'Verifier')
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold flex items-center gap-2">
+    <Card>
+      <CardHeader className="flex-row items-center justify-between space-y-0">
+        <CardTitle className="flex items-center gap-2">
           <Shield className="w-5 h-5 text-blue-400" />
           Select Verification Checks
-        </h3>
-        <button
-          onClick={onCancel}
-          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
-          aria-label="Cancel"
-        >
-          <X className="w-5 h-5" />
-        </button>
-      </div>
-
-      <p className="text-sm text-zinc-400">
-        Choose which attributes to verify. The holder will see these on their consent screen.
-      </p>
-
-      {/* Verifier name input */}
-      <div className="space-y-1.5">
-        <label htmlFor="verifier-name" className="text-sm text-zinc-400 flex items-center gap-1.5">
-          <User className="w-3.5 h-3.5" />
-          Your display name
-        </label>
-        <input
-          id="verifier-name"
-          type="text"
-          value={verifierName}
-          onChange={(e) => setVerifierName(e.target.value)}
-          placeholder="Verifier"
-          className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-white/10 text-sm focus:outline-none focus:border-blue-500/50 transition-colors placeholder:text-zinc-600"
-        />
-        <p className="text-xs text-zinc-600">
-          Shown on the holder's consent screen so they know who is requesting
+        </CardTitle>
+        <Button variant="ghost" size="icon" onClick={onCancel} aria-label="Cancel">
+          <X className="w-4 h-4" />
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Choose which attributes to verify. The holder will see these on their consent screen.
         </p>
-      </div>
 
-      {/* Predicate checkboxes */}
-      <div className="rounded-xl border border-white/10 bg-zinc-900 overflow-hidden divide-y divide-white/5">
-        {PRESENTATION_PREDICATES.map((predicate) => {
-          const isChecked = selected.has(predicate.id)
-          return (
-            <button
-              key={predicate.id}
-              onClick={() => toggle(predicate.id)}
-              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-800 transition-colors text-left"
-            >
-              {isChecked ? (
-                <CheckSquare className="w-5 h-5 text-blue-400 shrink-0" />
-              ) : (
-                <Square className="w-5 h-5 text-zinc-600 shrink-0" />
-              )}
-              <span className={`text-sm ${isChecked ? 'text-zinc-200' : 'text-zinc-400'}`}>
-                {predicate.label}
-              </span>
-            </button>
-          )
-        })}
-      </div>
+        <div className="space-y-2">
+          <Label htmlFor="verifier-name" className="flex items-center gap-1.5">
+            <User className="w-3.5 h-3.5" />
+            Your display name
+          </Label>
+          <Input
+            id="verifier-name"
+            type="text"
+            value={verifierName}
+            onChange={(e) => setVerifierName(e.target.value)}
+            placeholder="Verifier"
+          />
+          <p className="text-xs text-muted-foreground">
+            Shown on the holder's consent screen so they know who is requesting
+          </p>
+        </div>
 
-      <p className="text-xs text-zinc-500 text-center">
-        {selected.size} check{selected.size !== 1 ? 's' : ''} selected
-      </p>
+        {error && <p className="text-sm text-destructive">Failed to load predicates: {error}</p>}
 
-      {/* Submit */}
-      <button
-        onClick={handleSubmit}
-        disabled={selected.size === 0}
-        className="w-full flex items-center justify-center gap-2 p-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        <Shield className="w-4 h-4" />
-        Send Verification Request
-      </button>
-    </div>
+        {!registry && !error && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Loading predicates…
+          </div>
+        )}
+
+        {registry && (
+          <div className="overflow-hidden rounded-md border">
+            {registry.map((predicate, idx) => {
+              const isChecked = selected.has(predicate.id)
+              return (
+                <button
+                  type="button"
+                  key={predicate.id}
+                  onClick={() => toggle(predicate.id)}
+                  className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted/50 ${
+                    idx > 0 ? 'border-t' : ''
+                  }`}
+                >
+                  {isChecked ? (
+                    <CheckSquare className="h-5 w-5 shrink-0 text-blue-400" />
+                  ) : (
+                    <Square className="h-5 w-5 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className={`text-sm ${isChecked ? '' : 'text-muted-foreground'}`}>
+                    {predicate.label}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        <p className="text-center text-xs text-muted-foreground">
+          {selected.size} check{selected.size !== 1 ? 's' : ''} selected
+        </p>
+      </CardContent>
+      <CardFooter>
+        <Button
+          onClick={handleSubmit}
+          disabled={selected.size === 0 || !registry}
+          className="w-full"
+        >
+          <Shield className="w-4 h-4" />
+          Send Verification Request
+        </Button>
+      </CardFooter>
+    </Card>
   )
 }

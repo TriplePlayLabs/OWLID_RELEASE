@@ -1,14 +1,20 @@
 //! Provider registry for managing digital identity providers
 
-use super::traits::{DigitalIdentityProvider, ProviderInfoExtended};
-use std::collections::HashMap;
-use std::sync::Arc;
+use super::traits::{DigitalIdentityProvider, ProviderInfo};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
-/// Registry for managing multiple identity providers
+/// Registry for managing multiple identity providers.
 ///
 /// Stores provider instances and provides lookup by ID.
+///
+/// `disabled` is the runtime override controlled by the operator via
+/// `POST /admin/providers/{id}/{enable,disable}`. The set is loaded from
+/// the `provider_settings` table at boot and updated atomically when an
+/// admin flips a provider — handlers see the change without a restart.
 pub struct ProviderRegistry {
     providers: HashMap<String, Arc<dyn DigitalIdentityProvider>>,
+    disabled: Arc<RwLock<HashSet<String>>>,
 }
 
 impl ProviderRegistry {
@@ -16,6 +22,7 @@ impl ProviderRegistry {
     pub fn new() -> Self {
         Self {
             providers: HashMap::new(),
+            disabled: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -31,16 +38,50 @@ impl ProviderRegistry {
         self.providers.insert(id, provider);
     }
 
-    /// Get a provider by ID
+    /// Look up a provider by ID. Returns the instance regardless of the
+    /// enabled flag — callers gating session-creation flows should
+    /// additionally consult `is_enabled` so disabled providers fail closed.
     pub fn get(&self, provider_id: &str) -> Option<Arc<dyn DigitalIdentityProvider>> {
         self.providers.get(provider_id).cloned()
     }
 
-    /// List all registered providers
-    pub fn list(&self) -> Vec<ProviderInfoExtended> {
+    /// True when the provider is registered AND not in the disabled set.
+    pub fn is_enabled(&self, provider_id: &str) -> bool {
+        if !self.contains(provider_id) {
+            return false;
+        }
+        let d = self.disabled.read().expect("disabled lock poisoned");
+        !d.contains(provider_id)
+    }
+
+    /// Replace the disabled set in one shot. Used at boot when loading
+    /// persisted state from `provider_settings`.
+    pub fn set_disabled(&self, disabled_ids: impl IntoIterator<Item = String>) {
+        let mut d = self.disabled.write().expect("disabled lock poisoned");
+        d.clear();
+        d.extend(disabled_ids);
+    }
+
+    /// Flip a single provider on/off in the in-memory set. Persistence is
+    /// the caller's responsibility.
+    pub fn set_enabled(&self, provider_id: &str, enabled: bool) {
+        let mut d = self.disabled.write().expect("disabled lock poisoned");
+        if enabled {
+            d.remove(provider_id);
+        } else {
+            d.insert(provider_id.to_string());
+        }
+    }
+
+    /// List all registered providers with their current enabled state.
+    pub fn list(&self) -> Vec<ProviderInfo> {
+        let disabled = self.disabled.read().expect("disabled lock poisoned");
         self.providers
             .values()
-            .map(|p| ProviderInfoExtended::from_provider(p.as_ref()))
+            .map(|p| {
+                let enabled = !disabled.contains(p.provider_id());
+                ProviderInfo::from_provider(p.as_ref(), enabled)
+            })
             .collect()
     }
 
@@ -49,7 +90,7 @@ impl ProviderRegistry {
         self.providers.keys().cloned().collect()
     }
 
-    /// Check if a provider is registered
+    /// Check if a provider is registered (regardless of enabled state).
     pub fn contains(&self, provider_id: &str) -> bool {
         self.providers.contains_key(provider_id)
     }
@@ -74,7 +115,7 @@ impl Default for ProviderRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ProviderInfo, VerificationLevel};
+    use crate::models::{ProviderDescriptor, VerificationLevel};
     use crate::normalizer::RawProviderClaims;
     use crate::provider::{ProviderFlowType, VerificationStart};
     use async_trait::async_trait;
@@ -94,8 +135,8 @@ mod tests {
             ProviderFlowType::FormBased
         }
 
-        fn info(&self) -> ProviderInfo {
-            ProviderInfo {
+        fn info(&self) -> ProviderDescriptor {
+            ProviderDescriptor {
                 id: self.id.clone(),
                 name: "Test Provider".to_string(),
                 description: "A test provider".to_string(),
@@ -139,6 +180,7 @@ mod tests {
         // List providers
         let list = registry.list();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].base.id, "test-1");
+        assert_eq!(list[0].descriptor.id, "test-1");
+        assert!(list[0].enabled);
     }
 }

@@ -1,9 +1,21 @@
-const VERIFICATION_URL = import.meta.env.VITE_VERIFICATION_URL || 'http://localhost:8000'
-const API_KEY = import.meta.env.VITE_API_KEY || 'dev_key_12345678901234567890123456789012'
+import { apiKeyHeaders, getApiKey, getVerificationUrl } from '@owlid/sdk'
 
-const headers = {
+const VERIFICATION_URL = getVerificationUrl()
+const API_KEY = getApiKey()
+if (!API_KEY) {
+  console.warn(
+    "[verifier-app] No API key configured. Call `configure({ apiKey: '...' })` from @owlid/sdk at app startup, or set VITE_API_KEY at build time. Verification calls will be rejected.",
+  )
+}
+
+// Verification service authenticates with `Authorization: Bearer <key>`,
+// not `X-API-Key`. Routing the auth header through `apiKeyHeaders` keeps
+// the verifier-app aligned with the rest of the SDK clients and avoids
+// a CORS preflight reject (the backend's CORS allow-list only carries
+// the canonical headers — content-type, authorization, accept, x-correlation-id).
+const headers: Record<string, string> = {
   'Content-Type': 'application/json',
-  'X-API-Key': API_KEY,
+  ...apiKeyHeaders(API_KEY),
 }
 
 export interface VerifyResult {
@@ -52,4 +64,19 @@ export async function healthCheck(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+export interface PredicateInfo {
+  id: string
+  attribute: string
+  label: string
+  op: 'GreaterOrEqual' | 'InSet'
+  value: string
+}
+
+/** List every predicate the system can prove. Public, no auth required. */
+export async function listPredicates(): Promise<PredicateInfo[]> {
+  const resp = await fetch(`${VERIFICATION_URL}/predicates`)
+  if (!resp.ok) throw new Error(`Failed to fetch predicates: ${resp.status}`)
+  return resp.json()
 }

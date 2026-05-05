@@ -262,3 +262,55 @@ fn test_compact_vs_json_size() {
         json_str.len()
     );
 }
+
+/// Regression: sibling level/position must survive compact round-trip when
+/// the credential has more than 16 attributes. An earlier revision packed
+/// both into a single byte (4 bits each) and silently truncated positions
+/// ≥16, so verification of full-identity credentials failed with
+/// "Invalid proof: Proof verification failed".
+#[test]
+fn test_compact_round_trip_many_attributes_verifies() {
+    use owl_proof_system::RevocationRegistry;
+
+    let issuer = KeyPair::generate();
+    let owner = KeyPair::generate();
+
+    let mut attrs = BTreeMap::new();
+    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
+    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
+    // 24 application attributes — total 26, well past the 16-leaf bit-pack
+    // boundary. Mirrors what `claims_to_attributes` builds for a real
+    // identity credential.
+    for i in 0..24 {
+        attrs.insert(format!("attr{:02}", i), json!(format!("value{}", i)));
+    }
+    assert!(attrs.len() > 16, "test must exceed the 4-bit position limit");
+
+    let doc = Document::new(attrs).unwrap();
+    let mut proof_doc = doc.issue(&issuer);
+
+    // Disclose one application attribute alongside the mandatory
+    // issuerKey/ownerKey. The sibling set then includes positions ≥16,
+    // which is what the old compact encoding silently truncated.
+    let request = ProofRequest {
+        disclose: vec![],
+        predicates: vec![],
+        trusted_issuers: vec![issuer.public_key().to_hex()],
+        challenge: "many_attrs".to_string(),
+    };
+
+    let token = Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
+    let registry = RevocationRegistry::new();
+
+    // Sanity: the freshly generated token must verify before round-tripping.
+    // If this fails, the bug is in merkle generation, not compact encoding.
+    token
+        .verify(&[issuer.public_key()], "many_attrs", &registry, &[])
+        .expect("freshly generated token must verify");
+
+    let compact = token.to_compact().unwrap();
+    let restored = Token::from_compact(&compact).unwrap();
+    restored
+        .verify(&[issuer.public_key()], "many_attrs", &registry, &[])
+        .expect("compact round-trip must preserve sibling positions for >16-attribute credentials");
+}

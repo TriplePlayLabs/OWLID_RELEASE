@@ -766,4 +766,6 @@ module.exports.PublicKey = nativeBinding.PublicKey
 module.exports.Signature = nativeBinding.Signature
 module.exports.Token = nativeBinding.Token
 module.exports.blake3 = nativeBinding.blake3
+module.exports.provingKeysRequired = nativeBinding.provingKeysRequired
+module.exports.setProvingKeyBytes = nativeBinding.setProvingKeyBytes
 module.exports.sha256 = nativeBinding.sha256

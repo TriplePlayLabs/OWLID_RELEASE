@@ -5,8 +5,51 @@ license.workspace = true
 name              = "owl-zk-circuits"
 version.workspace = true
 
-[dependencies]
-# ZK proving system
+# Three-axis split:
+#
+#   - `verifier` (default): exposes `verify(...)` + the prepared verifying
+#     keys. Always on. Tiny binary footprint (VKs are KBs).
+#   - `prover`: exposes `prove(...)` + setup(). Pulls in the proving keys.
+#     Off for verifier-only deployments (verification-service) so they
+#     don't link megabytes of PK bytes.
+#   - `prover-keys-embedded` (implies `prover`): bakes the proving-key
+#     `.bin` artifacts into the binary via `include_bytes!`. The right
+#     choice for native targets where there is no network or filesystem
+#     story for fetching keys.
+#   - `prover-keys-external` (implies `prover`): leaves the PKs out of
+#     the binary; the host must hand them in via
+#     `set_proving_key_bytes(circuit, &bytes)` before the first proof.
+#     Used by the WASM build so the wallet PWA can lazy-fetch + cache
+#     PKs from its own origin instead of bundling several MB of keys
+#     into the WASM blob.
+#
+# The keygen binary (src/bin/keygen.rs) is gated behind `prover` so the
+# verifier-only build doesn't even try to compile it.
+[features]
+default              = ["verifier", "prover-keys-embedded"]
+prover-keys-embedded = []
+prover-keys-external = []
+verifier             = []
+# Expose the raw proving-key byte slices (`prover_key_bytes::lookup`) so
+# the verifier service can serve them at `/zk-keys/<circuit>.pk.bin`
+# for the wallet to fetch on demand. Does NOT pull in the proving-key
+# deserializer or any prover code path — only the bytes via
+# `include_bytes!`.
+serve-prover-keys = []
+
+[[bin]]
+name = "keygen"
+path = "src/bin/keygen.rs"
+# Intentionally NO required-features. Bootstrap path is
+# `cargo run --bin keygen --no-default-features` so the lib's
+# `include_bytes!` macros (which need files keygen is about to
+# create) are not pulled in during that first compile.
+
+# Native (non-wasm) gets the default arkworks features — parallel is on,
+# proving runs across rayon's global thread pool. This is the path the
+# Rust services + the .node addon take, both of which have a real
+# multi-threaded runtime.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ark-bls12-381         = "0.5"
 ark-crypto-primitives = { version = "0.5", features = ["r1cs"] }
 ark-ff                = "0.5"
@@ -16,6 +59,38 @@ ark-relations         = "0.5"
 ark-serialize         = "0.5"
 ark-snark             = "0.5"
 ark-std               = "0.5"
+
+# Wasm (browser via @napi-rs/wasm-runtime) strips the `parallel` feature
+# everywhere arkworks would otherwise pull rayon in. Even though
+# `wasm32-wasip1-threads` and the runtime expose WASI threads + Web
+# Workers, rayon's global pool initialisation hits
+# `unreachable_unchecked()` inside `rayon-core/job.rs` when scheduled
+# from the napi entrypoints — proving panics on the first job dispatch.
+# Single-threaded arkworks is plenty for our circuit sizes; we keep the
+# threading split clean by using target-specific dependency tables here
+# instead of feature flags so neither side has to remember to opt in.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ark-bls12-381 = { version = "0.5", default-features = false, features = [
+  "std",
+  "curve",
+] }
+ark-crypto-primitives = { version = "0.5", default-features = false, features = [
+  "std",
+  "r1cs",
+] }
+ark-ff = { version = "0.5", default-features = false, features = ["std"] }
+ark-groth16 = { version = "0.5", default-features = false, features = ["std"] }
+ark-r1cs-std = { version = "0.5", default-features = false, features = ["std"] }
+ark-relations = { version = "0.5", default-features = false, features = [
+  "std",
+] }
+ark-serialize = { version = "0.5", default-features = false, features = [
+  "std",
+] }
+ark-snark = { version = "0.5", default-features = false }
+ark-std = { version = "0.5", default-features = false, features = ["std"] }
+
+[dependencies]
 
 # Serialization
 hex.workspace        = true

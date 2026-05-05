@@ -48,7 +48,7 @@ proptest! {
         let registry = RevocationRegistry::new();
         let trusted = vec![issuer.public_key()];
 
-        prop_assert!(token.verify(&trusted, challenge, &registry).is_ok());
+        prop_assert!(token.verify(&trusted, challenge, &registry, &[]).is_ok());
     }
 
     /// Revoked credentials always fail verification
@@ -81,11 +81,11 @@ proptest! {
 
         // Verify works before revocation
         let trusted = vec![issuer.public_key()];
-        prop_assert!(token.verify(&trusted, challenge, &registry).is_ok());
+        prop_assert!(token.verify(&trusted, challenge, &registry, &[]).is_ok());
 
         // Revoke and verify fails
         registry.revoke(root_hash, issuer.public_key().to_hex(), Some(reason));
-        prop_assert!(token.verify(&trusted, challenge, &registry).is_err());
+        prop_assert!(token.verify(&trusted, challenge, &registry, &[]).is_err());
     }
 
     /// Wrong challenge always fails
@@ -119,9 +119,9 @@ proptest! {
         let trusted = vec![issuer.public_key()];
 
         // Correct challenge passes
-        prop_assert!(token.verify(&trusted, &challenge1, &registry).is_ok());
+        prop_assert!(token.verify(&trusted, &challenge1, &registry, &[]).is_ok());
         // Wrong challenge fails
-        prop_assert!(token.verify(&trusted, &challenge2, &registry).is_err());
+        prop_assert!(token.verify(&trusted, &challenge2, &registry, &[]).is_err());
     }
 }
 
@@ -191,6 +191,6 @@ proptest! {
         // Verify the deserialized token
         let registry = RevocationRegistry::new();
         let trusted = vec![issuer.public_key()];
-        prop_assert!(deserialized.verify(&trusted, "challenge", &registry).is_ok());
+        prop_assert!(deserialized.verify(&trusted, "challenge", &registry, &[]).is_ok());
     }
 }

@@ -144,7 +144,7 @@ dependency or import from the monorepo.
 ### Create Keypairs
 
 ```typescript
-import { KeyPair } from '@owlid/sdk'
+import { KeyPair } from '@owlid/sdk/native'
 
 // Generate a new Ed25519 keypair
 const issuerKp = KeyPair.generate()
@@ -162,7 +162,7 @@ console.log(pubkey.toHex()) // 64-char hex string
 ### Create and Issue a Credential
 
 ```typescript
-import { Document } from '@owlid/sdk'
+import { Document } from '@owlid/sdk/native'
 
 // Build a document with identity attributes
 const doc = Document.fromJson(
@@ -186,7 +186,8 @@ const json = proofDoc.toJson()
 ### Generate a Selective-Disclosure Token
 
 ```typescript
-import { ProofDocument, type ProofRequest } from '@owlid/sdk'
+import { ProofDocument } from '@owlid/sdk/native'
+import type { ProofRequest } from '@owlid/sdk'
 
 // Restore the credential
 const proofDoc = ProofDocument.fromJson(json)
@@ -202,14 +203,14 @@ const request: ProofRequest = {
 // Generate token (signs with Ed25519)
 const token = proofDoc.generateProof(request, ownerKp, 3600)
 
-// Compact encoding for QR codes (NID1:... prefix, ~500-1500 chars)
+// Compact encoding for QR codes (OID1:... prefix, ~500-1500 chars)
 const compact = token.toCompact()
 ```
 
 ### Verify a Token
 
 ```typescript
-import { Token, PublicKey } from '@owlid/sdk'
+import { Token, PublicKey } from '@owlid/sdk/native'
 
 // Decode
 const token = Token.fromCompact(compact)
@@ -232,7 +233,8 @@ console.log(disclosed.nationality) // 'NL'
 For hardware-backed signatures (passkeys), use the prepare/finalize flow:
 
 ```typescript
-import { Token, type WebAuthnSignatureData } from '@owlid/sdk'
+import { Token } from '@owlid/sdk/native'
+import type { WebAuthnSignatureData } from '@owlid/sdk'
 import { base64urlToBuffer, bufferToBase64 } from '@owlid/sdk'
 
 // Phase 1: prepare token payload (no signature yet)
@@ -322,7 +324,7 @@ token.verify(
 ### Compact Encoding
 
 ```rust
-// Encode: JSON -> CBOR -> deflate -> Base45 -> "NID1:" prefix
+// Encode: JSON -> CBOR -> deflate -> Base45 -> "OID1:" prefix
 let compact: String = token.to_compact().unwrap();
 
 // Decode
@@ -358,6 +360,11 @@ of birth.
 
 ### Nationality Set Membership (InSet)
 
+`InSet` operates against a **named, registered dataset** — the holder ships
+the dataset name (e.g. `"eu"`) and the verifier recomputes the canonical
+Merkle root from the same registered set. The holder can no longer pick the
+country list themselves.
+
 ```typescript
 const request: ProofRequest = {
   disclose: [],
@@ -365,7 +372,7 @@ const request: ProofRequest = {
     {
       attribute: 'nationality',
       op: 'InSet',
-      value: JSON.stringify(['NL', 'DE', 'FR', 'BE']),
+      value: JSON.stringify('eu'),
     },
   ],
   trustedIssuers: [issuerPk.toHex()],
@@ -373,8 +380,19 @@ const request: ProofRequest = {
 }
 ```
 
-The verifier learns "nationality is in the EU subset" without learning the
-specific country.
+The verifier learns "nationality is in the EU set" without learning the
+specific country. The `eu` dataset normalizes input — alpha-2 (`NL`),
+alpha-3 (`NLD`), country name (`Netherlands`), and demonym (`Dutch`) all
+prove identically.
+
+The list of supported datasets and their contents lives on the
+**verification service** (the verifier already pins proofs against this
+registry, so it is the natural source of truth):
+
+```
+GET /circuit-data           → [{ "name": "eu", "version": 1 }, …]
+GET /circuit-data/eu        → { "name": "eu", "version": 1, "items": ["AT", "BE", …] }
+```
 
 ### Combining Disclosure and Predicates
 
@@ -383,13 +401,29 @@ const request: ProofRequest = {
   disclose: ['firstName'], // reveal name
   predicates: [
     { attribute: 'dateOfBirth', op: 'GreaterOrEqual', value: '21' },
-    { attribute: 'nationality', op: 'InSet', value: JSON.stringify(['NL', 'DE']) },
+    { attribute: 'nationality', op: 'InSet', value: JSON.stringify('eu') },
   ],
   trustedIssuers: [issuerPk.toHex()],
   challenge: crypto.randomUUID(),
 }
-// Result: verifier sees firstName, knows age >= 21 and nationality in {NL, DE}
+// Result: verifier sees firstName, knows age >= 21 and nationality is in the EU set.
 ```
+
+Apps SHOULD fetch the predicate registry from the verification service at
+startup instead of hard-coding ids and dataset names:
+
+```
+GET /predicates → [
+  { "id": "age:>=18",        "attribute": "dateOfBirth",       "label": "Age 18 or older",
+    "op": "GreaterOrEqual",  "value": "18" },
+  { "id": "nationality:eu",  "attribute": "nationality",       "label": "EU citizenship",
+    "op": "InSet",           "value": "\"eu\"" },
+  …
+]
+```
+
+`value` is the JSON-encoded wire shape — drop it straight onto a
+`PredicateRequest.value`.
 
 In Rust, predicates use the `PredicateRequest` struct:
 
@@ -400,12 +434,12 @@ let predicates = vec![
     PredicateRequest {
         attribute: "dateOfBirth".into(),
         op: PredicateOp::GreaterOrEqual,
-        value: json!("18"),
+        value: json!(18),
     },
     PredicateRequest {
         attribute: "nationality".into(),
         op: PredicateOp::InSet,
-        value: json!(["NL", "DE", "FR"]),
+        value: json!("eu"),
     },
 ];
 ```
@@ -414,7 +448,9 @@ let predicates = vec![
 
 ## 7. Verification Service API
 
-All endpoints require an `X-API-Key` header unless noted otherwise.
+All endpoints require an `Authorization: Bearer <api-key>` header unless noted otherwise.
+
+For the full route list see [`crates/verification-service/README.md`](../crates/verification-service/README.md) or `http://localhost:8000/swagger-ui/`.
 
 ### Public Endpoints (no auth)
 
@@ -446,14 +482,15 @@ All endpoints require an `X-API-Key` header unless noted otherwise.
 
 ```bash
 curl -X POST http://localhost:8000/verify \
-  -H "X-API-Key: dev_key_12345678901234567890123456789012" \
+  -H "Authorization: Bearer owlid_sk_test_dev0000000000000000000000000000000000000000" \
   -H "Content-Type: application/json" \
   -d '{
-    "token": "NID1:...",
-    "challenge": "the-challenge-used-during-generation",
-    "trusted_issuers": ["<issuer-public-key-hex>"]
+    "token": "OID1:...",
+    "challenge": "the-challenge-used-during-generation"
   }'
 ```
+
+Trusted issuers are managed server-side (`POST /trusted-issuers`); the verifier consults the registry — clients do not pass them per-request.
 
 ### Example: Register a Trusted Issuer
 
@@ -461,9 +498,9 @@ curl -X POST http://localhost:8000/verify \
 # Get the issuer's public key from the issuer service
 KEY=$(curl -s http://localhost:8001/issuer-info | jq -r '.publicKey')
 
-# Register it with the verification service
+# Register it with the verification service (admin API key required)
 curl -X POST http://localhost:8000/trusted-issuers \
-  -H "X-API-Key: dev_key_12345678901234567890123456789012" \
+  -H "Authorization: Bearer owlid_sk_test_dev0000000000000000000000000000000000000000" \
   -H "Content-Type: application/json" \
   -d "{\"public_key\": \"$KEY\", \"name\": \"OwlID Issuer\"}"
 ```

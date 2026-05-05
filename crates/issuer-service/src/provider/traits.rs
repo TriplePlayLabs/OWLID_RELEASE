@@ -3,7 +3,7 @@
 //! This module defines the core abstraction for identity verification providers.
 
 use crate::error::Result;
-use crate::models::{ProviderInfo, VerificationLevel};
+use crate::models::{ProviderDescriptor, VerificationLevel};
 use crate::normalizer::RawProviderClaims;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -211,7 +211,7 @@ pub trait DigitalIdentityProvider: Send + Sync {
     fn provider_type(&self) -> ProviderFlowType;
 
     /// Provider metadata for listing/display
-    fn info(&self) -> ProviderInfo;
+    fn info(&self) -> ProviderDescriptor;
 
     /// The assurance level of verification this provider offers
     fn verification_level(&self) -> VerificationLevel;
@@ -292,22 +292,33 @@ pub trait DigitalIdentityProvider: Send + Sync {
     }
 }
 
-/// Extended provider info including flow type
+/// Public provider record exposed over OpenAPI (`GET /providers`).
+///
+/// Combines the static `ProviderDescriptor` from the trait with runtime
+/// state — flow type, verification level, and the operator-controlled
+/// `enabled` flag (toggled via `POST /admin/providers/{id}/{enable,disable}`
+/// and persisted in the `provider_settings` table).
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderInfoExtended {
+pub struct ProviderInfo {
     #[serde(flatten)]
-    pub base: ProviderInfo,
+    pub descriptor: ProviderDescriptor,
     pub flow_type: ProviderFlowType,
     pub verification_level: VerificationLevel,
+    /// `false` if the operator has disabled this provider; consumers must
+    /// not start a new verification session against it.
+    pub enabled: bool,
 }
 
-impl ProviderInfoExtended {
-    pub fn from_provider(provider: &dyn DigitalIdentityProvider) -> Self {
+impl ProviderInfo {
+    /// Build from a registered provider. `enabled` is supplied by the
+    /// registry, which owns the runtime disabled-set.
+    pub fn from_provider(provider: &dyn DigitalIdentityProvider, enabled: bool) -> Self {
         Self {
-            base: provider.info(),
+            descriptor: provider.info(),
             flow_type: provider.provider_type(),
             verification_level: provider.verification_level(),
+            enabled,
         }
     }
 }

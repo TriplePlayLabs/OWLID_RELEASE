@@ -7,3 +7,39 @@ target/
 .DS_Store
 examples/
 *.log
+
+# Don't ship host install/build artifacts. Each Docker stage installs and
+# builds inside the image. Excluding these here makes local `docker build`
+# match Cloud Build (which uses .gitignore and so already excludes them).
+**/node_modules/
+**/.output/
+**/.nuxt/
+**/.nitro/
+**/.cache/
+**/.vinxi/
+**/.tanstack/
+**/.turbo/
+**/.next/
+**/dist/
+
+# Native-sdk binaries are built inside Dockerfile.native-sdk-builder, not
+# copied from the host. Drop the host-built artifacts so they don't leak in.
+packages/native-sdk/*.node
+packages/native-sdk/*.wasm
+packages/native-sdk/*.wasi.cjs
+packages/native-sdk/*.wasi-browser.js
+packages/native-sdk/wasi-worker*.mjs
+packages/native-sdk/npm/
+
+# Groth16 proving keys are generated fresh inside Dockerfile.native-sdk-builder
+# (just generate-zk-keys equivalent). Host copies are untracked + might be stale.
+crates/zk-circuits/artifacts/
+
+# Terraform
+deploy/gcp/terraform/.terraform/
+deploy/gcp/terraform/*.tfstate*
+deploy/gcp/.env.gcp
+
+# IDE
+.idea/
+.vscode/

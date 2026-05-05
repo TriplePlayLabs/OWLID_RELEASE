@@ -1,95 +1,161 @@
-# owl-id
+# @owlid/native-sdk
 
-Privacy-preserving identity SDK for Node.js and browsers using napi-rs.
+Cryptographic primitives for OwlID — Rust core compiled to native (NAPI-RS) for Node.js and to WASM for browsers.
 
-## Features
-
-- **Native Performance**: 10-100x faster than WASM in Node.js
-- **Cross-Platform**: Works on macOS, Linux, Windows (x86_64 and ARM64)
-- **TypeScript Support**: Auto-generated type definitions
-- **Zero-Knowledge Proofs**: Selective disclosure using Merkle proofs
-- **Ed25519 Signatures**: Fast and secure cryptographic signatures
-- **No Dependencies**: Self-contained native addon
-
-## Installation
+Most apps consume this through `@owlid/sdk` which re-exports the same surface from `@owlid/sdk` and `@owlid/sdk/native`. Install this package directly only when you need it without the rest of the SDK.
 
 ```bash
-npm install owl-id
+bun add @owlid/native-sdk
 ```
+
+## Platform support
+
+NAPI prebuilds (auto-selected via optional dependencies):
+
+| Family   | Targets                                                  |
+| -------- | -------------------------------------------------------- |
+| Linux    | x64 (gnu/musl), arm64 (gnu/musl), armv7 gnueabihf        |
+| macOS    | x64 (Intel), arm64 (Apple Silicon)                       |
+| Windows  | x64, arm64, i686                                         |
+| Android  | arm64, arm                                               |
+| FreeBSD  | x64                                                      |
+| Browsers | `wasm32-wasip1-threads` (loaded via `wasm-runtime` shim) |
+
+Node.js ≥ 18 required for native; bundlers must support top-level await + WebAssembly for the browser build (`vite-plugin-wasm` + `vite-plugin-top-level-await` recommended).
+
+## Public surface
+
+All classes/functions are typed via the auto-generated `index.d.ts`. JSDoc on every method.
+
+### Classes
+
+| Symbol          | Purpose                                                                  |
+| --------------- | ------------------------------------------------------------------------ |
+| `KeyPair`       | Ed25519 keypair — `generate`, `fromHex`, `sign`, `publicKey`             |
+| `PublicKey`     | Ed25519 public key — `fromHex`, `toHex`, `verify`                        |
+| `Signature`     | Ed25519 signature wrapper — `fromHex`, `toHex`                           |
+| `Document`      | Unsigned attribute container — `fromJson`, `issue(issuerKeypair)`        |
+| `Credential`    | Signed credential — `prove`, `prepare`, `rootHash`, `toJson`, `fromJson` |
+| `Token`         | Verifiable proof token — `toCompact`, `fromCompact`, `verify`, …         |
+| `PreparedToken` | Two-phase signing intermediate (WebAuthn / ring sig)                     |
+
+### Free functions
+
+- `blake3(data: Buffer): string` — 256-bit BLAKE3 hex digest
+- `sha256(data: Buffer): string` — 256-bit SHA-256 hex digest
+
+### Types
+
+- `ProofRequest` — `{ disclose, predicates, trustedIssuers, challenge }`
+- `PredicateRequest` — `{ attribute, op, value }` where `op ∈ "GreaterOrEqual" | "InSet"`
+- `WebAuthnSignatureData` — `{ authenticatorData, clientDataJson, signature }` (base64)
 
 ## Usage
 
-```typescript
-import { KeyPair, Document, InfoRequest } from 'owl-id'
+### Issue a credential
 
-// Generate a keypair
-const issuerKey = KeyPair.generate()
-const ownerKey = KeyPair.generate()
+```ts
+import { Document, KeyPair } from '@owlid/native-sdk'
 
-// Create and issue a document
-const doc = Document.new(
+const issuer = KeyPair.generate()
+const owner = KeyPair.generate()
+
+const doc = Document.fromJson(
   JSON.stringify({
-    issuerKey: issuerKey.publicKey().toHex(),
-    ownerKey: ownerKey.publicKey().toHex(),
-    name: 'Alice',
-    age: 25,
-    email: 'alice@example.com',
+    issuerKey: issuer.publicKey().toHex(),
+    ownerKey: owner.publicKey().toHex(),
+    firstName: 'Alice',
+    dateOfBirth: '1990-05-15',
+    nationality: 'NL',
   }),
 )
 
-const proofDoc = doc.issue(issuerKey)
-console.log('Root hash:', proofDoc.rootHash())
-
-// Create a token with selective disclosure
-const infoRequest: InfoRequest = {
-  mandatory: ['age'], // Only disclose age, not name or email
-  optional: [],
-  trustedIssuers: [issuerKey.publicKey().toHex()],
-  challenge: 'random-challenge-123',
-}
-
-const token = proofDoc.createToken(ownerKey, infoRequest, 3600)
-
-// Verify the token
-const result = token.verify([issuerKey.publicKey()], 'random-challenge-123')
-console.log('Disclosed attributes:', JSON.parse(result))
+const credential = doc.issue(issuer)
+const stored = credential.toJson()
 ```
 
-## API
+### Generate a token (one-phase, raw Ed25519 signing)
 
-### KeyPair
+```ts
+import { Credential } from '@owlid/native-sdk'
 
-- `KeyPair.generate()` - Generate new Ed25519 keypair
-- `KeyPair.fromHex(hex)` - Load keypair from hex
-- `publicKey()` - Get public key
-- `privateKeyHex()` - Export private key as hex
-- `sign(message)` - Sign a message
+const credential = Credential.fromJson(stored)
 
-### Document
+const token = credential.prove(
+  {
+    disclose: ['firstName'],
+    predicates: [{ attribute: 'dateOfBirth', op: 'GreaterOrEqual', value: '18' }],
+    trustedIssuers: [issuerPublicKeyHex],
+    challenge: verifierChallenge,
+  },
+  owner,
+  /* ttlSeconds */ 300,
+)
 
-- `Document.new(attributesJson)` - Create document from JSON
-- `issue(issuerKeypair)` - Issue and sign document
+const compact = token.toCompact() // "OID1:..." — fits a QR
+```
 
-### ProofDocument
+### Generate a token (two-phase, WebAuthn signing)
 
-- `createToken(ownerKeypair, infoRequest, ttlSeconds)` - Create token
-- `rootHash()` - Get Merkle root hash
-- `toJson()` / `fromJson()` - Serialize/deserialize
+```ts
+import { Credential, Token } from '@owlid/native-sdk'
 
-### Token
+// Phase 1 — prepare
+const prepared = credential.prepare(proofRequest, /* ttlSeconds */ 300)
+const challenge = prepared.challenge()    // pass to navigator.credentials.get()
 
-- `verify(trustedIssuers, challenge)` - Verify token
-- `toJson()` / `fromJson()` - Serialize/deserialize
+// Phase 2 — let the secure enclave sign
+const assertion = await navigator.credentials.get({
+  publicKey: { challenge: base64urlToBuffer(challenge), allowCredentials: [...] },
+})
 
-## Architecture
+// Phase 3 — finalize
+const token = Token.finalizeWebauthn(prepared, {
+  authenticatorData: bufferToBase64(assertion.response.authenticatorData),
+  clientDataJson:    bufferToBase64(assertion.response.clientDataJSON),
+  signature:         bufferToBase64(assertion.response.signature),
+}, credentialPublicKeyHex)
+```
 
-owl-id wraps the existing OwlID Rust crates with napi-rs bindings:
+The private key never leaves the authenticator.
 
-- `owl-crypto` - Cryptographic primitives (Ed25519, SHA-256, Merkle trees)
-- `owl-proof-system` - Zero-knowledge proof system
+### Verify a token
 
-This ensures no code duplication and maintains compatibility with the backend services.
+```ts
+import { Token, PublicKey } from '@owlid/native-sdk'
+
+const token = Token.fromCompact(compact)
+const issuerPk = PublicKey.fromHex(issuerHex)
+
+const json = token.verify([issuerPk], expectedChallenge, /* revokedRoots */ [])
+const disclosed = JSON.parse(json)
+```
+
+`verify` checks: Merkle proof validity, ZK predicate proofs, signature, expiry, issuer trust, revocation. Throws on any failure.
+
+## Compact format
+
+Tokens encode through `JSON → CBOR → zstd(dict) → Base45 → "OID1:" prefix`. Typical size 500–1500 bytes — fits a QR code (Version 25–40 at error correction Q).
+
+## Building from source
+
+```bash
+just build-sdk            # builds native + WASM + TS facade
+```
+
+Or direct napi-rs:
+
+```bash
+bun install
+napi build --platform --release
+```
+
+Tests:
+
+```bash
+cd packages/native-sdk && bun test
+```
 
 ## License
 
-MIT OR Apache-2.0
+MIT.

@@ -11,13 +11,19 @@ import {
   storage,
   type StoredCredentialData,
   type StoredCredential,
-  type ProviderInfoExtended,
-  type CreateSessionResponse,
 } from '@owlid/sdk'
+import type { ProviderInfoExtended, CreateSessionResponse } from '@owlid/sdk/issuer'
 
 // The providers endpoint returns ProviderInfoExtended
 type ProviderInfo = ProviderInfoExtended
 import { providersApi, sessionsApi, credentialsApi, infoApi } from '~/lib/api'
+
+const PENDING_SESSION_KEY = 'owl_pending_session'
+const PENDING_SESSION_TOKEN_KEY = 'owl_pending_session_token'
+
+function bearerInit(token: string): RequestInit {
+  return { headers: { Authorization: `Bearer ${token}` } }
+}
 
 /**
  * Extract issuer public key from credential
@@ -117,7 +123,10 @@ export function useVerifyAndIssueWithWebAuthn() {
       }
 
       // Step 2: Create session
-      const session = await sessionsApi.createSession({ createSessionRequest: { providerId } })
+      const session = await sessionsApi.createSession({
+        createSessionRequest: { providerId },
+      })
+      const sessionAuth = bearerInit(session.sessionToken)
 
       // Step 3: Handle verification based on flow type
       let claims
@@ -130,8 +139,9 @@ export function useVerifyAndIssueWithWebAuthn() {
           throw new Error('No redirect URL provided by provider')
         }
 
-        // Store session info for callback
-        sessionStorage.setItem('owl_pending_session', session.sessionId)
+        // Store session info + bearer for the post-redirect callback page.
+        sessionStorage.setItem(PENDING_SESSION_KEY, session.sessionId)
+        sessionStorage.setItem(PENDING_SESSION_TOKEN_KEY, session.sessionToken)
 
         // Redirect - this will navigate away from the page
         window.location.href = redirectUrl
@@ -140,17 +150,20 @@ export function useVerifyAndIssueWithWebAuthn() {
         return { redirected: true } as unknown as StoredCredentialData
       } else {
         // Form-based (mock) providers - auto-verify
-        claims = await sessionsApi.autoVerify({ id: session.sessionId })
+        claims = await sessionsApi.autoVerify({ id: session.sessionId }, sessionAuth)
       }
 
       // Step 4: Convert existing COSE public key to P-256 hex for credential issuance
       const ownerPublicKeyHex = coseKeyToP256Hex(existingWebAuthn.publicKey)
 
       // Step 5: Issue credential with P-256 owner public key
-      const issueResponse = await credentialsApi.issueCredential({
-        id: session.sessionId,
-        issueCredentialRequest: { ownerPublicKey: ownerPublicKeyHex, keyAlgorithm: 'p256' },
-      })
+      const issueResponse = await credentialsApi.issueCredential(
+        {
+          id: session.sessionId,
+          issueCredentialRequest: { ownerPublicKey: ownerPublicKeyHex, keyAlgorithm: 'p256' },
+        },
+        sessionAuth,
+      )
 
       if (!issueResponse.success) {
         throw new Error(issueResponse.error || 'Failed to issue credential')
@@ -181,7 +194,13 @@ export function useVerifyAndIssueWithWebAuthn() {
 export function useCompleteVerificationAfterCallback() {
   return useMutation<StoredCredentialData, Error, { sessionId: string }>({
     mutationFn: async ({ sessionId }) => {
-      sessionStorage.removeItem('owl_pending_session')
+      const sessionToken = sessionStorage.getItem(PENDING_SESSION_TOKEN_KEY) ?? ''
+      sessionStorage.removeItem(PENDING_SESSION_KEY)
+      sessionStorage.removeItem(PENDING_SESSION_TOKEN_KEY)
+      if (!sessionToken) {
+        throw new Error('Pending session token missing — open the flow again from /create-identity')
+      }
+      const sessionAuth = bearerInit(sessionToken)
 
       // Step 1: Get existing WebAuthn credential (created during registration)
       const existingWebAuthn = await storage.loadWebAuthnCredential()
@@ -190,16 +209,19 @@ export function useCompleteVerificationAfterCallback() {
       }
 
       // Step 2: Fetch claims from completed verification
-      const claims = await sessionsApi.getClaims({ id: sessionId })
+      const claims = await sessionsApi.getClaims({ id: sessionId }, sessionAuth)
 
       // Step 3: Convert existing COSE public key to P-256 hex for credential issuance
       const ownerPublicKeyHex = coseKeyToP256Hex(existingWebAuthn.publicKey)
 
       // Step 4: Issue credential with P-256 owner public key
-      const issueResponse = await credentialsApi.issueCredential({
-        id: sessionId,
-        issueCredentialRequest: { ownerPublicKey: ownerPublicKeyHex, keyAlgorithm: 'p256' },
-      })
+      const issueResponse = await credentialsApi.issueCredential(
+        {
+          id: sessionId,
+          issueCredentialRequest: { ownerPublicKey: ownerPublicKeyHex, keyAlgorithm: 'p256' },
+        },
+        sessionAuth,
+      )
 
       if (!issueResponse.success) {
         throw new Error(issueResponse.error || 'Failed to issue credential')

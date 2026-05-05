@@ -7,8 +7,8 @@
 use crate::database::IdpDatabase;
 use crate::error::{IdpError, Result};
 use crate::models::{
-    IdentitySubmissionForm, ProviderInfo, SessionStatus, VerificationLevel, VerificationSession,
-    VerifiedIdentityClaims,
+    IdentitySubmissionForm, ProviderDescriptor, SessionStatus, VerificationLevel,
+    VerificationSession, VerifiedIdentityClaims,
 };
 use crate::normalizer::{MockClaims, RawProviderClaims};
 use crate::provider::{
@@ -189,8 +189,8 @@ impl DigitalIdentityProvider for MockDigiDProvider {
         ProviderFlowType::FormBased
     }
 
-    fn info(&self) -> ProviderInfo {
-        ProviderInfo {
+    fn info(&self) -> ProviderDescriptor {
+        ProviderDescriptor {
             id: self.provider_id.clone(),
             name: self.name.clone(),
             description: "Simulated Dutch government eID provider (DigiD-like)".to_string(),
@@ -371,8 +371,8 @@ impl DigitalIdentityProvider for MockBankIdProvider {
         ProviderFlowType::FormBased
     }
 
-    fn info(&self) -> ProviderInfo {
-        ProviderInfo {
+    fn info(&self) -> ProviderDescriptor {
+        ProviderDescriptor {
             id: self.provider_id.clone(),
             name: self.name.clone(),
             description: "Simulated Swedish bank identity provider (BankID-like)".to_string(),
@@ -434,7 +434,7 @@ pub enum MockProvider {
 }
 
 impl MockProvider {
-    pub fn info(&self) -> ProviderInfo {
+    pub fn info(&self) -> ProviderDescriptor {
         match self {
             Self::DigiD(p) => <MockDigiDProvider as DigitalIdentityProvider>::info(p),
             Self::BankId(p) => <MockBankIdProvider as DigitalIdentityProvider>::info(p),
@@ -485,7 +485,7 @@ impl MockProviderFactory {
     }
 
     /// List all available providers
-    pub fn list_providers(&self) -> Vec<ProviderInfo> {
+    pub fn list_providers(&self) -> Vec<ProviderDescriptor> {
         vec![
             <MockDigiDProvider as DigitalIdentityProvider>::info(&MockDigiDProvider::new(
                 self.db.clone(),

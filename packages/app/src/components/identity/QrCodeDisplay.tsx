@@ -8,7 +8,7 @@
 import { useEffect } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Loader2, CheckCircle, XCircle, Smartphone, RefreshCw } from 'lucide-react'
-import type { SessionStatus } from '@owlid/sdk'
+import type { SessionStatus } from '@owlid/sdk/issuer'
 
 interface QrCodeDisplayProps {
   /** QR code data to display */

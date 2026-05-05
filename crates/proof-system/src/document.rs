@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone)]
 pub struct Document {
     attributes: BTreeMap<String, serde_json::Value>,
+    available_predicates: Vec<String>,
 }
 
 impl Document {
@@ -30,7 +31,7 @@ impl Document {
             ));
         }
 
-        Ok(Self { attributes })
+        Ok(Self { attributes, available_predicates: Vec::new() })
     }
 
     /// Create a new document with schema validation (T-008)
@@ -41,6 +42,17 @@ impl Document {
     ) -> Result<Self, ProofSystemError> {
         schema.validate(&attributes)?;
         Self::new(attributes)
+    }
+
+    /// Tag the document with the predicate ids it can later prove. Sorted +
+    /// deduplicated; included in the issuer signing input so the allowlist
+    /// is tamper-evident.
+    pub fn with_available_predicates(mut self, predicates: Vec<String>) -> Self {
+        let mut preds = predicates;
+        preds.sort();
+        preds.dedup();
+        self.available_predicates = preds;
+        self
     }
 
     /// Issue a document by signing it with the issuer's key
@@ -62,8 +74,8 @@ impl Document {
             .map(|(k, h)| (k.clone(), hex::encode(h)))
             .collect();
 
-        // Sign the root hash
-        let signature = issuer_keypair.sign(root_hash.as_bytes());
+        let signing_bytes = issuer_signing_input(&root_hash, &self.available_predicates);
+        let signature = issuer_keypair.sign(&signing_bytes);
 
         ProofDocument {
             root_hash,
@@ -71,6 +83,7 @@ impl Document {
             signature,
             salt: Some(salt),
             leaf_hashes: Some(leaf_hashes),
+            available_predicates: self.available_predicates,
             merkle_tree,
         }
     }
@@ -78,6 +91,27 @@ impl Document {
     pub fn attributes(&self) -> &BTreeMap<String, serde_json::Value> {
         &self.attributes
     }
+
+    pub fn available_predicates(&self) -> &[String] {
+        &self.available_predicates
+    }
+}
+
+/// Canonical bytes the issuer signs.
+///
+/// When `available_predicates` is empty, the input is the raw root hash
+/// (existing behaviour). Otherwise it is a JSON object pinning both the root
+/// hash and the sorted predicate allowlist, so the verifier can reconstruct
+/// it exactly.
+pub fn issuer_signing_input(root_hash: &str, available_predicates: &[String]) -> Vec<u8> {
+    if available_predicates.is_empty() {
+        return root_hash.as_bytes().to_vec();
+    }
+    let value = serde_json::json!({
+        "rootHash": root_hash,
+        "availablePredicates": available_predicates,
+    });
+    serde_json::to_vec(&value).expect("canonical JSON serialization is infallible")
 }
 
 /// ProofDocument is an issued document with signature
@@ -94,6 +128,11 @@ pub struct ProofDocument {
     /// Stored as (attribute_key, hex_hash) pairs
     #[serde(skip_serializing_if = "Option::is_none")]
     leaf_hashes: Option<Vec<(String, String)>>,
+    /// Predicate ids this credential can prove. Empty for credentials issued
+    /// before the registry landed; covered by `issuer_signing_input` so the
+    /// allowlist cannot be widened after issuance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    available_predicates: Vec<String>,
     #[serde(skip, default = "default_merkle_tree")]
     merkle_tree: MerkleTree,
 }
@@ -141,10 +180,21 @@ impl ProofDocument {
         self.salt.as_deref()
     }
 
+    /// Predicate ids this credential is permitted to prove.
+    pub fn available_predicates(&self) -> &[String] {
+        &self.available_predicates
+    }
+
+    /// Canonical bytes the issuer signed for this document.
+    pub fn signing_input(&self) -> Vec<u8> {
+        issuer_signing_input(&self.root_hash, &self.available_predicates)
+    }
+
     /// Verify the document signature
     pub fn verify(&mut self, issuer_public_key: &PublicKey) -> Result<(), ProofSystemError> {
         self.ensure_merkle_tree();
-        issuer_public_key.verify(self.root_hash.as_bytes(), &self.signature)?;
+        let bytes = self.signing_input();
+        issuer_public_key.verify(&bytes, &self.signature)?;
         Ok(())
     }
 

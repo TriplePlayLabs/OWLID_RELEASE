@@ -5,6 +5,8 @@
 //! is down, the service continues with DB-only.
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 // ============================================================================
 // Configuration
@@ -105,9 +107,15 @@ pub struct HealthResponse {
 // ============================================================================
 
 /// HTTP client for the Midnight sidecar service.
+///
+/// `enabled` is wrapped in an `Arc<AtomicBool>` so an admin endpoint can
+/// flip the integration on or off at runtime without restarting the
+/// service. Every chain-touching method short-circuits with
+/// `MidnightError::NotEnabled` when the flag is false; the sidecar URL
+/// and HTTP client stay valid so re-enabling is instant.
 #[derive(Clone)]
 pub struct MidnightSidecar {
-    enabled: bool,
+    enabled: Arc<AtomicBool>,
     base_url: String,
     http: reqwest::Client,
 }
@@ -118,8 +126,8 @@ impl MidnightSidecar {
         let mut headers = reqwest::header::HeaderMap::new();
         if let Some(ref api_key) = config.api_key {
             headers.insert(
-                "X-API-Key",
-                reqwest::header::HeaderValue::from_str(api_key)
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}"))
                     .expect("Invalid API key header value"),
             );
         }
@@ -131,14 +139,24 @@ impl MidnightSidecar {
             .expect("Failed to build HTTP client");
 
         Self {
-            enabled: config.enabled,
+            enabled: Arc::new(AtomicBool::new(config.enabled)),
             base_url: config.sidecar_url.trim_end_matches('/').to_string(),
             http,
         }
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.enabled
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    /// Flip the runtime-enabled flag. Persistence is the caller's
+    /// responsibility — the sidecar only owns the in-memory state.
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     /// Check sidecar health. Returns Ok(true) if connected.
@@ -159,7 +177,7 @@ impl MidnightSidecar {
 
     /// Check if an issuer is trusted on-chain.
     pub async fn is_issuer_trusted(&self, key_hash_hex: &str) -> Result<bool, MidnightError> {
-        if !self.enabled {
+        if !self.is_enabled() {
             return Err(MidnightError::NotEnabled);
         }
         let resp: IssuerStatusResponse = self
@@ -181,7 +199,7 @@ impl MidnightSidecar {
         public_key_hex: &str,
         name: &str,
     ) -> Result<(), MidnightError> {
-        if !self.enabled {
+        if !self.is_enabled() {
             return Err(MidnightError::NotEnabled);
         }
         let resp: SidecarResponse = self
@@ -210,7 +228,7 @@ impl MidnightSidecar {
         &self,
         root_hash_hex: &str,
     ) -> Result<bool, MidnightError> {
-        if !self.enabled {
+        if !self.is_enabled() {
             return Err(MidnightError::NotEnabled);
         }
         let resp: RevocationStatusResponse = self
@@ -236,7 +254,7 @@ impl MidnightSidecar {
         issuer_key_hash_hex: &str,
         reason: &str,
     ) -> Result<(), MidnightError> {
-        if !self.enabled {
+        if !self.is_enabled() {
             return Err(MidnightError::NotEnabled);
         }
         let resp: SidecarResponse = self
@@ -264,7 +282,7 @@ impl MidnightSidecar {
         issuer_key_hash_hex: &str,
         reason: &str,
     ) -> Result<(), MidnightError> {
-        if !self.enabled {
+        if !self.is_enabled() {
             return Err(MidnightError::NotEnabled);
         }
         let resp: SidecarResponse = self
@@ -291,7 +309,7 @@ impl MidnightSidecar {
         root_hash_hex: &str,
         issuer_key_hash_hex: &str,
     ) -> Result<(), MidnightError> {
-        if !self.enabled {
+        if !self.is_enabled() {
             return Err(MidnightError::NotEnabled);
         }
         let resp: SidecarResponse = self
@@ -324,7 +342,7 @@ impl MidnightSidecar {
         commitment_hex: &str,
         issuer_key_hash_hex: &str,
     ) -> Result<(), MidnightError> {
-        if !self.enabled {
+        if !self.is_enabled() {
             return Err(MidnightError::NotEnabled);
         }
         let resp: SidecarResponse = self
@@ -350,7 +368,7 @@ impl MidnightSidecar {
         &self,
         did_hash_hex: &str,
     ) -> Result<CommitmentResponse, MidnightError> {
-        if !self.enabled {
+        if !self.is_enabled() {
             return Err(MidnightError::NotEnabled);
         }
         let resp: CommitmentResponse = self

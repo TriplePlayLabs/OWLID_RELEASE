@@ -1,5 +1,5 @@
 import { FileJson, Loader2, CheckCircle } from 'lucide-react'
-import { Button } from '~/components/ui/button'
+import { Button } from '@owlid/ui/components/ui/button'
 import type { IdentityData } from '@owlid/sdk'
 
 interface IdentityPreviewProps {

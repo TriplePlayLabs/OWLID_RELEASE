@@ -2,9 +2,15 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useState, useEffect } from 'react'
 import { Lock, Fingerprint, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { Button } from '~/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/components/ui/card'
-import { useIdentityContext } from '~/contexts/identity-context'
+import { Button } from '@owlid/ui/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from '@owlid/ui/components/ui/card'
+import { useIdentity } from '~/hooks/use-identity'
 import { useWebAuthn } from '~/hooks/use-webauthn'
 import { storage } from '@owlid/sdk'
 
@@ -14,7 +20,7 @@ export const Route = createFileRoute('/_identity/locked')({
 
 function LockedPage() {
   const navigate = useNavigate()
-  const { username, credentialId, unlockIdentity, resetDemo } = useIdentityContext()
+  const { username, credentialId, unlockIdentity, resetDemo } = useIdentity()
   const { unlockWithPasskey } = useWebAuthn()
 
   const [isLoading, setIsLoading] = useState(false)
@@ -92,7 +98,7 @@ function LockedPage() {
   }
 
   return (
-    <div className="w-full max-w-md mx-auto">
+    <div className="my-auto w-full max-w-md mx-auto px-4 py-8">
       <Card className="border border-white/10 bg-card/50 ring-1 ring-white/20 shadow-[0_0_30px_-10px_rgba(255,255,255,0.1)]">
         <CardHeader className="pb-2 text-center">
           <div className="mx-auto p-4 bg-white/5 rounded-full w-16 h-16 flex items-center justify-center mb-4">

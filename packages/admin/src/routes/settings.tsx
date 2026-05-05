@@ -1,17 +1,24 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
-import { Key, Server, Copy, Eye, EyeOff, Info } from 'lucide-react'
+import { Copy, Info, Loader2, Moon } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
-import { Button } from '~/components/ui/button'
-import { Input } from '~/components/ui/input'
-import { Label } from '~/components/ui/label'
-import { Separator } from '~/components/ui/separator'
-import { Badge } from '~/components/ui/badge'
-import { useIssuerInfo, useIssuerHealth } from '~/hooks/use-issuer'
-import { useVerificationHealth, getGdprApi } from '~/hooks/use-verification'
-import type { ErasureReceipt } from '@owlid/sdk'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@owlid/ui/components/ui/card'
+import { Button } from '@owlid/ui/components/ui/button'
+import { Input } from '@owlid/ui/components/ui/input'
+import { Label } from '@owlid/ui/components/ui/label'
+import { Separator } from '@owlid/ui/components/ui/separator'
+import { Switch } from '@owlid/ui/components/ui/switch'
+import { useIssuerInfo } from '~/hooks/use-issuer'
+import { getGdprApi } from '~/hooks/use-verification'
+import { useMidnightStatus, useToggleMidnight } from '~/hooks/use-midnight'
+import type { ErasureReceipt } from '@owlid/admin-client'
 
 export const Route = createFileRoute('/settings')({
   component: SettingsPage,
@@ -19,14 +26,8 @@ export const Route = createFileRoute('/settings')({
 
 function SettingsPage() {
   const issuerInfo = useIssuerInfo()
-  const issuerHealth = useIssuerHealth()
-  const verificationHealth = useVerificationHealth()
-
-  const [apiKey, setApiKey] = useState(import.meta.env.VITE_API_KEY || '')
-  const [showKey, setShowKey] = useState(false)
-
-  const verificationUrl = import.meta.env.VITE_VERIFICATION_URL || 'http://localhost:8000'
-  const issuerUrl = import.meta.env.VITE_ISSUER_URL || 'http://localhost:8001'
+  const midnight = useMidnightStatus()
+  const toggleMidnight = useToggleMidnight()
 
   function copyPublicKey() {
     if (issuerInfo.data) {
@@ -39,100 +40,54 @@ function SettingsPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="text-muted-foreground">API configuration and service information</p>
+        <p className="text-muted-foreground">Integration controls and service identity</p>
       </div>
 
-      {/* API Key Configuration */}
+      {/* Midnight runtime toggle — admin-only, persisted to system_settings */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Key className="h-5 w-5" /> API Key
-          </CardTitle>
-          <CardDescription>
-            The API key used to authenticate admin requests. Set via{' '}
-            <code className="text-xs bg-muted px-1 py-0.5 rounded">VITE_API_KEY</code>.
-          </CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between space-y-0">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Moon className="h-5 w-5" /> Midnight Integration
+            </CardTitle>
+            <CardDescription>
+              Gate chain-bound operations. Disabling stops on-chain calls but preserves the
+              connection so re-enabling is instant.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            {toggleMidnight.isPending && (
+              <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+            )}
+            <Switch
+              checked={midnight.data?.enabled ?? false}
+              disabled={
+                !midnight.data?.configured || midnight.isLoading || toggleMidnight.isPending
+              }
+              onCheckedChange={(next) => toggleMidnight.mutate(next)}
+              aria-label="Toggle Midnight integration"
+            />
+          </div>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-2">
-            <Label htmlFor="api-key">Current API Key</Label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Input
-                  id="api-key"
-                  className="font-mono pr-10"
-                  type={showKey ? 'text' : 'password'}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="No API key configured"
-                />
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-0 top-0 h-full"
-                  onClick={() => setShowKey(!showKey)}
-                >
-                  {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </Button>
-              </div>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  navigator.clipboard.writeText(apiKey)
-                  toast.success('API key copied')
-                }}
-              >
-                <Copy className="h-4 w-4" />
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Changes here are session-only. Update the environment variable for persistence.
+        <CardContent className="space-y-2 text-sm">
+          {!midnight.data?.configured && (
+            <p className="text-muted-foreground">
+              The verification service was started without{' '}
+              <code className="text-xs bg-muted px-1 py-0.5 rounded">MIDNIGHT_SIDECAR_URL</code>.
+              Set the env and restart the service to make this toggle functional.
             </p>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Service Endpoints */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Server className="h-5 w-5" /> Service Endpoints
-          </CardTitle>
-          <CardDescription>
-            Backend service URLs (configured via environment variables)
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-2">
-            <Label>Verification Service</Label>
-            <div className="flex items-center gap-2">
-              <Input className="font-mono text-sm" value={verificationUrl} readOnly />
-              {verificationHealth.data ? (
-                <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 shrink-0">
-                  Online
-                </Badge>
-              ) : (
-                <Badge variant="destructive" className="shrink-0">
-                  Offline
-                </Badge>
-              )}
-            </div>
-          </div>
-          <div className="grid gap-2">
-            <Label>Issuer Service</Label>
-            <div className="flex items-center gap-2">
-              <Input className="font-mono text-sm" value={issuerUrl} readOnly />
-              {issuerHealth.data ? (
-                <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 shrink-0">
-                  Online
-                </Badge>
-              ) : (
-                <Badge variant="destructive" className="shrink-0">
-                  Offline
-                </Badge>
-              )}
-            </div>
-          </div>
+          )}
+          {toggleMidnight.isError && (
+            <p className="text-destructive text-xs">
+              {toggleMidnight.error instanceof Error
+                ? toggleMidnight.error.message
+                : 'Toggle failed'}
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Persisted to <code className="text-xs">system_settings.midnight_enabled</code> so
+            restarts inherit the last operator decision.
+          </p>
         </CardContent>
       </Card>
 

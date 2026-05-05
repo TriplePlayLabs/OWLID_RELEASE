@@ -1,12 +1,15 @@
 import { defineConfig } from 'vite'
 import { devtools } from '@tanstack/devtools-vite'
 import { tanstackStart } from '@tanstack/react-start/plugin/vite'
+import { nitroV2Plugin } from '@tanstack/nitro-v2-vite-plugin'
 import viteReact from '@vitejs/plugin-react'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
 import tailwindcss from '@tailwindcss/vite'
 import wasm from 'vite-plugin-wasm'
 
 const config = defineConfig({
+  // Workspace-root .env (shared VITE_* across services + frontends).
+  envDir: '../..',
   server: {
     port: 5000,
     allowedHosts: ['.trycloudflare.com', '.sashoush.dev'],
@@ -25,6 +28,7 @@ const config = defineConfig({
       },
     },
     devtools(),
+    nitroV2Plugin(),
     viteTsConfigPaths({
       projects: ['./tsconfig.json'],
     }),

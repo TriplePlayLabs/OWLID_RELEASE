@@ -5,8 +5,17 @@
 
 use crate::provider::ProviderFlowType;
 use chrono::{DateTime, NaiveDate, Utc};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// 32-byte URL-safe random token used as a per-session bearer.
+fn random_session_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    URL_SAFE_NO_PAD.encode(bytes)
+}
 
 /// Verification session - tracks user through IdP flow
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +40,11 @@ pub struct VerificationSession {
     /// Whether a credential has been issued for this session
     #[serde(default)]
     pub credential_issued: bool,
+    /// Per-session bearer token. Issued at session create time and required
+    /// on every session-scoped request. Skipped from serialization so it is
+    /// only ever returned in the original create response.
+    #[serde(skip_serializing, default)]
+    pub session_token: String,
 }
 
 impl VerificationSession {
@@ -59,6 +73,7 @@ impl VerificationSession {
             verified_at: None,
             raw_claims: None,
             credential_issued: false,
+            session_token: random_session_token(),
         }
     }
 
@@ -298,10 +313,13 @@ pub struct IdentitySubmissionForm {
     pub tax_id: Option<String>,
 }
 
-/// Available identity provider
+/// Static, intrinsic facts about an identity provider, returned by the
+/// provider's trait impl. Composed with runtime fields (flow type,
+/// verification level, enabled flag) at registry-list time into the
+/// public `ProviderInfo` type exposed over OpenAPI.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderInfo {
+pub struct ProviderDescriptor {
     pub id: String,
     pub name: String,
     pub description: String,

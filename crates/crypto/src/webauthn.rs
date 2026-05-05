@@ -136,6 +136,51 @@ impl WebAuthnSignature {
         self.verify_signature(public_key)
     }
 
+    /// Same as [`verify_payload_bound`] but additionally enforces the
+    /// `clientDataJSON` `type == "webauthn.get"` and `origin` against an
+    /// allowlist. Browsers already pin `origin` in the assertion they hand
+    /// back; this is the server-side check that closes the gap when the
+    /// client stack is compromised or an assertion is relayed from a
+    /// different origin.
+    pub fn verify_payload_bound_with_origin(
+        &self,
+        public_key: &PublicKey,
+        payload: &[u8],
+        expected_origins: &[String],
+    ) -> Result<(), WebAuthnError> {
+        let client_data_bytes = self.decode_client_data_json()?;
+        let client_data: serde_json::Value = serde_json::from_slice(&client_data_bytes)
+            .map_err(|e| WebAuthnError::JsonError(e.to_string()))?;
+
+        let request_type = client_data
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or(WebAuthnError::InvalidClientDataJson)?;
+        if request_type != "webauthn.get" {
+            return Err(WebAuthnError::InvalidClientDataJson);
+        }
+
+        let origin = client_data
+            .get("origin")
+            .and_then(|v| v.as_str())
+            .ok_or(WebAuthnError::InvalidClientDataJson)?;
+        if !expected_origins.iter().any(|allowed| allowed == origin) {
+            return Err(WebAuthnError::OriginMismatch);
+        }
+
+        let payload_hash = hash_bytes(payload);
+        let expected_challenge = base64url_encode(&payload_hash);
+        let challenge = client_data
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .ok_or(WebAuthnError::InvalidClientDataJson)?;
+        if challenge != expected_challenge {
+            return Err(WebAuthnError::ChallengeMismatch);
+        }
+
+        self.verify_signature(public_key)
+    }
+
     /// Internal method to verify the cryptographic signature
     fn verify_signature(&self, public_key: &PublicKey) -> Result<(), WebAuthnError> {
         // 1. Decode components

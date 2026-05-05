@@ -11,7 +11,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { sessionsApi, internalApi, credentialsApi } from '~/lib/api'
+import { getPollingApi } from '@owlid/sdk/issuer'
 import type {
   CreateSessionResponse,
   SessionResponse,
@@ -22,11 +22,22 @@ import type {
   CompleteVerificationResponse,
   PollResponse,
   SessionStatus,
-} from '@owlid/sdk'
+} from '@owlid/sdk/issuer'
+import { sessionsApi, credentialsApi } from '~/lib/api'
+
+const pollingApi = getPollingApi()
+
+const PENDING_SESSION_KEY = 'owl_pending_session'
+const PENDING_SESSION_TOKEN_KEY = 'owl_pending_session_token'
+
+function bearerInit(token: string | null): RequestInit | undefined {
+  return token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
+}
 
 export interface IdpVerificationState {
   status: 'idle' | 'starting' | 'pending' | 'verifying' | 'verified' | 'failed' | 'expired'
   session: CreateSessionResponse | null
+  sessionToken: string | null
   sessionDetails: SessionResponse | null
   claims: VerifiedIdentityClaims | null
   error: string | null
@@ -47,7 +58,7 @@ export interface IdpVerificationActions {
   checkStatus: () => Promise<SessionResponse | null>
   startPolling: () => void
   stopPolling: () => void
-  resumeSession: (sessionId: string) => Promise<SessionResponse | null>
+  resumeSession: (sessionId: string, sessionToken: string) => Promise<SessionResponse | null>
   issueCredential: (ownerPublicKey: string) => Promise<unknown>
   reset: () => void
 }
@@ -57,6 +68,7 @@ const POLL_INTERVAL = 2000
 const initialState: IdpVerificationState = {
   status: 'idle',
   session: null,
+  sessionToken: null,
   sessionDetails: null,
   claims: null,
   error: null,
@@ -86,7 +98,9 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
     setState((prev) => ({ ...prev, status: 'starting', error: null }))
 
     try {
-      const response = await sessionsApi.createSession({ createSessionRequest: { providerId } })
+      const response = await sessionsApi.createSession({
+        createSessionRequest: { providerId },
+      })
 
       const flowType = response.flowType
       let formConfig: FormConfig | null = null
@@ -108,6 +122,7 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
         ...prev,
         status: 'pending',
         session: response,
+        sessionToken: response.sessionToken,
         flowType,
         formConfig,
         qrData,
@@ -116,7 +131,8 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
       }))
 
       if (redirectUrl && (flowType === 'saml_redirect' || flowType === 'webhook_async')) {
-        sessionStorage.setItem('owl_pending_session', response.sessionId)
+        sessionStorage.setItem(PENDING_SESSION_KEY, response.sessionId)
+        sessionStorage.setItem(PENDING_SESSION_TOKEN_KEY, response.sessionToken)
         window.location.href = redirectUrl
       }
 
@@ -138,10 +154,13 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
       setState((prev) => ({ ...prev, status: 'verifying', error: null }))
 
       try {
-        const claims = (await sessionsApi.submitIdentity({
-          id: state.session.sessionId,
-          body: form,
-        })) as VerifiedIdentityClaims
+        const claims = (await sessionsApi.submitIdentity(
+          {
+            id: state.session.sessionId,
+            body: form,
+          },
+          bearerInit(state.sessionToken),
+        )) as VerifiedIdentityClaims
 
         setState((prev) => ({ ...prev, status: 'verified', claims, error: null }))
         return claims
@@ -151,7 +170,7 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
         return null
       }
     },
-    [state.session],
+    [state.session, state.sessionToken],
   )
 
   const checkStatus = useCallback(async () => {
@@ -159,9 +178,12 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
 
     try {
       if (state.flowType === 'webhook_async') {
-        const result = (await sessionsApi.completeVerification({
-          id: state.session.sessionId,
-        })) as CompleteVerificationResponse
+        const result = (await sessionsApi.completeVerification(
+          {
+            id: state.session.sessionId,
+          },
+          bearerInit(state.sessionToken),
+        )) as CompleteVerificationResponse
 
         if (result.status === 'verified' && result.claims) {
           setState((prev) => ({
@@ -184,14 +206,16 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
         }
       }
 
-      const details = (await sessionsApi.getSession({
-        id: state.session.sessionId,
-      })) as SessionResponse
+      const details = (await sessionsApi.getSession(
+        { id: state.session.sessionId },
+        bearerInit(state.sessionToken),
+      )) as SessionResponse
 
       if (details.status === 'verified') {
-        const claims = (await sessionsApi.getClaims({
-          id: state.session.sessionId,
-        })) as VerifiedIdentityClaims
+        const claims = (await sessionsApi.getClaims(
+          { id: state.session.sessionId },
+          bearerInit(state.sessionToken),
+        )) as VerifiedIdentityClaims
         setState((prev) => ({
           ...prev,
           status: 'verified',
@@ -229,9 +253,10 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
     if (!state.session) return
 
     try {
-      const result = (await internalApi.pollSession({
-        sessionId: state.session.sessionId,
-      })) as PollResponse
+      const result = (await pollingApi.pollSession(
+        { sessionId: state.session.sessionId },
+        bearerInit(state.sessionToken),
+      )) as PollResponse
 
       pollFailureCountRef.current = 0
 
@@ -250,9 +275,10 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
 
       if (result.status === 'verified') {
         stopPolling()
-        const claims = (await sessionsApi.getClaims({
-          id: state.session.sessionId,
-        })) as VerifiedIdentityClaims
+        const claims = (await sessionsApi.getClaims(
+          { id: state.session.sessionId },
+          bearerInit(state.sessionToken),
+        )) as VerifiedIdentityClaims
         setState((prev) => ({
           ...prev,
           status: 'verified',
@@ -294,7 +320,7 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
         }))
       }
     }
-  }, [state.session])
+  }, [state.session, state.sessionToken])
 
   const startPolling = useCallback(() => {
     if (pollIntervalRef.current) return
@@ -312,11 +338,12 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
     setState((prev) => ({ ...prev, isPolling: false }))
   }, [])
 
-  const resumeSession = useCallback(async (sessionId: string) => {
-    setState((prev) => ({ ...prev, status: 'verifying', error: null }))
+  const resumeSession = useCallback(async (sessionId: string, sessionToken: string) => {
+    setState((prev) => ({ ...prev, status: 'verifying', sessionToken, error: null }))
 
     try {
-      const details = (await sessionsApi.getSession({ id: sessionId })) as SessionResponse
+      const auth = bearerInit(sessionToken)
+      const details = (await sessionsApi.getSession({ id: sessionId }, auth)) as SessionResponse
 
       const session: CreateSessionResponse = {
         sessionId: details.id,
@@ -324,14 +351,19 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
         flowType: details.flowType,
         status: details.status,
         expiresAt: details.expiresAt,
+        sessionToken,
       } as CreateSessionResponse
 
       if (details.status === 'verified') {
-        const claims = (await sessionsApi.getClaims({ id: sessionId })) as VerifiedIdentityClaims
+        const claims = (await sessionsApi.getClaims(
+          { id: sessionId },
+          auth,
+        )) as VerifiedIdentityClaims
         setState((prev) => ({
           ...prev,
           status: 'verified',
           session,
+          sessionToken,
           sessionDetails: details,
           claims,
           flowType: details.flowType,
@@ -342,6 +374,7 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
           ...prev,
           status: 'failed',
           session,
+          sessionToken,
           sessionDetails: details,
           flowType: details.flowType,
           error: 'Verification failed',
@@ -351,6 +384,7 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
           ...prev,
           status: 'pending',
           session,
+          sessionToken,
           sessionDetails: details,
           flowType: details.flowType,
         }))
@@ -370,26 +404,32 @@ export function useIdpVerification(): IdpVerificationState & IdpVerificationActi
         throw new Error('No verified session')
       }
 
-      const response = await credentialsApi.issueCredential({
-        id: state.session.sessionId,
-        issueCredentialRequest: { ownerPublicKey, keyAlgorithm },
-      })
+      const response = await credentialsApi.issueCredential(
+        {
+          id: state.session.sessionId,
+          issueCredentialRequest: { ownerPublicKey, keyAlgorithm },
+        },
+        bearerInit(state.sessionToken),
+      )
       return response.credential
     },
-    [state.session, state.status],
+    [state.session, state.sessionToken, state.status],
   )
 
   const reset = useCallback(() => {
     stopPolling()
-    sessionStorage.removeItem('owl_pending_session')
+    sessionStorage.removeItem(PENDING_SESSION_KEY)
+    sessionStorage.removeItem(PENDING_SESSION_TOKEN_KEY)
     setState(initialState)
   }, [stopPolling])
 
   useEffect(() => {
-    const pendingSessionId = sessionStorage.getItem('owl_pending_session')
-    if (pendingSessionId) {
-      sessionStorage.removeItem('owl_pending_session')
-      resumeSession(pendingSessionId)
+    const pendingSessionId = sessionStorage.getItem(PENDING_SESSION_KEY)
+    const pendingSessionToken = sessionStorage.getItem(PENDING_SESSION_TOKEN_KEY)
+    if (pendingSessionId && pendingSessionToken) {
+      sessionStorage.removeItem(PENDING_SESSION_KEY)
+      sessionStorage.removeItem(PENDING_SESSION_TOKEN_KEY)
+      resumeSession(pendingSessionId, pendingSessionToken)
     }
   }, [resumeSession])
 

@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { Toaster } from 'sonner'
+import { ModalsPortal } from '@owlid/ui/modal'
 import './styles.css'
 
 createRoot(document.getElementById('root')!).render(
@@ -13,5 +14,6 @@ createRoot(document.getElementById('root')!).render(
         style: { background: '#18181b', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' },
       }}
     />
+    <ModalsPortal />
   </StrictMode>,
 )

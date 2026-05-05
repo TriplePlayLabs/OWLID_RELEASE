@@ -11,18 +11,17 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./api/issuer": {
-      "types": "./dist/generated/issuer/index.d.ts",
-      "import": "./dist/generated/issuer/index.js"
+    "./verifier": {
+      "types": "./dist/verifier.d.ts",
+      "import": "./dist/verifier.js"
     },
-    "./api/verification": {
-      "types": "./dist/generated/verification/index.d.ts",
-      "import": "./dist/generated/verification/index.js"
+    "./issuer": {
+      "types": "./dist/issuer.d.ts",
+      "import": "./dist/issuer.js"
     },
     "./native": {
-      "types": "./node_modules/@owlid/native-sdk/index.d.ts",
-      "import": "./node_modules/@owlid/native-sdk/index.js",
-      "require": "./node_modules/@owlid/native-sdk/index.js"
+      "types": "./dist/native.d.ts",
+      "import": "./dist/native.js"
     }
   },
   "files": [
@@ -36,8 +35,11 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@owlid/config": "workspace:*",
+    "@owlid/issuer-client": "workspace:*",
     "@owlid/native-sdk": "workspace:*",
-    "cbor-x": "^1.6.0"
+    "@owlid/verifier-client": "workspace:*",
+    "cbor-x": "^1.6.4"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

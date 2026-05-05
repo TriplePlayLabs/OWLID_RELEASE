@@ -45,6 +45,12 @@ pub struct AppState {
 
     /// Midnight sidecar client (None if MIDNIGHT_ENABLED=false)
     pub midnight: Option<Arc<MidnightSidecar>>,
+
+    /// Allowlist of WebAuthn `clientDataJSON.origin` values that are
+    /// accepted on owner-signature verification. Empty = origin check
+    /// disabled (dev/test only); production must populate via
+    /// `WEBAUTHN_EXPECTED_ORIGINS`.
+    pub webauthn_expected_origins: Vec<String>,
 }
 
 impl AppState {
@@ -54,6 +60,7 @@ impl AppState {
         broadcaster: Arc<RevocationBroadcaster>,
         metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
         midnight: Option<Arc<MidnightSidecar>>,
+        webauthn_expected_origins: Vec<String>,
     ) -> Self {
         let api_keys = Arc::new(ApiKeyRepository::new(db_pool.clone()));
         let issuers = Arc::new(IssuerRepository::new(db_pool.clone()));
@@ -96,6 +103,7 @@ impl AppState {
             broadcaster,
             metrics_handle,
             midnight,
+            webauthn_expected_origins,
         }
     }
 }

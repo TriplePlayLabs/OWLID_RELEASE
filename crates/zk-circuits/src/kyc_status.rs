@@ -81,19 +81,13 @@ pub fn prove(
     level: u64,
     required_level: u64,
 ) -> Result<ZkProof, ZkError> {
-    if level > 3 {
-        return Err(ZkError::InvalidInput("KYC level must be 0-3".to_string()));
-    }
     if required_level > 3 {
         return Err(ZkError::InvalidInput(
             "Required KYC level must be 0-3".to_string(),
         ));
     }
-    if level < required_level {
-        return Err(ZkError::InvalidInput(format!(
-            "KYC level {} is below required level {}",
-            level, required_level
-        )));
+    if level > 3 || level < required_level {
+        return Err(ZkError::PreconditionFailed);
     }
 
     let circuit = KycStatusCircuit {

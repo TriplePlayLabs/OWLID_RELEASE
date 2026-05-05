@@ -84,13 +84,6 @@ impl ConstraintSynthesizer<Fr> for NationalityCircuit {
     }
 }
 
-/// EU member state country codes
-pub const EU_COUNTRIES: &[&str] = &[
-    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
-    "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
-    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
-];
-
 /// Build a Merkle tree of country field elements.
 /// Returns (root, all_paths) where each path entry is (sibling, is_right).
 pub fn build_nationality_tree(countries: &[&str]) -> (Fr, Vec<Vec<(Fr, bool)>>) {
@@ -124,23 +117,32 @@ pub fn setup() -> Result<(ProvingKey<Bls12_381>, PreparedVerifyingKey<Bls12_381>
     Ok((pk, pvk))
 }
 
-/// Generate a proof that a nationality is in the allowed set using Merkle tree membership.
+/// Generate a proof that a nationality is a member of the named dataset.
+///
+/// `set_name` is resolved against the `data` registry — failing closed if the
+/// name is unknown — so the prover and verifier always agree on the leaf set.
+/// The dataset normalizes `nationality` (alpha-2, alpha-3, country name, or
+/// demonym are all accepted) to its canonical leaf form before lookup.
 pub fn prove(
     pk: &ProvingKey<Bls12_381>,
     nationality: &str,
-    allowed_countries: &[&str],
+    set_name: &str,
 ) -> Result<ZkProof, ZkError> {
-    let nat_field = country_to_field(nationality);
+    let dataset = crate::data::lookup(set_name).ok_or_else(|| {
+        ZkError::InvalidInput(format!("Unknown nationality dataset '{}'", set_name))
+    })?;
+    let canonical = dataset
+        .canonicalize(nationality)
+        .ok_or(ZkError::PreconditionFailed)?;
+    let allowed_countries = dataset.items;
 
-    // Find nationality index in the set
+    let nat_field = country_to_field(canonical);
+
     let idx = allowed_countries
         .iter()
-        .position(|&c| c == nationality)
-        .ok_or_else(|| {
-            ZkError::InvalidInput(format!("Nationality '{}' not in allowed set", nationality))
-        })?;
+        .position(|&c| c == canonical)
+        .ok_or(ZkError::PreconditionFailed)?;
 
-    // Build Merkle tree and get path for this nationality
     let (root, all_paths) = build_nationality_tree(allowed_countries);
     let path = &all_paths[idx];
 
@@ -204,28 +206,42 @@ mod tests {
     use crate::{get_pk, get_pvk};
 
     #[test]
-    fn test_eu_nationality_proof() {
-        let countries = &["NL", "DE", "FR"];
+    fn test_eu_member_proof_alpha2() {
         let pk = get_pk(&ZkProofType::Nationality);
         let pvk = get_pvk(&ZkProofType::Nationality);
 
-        // Prove NL is in {NL, DE, FR}
-        let proof = prove(pk, "NL", countries).expect("Proof generation failed");
+        let proof = prove(pk, "NL", "eu").expect("Proof generation failed");
         assert_eq!(proof.proof_type, ZkProofType::Nationality);
-        // Should have exactly 1 public input (merkle root)
         assert_eq!(proof.public_inputs.len(), 1);
 
-        let valid = verify(pvk, &proof).expect("Verification failed");
-        assert!(valid);
+        assert!(verify(pvk, &proof).unwrap());
+    }
+
+    #[test]
+    fn test_eu_member_proof_accepts_alpha3_name_and_demonym() {
+        let pk = get_pk(&ZkProofType::Nationality);
+        let pvk = get_pvk(&ZkProofType::Nationality);
+
+        for input in ["NLD", "Netherlands", "Dutch", "the netherlands"] {
+            let proof = prove(pk, input, "eu")
+                .unwrap_or_else(|e| panic!("prove({}) failed: {}", input, e));
+            assert!(verify(pvk, &proof).unwrap(), "{} should verify", input);
+        }
     }
 
     #[test]
     fn test_non_member_rejected() {
-        let countries = &["NL", "DE", "FR"];
         let pk = get_pk(&ZkProofType::Nationality);
 
-        // US is not in {NL, DE, FR}
-        let result = prove(pk, "US", countries);
+        for input in ["US", "USA", "American"] {
+            assert!(prove(pk, input, "eu").is_err(), "{} must not prove EU", input);
+        }
+    }
+
+    #[test]
+    fn test_unknown_dataset_fails_closed() {
+        let pk = get_pk(&ZkProofType::Nationality);
+        let result = prove(pk, "NL", "eu-9999");
         assert!(result.is_err());
     }
 
@@ -234,11 +250,8 @@ mod tests {
         let pk = get_pk(&ZkProofType::Nationality);
         let pvk = get_pvk(&ZkProofType::Nationality);
 
-        // Prove DE is in full EU set
-        let proof = prove(pk, "DE", EU_COUNTRIES).expect("Proof generation failed");
+        let proof = prove(pk, "DE", "eu").expect("Proof generation failed");
         assert_eq!(proof.public_inputs.len(), 1);
-
-        let valid = verify(pvk, &proof).expect("Verification failed");
-        assert!(valid);
+        assert!(verify(pvk, &proof).unwrap());
     }
 }

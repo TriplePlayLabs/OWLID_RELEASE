@@ -1,21 +1,13 @@
 import { createFileRoute, Outlet } from '@tanstack/react-router'
-import { IdentityProvider, useIdentityContext } from '~/contexts/identity-context'
-import { IdentityMenu } from '~/components/identity/IdentityMenu'
+import { useIdentity } from '~/hooks/use-identity'
+import { AppHeader } from '~/components/identity/AppHeader'
 
 export const Route = createFileRoute('/_identity')({
   component: IdentityLayout,
 })
 
 function IdentityLayout() {
-  return (
-    <IdentityProvider>
-      <IdentityLayoutContent />
-    </IdentityProvider>
-  )
-}
-
-function IdentityLayoutContent() {
-  const { isIdentityCreated, resetDemo } = useIdentityContext()
+  const { isIdentityCreated, resetDemo } = useIdentity()
 
   const handleReset = () => {
     if (confirm('This will clear your local identity and reset. Continue?')) {
@@ -24,12 +16,11 @@ function IdentityLayoutContent() {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col font-sans selection:bg-white/20 overflow-x-hidden relative">
-      {isIdentityCreated && <IdentityMenu onReset={handleReset} />}
-
-      <div className="w-full p-4 md:p-12 flex flex-col justify-center relative z-10">
+    <div className="min-h-screen bg-background text-foreground flex flex-col font-sans selection:bg-white/20 overflow-x-hidden">
+      <AppHeader showMenu={isIdentityCreated} onReset={handleReset} />
+      <main className="flex-1 w-full flex flex-col">
         <Outlet />
-      </div>
+      </main>
     </div>
   )
 }

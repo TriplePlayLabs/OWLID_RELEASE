@@ -1,9 +1,15 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { Plug, Globe } from 'lucide-react'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
-import { Badge } from '~/components/ui/badge'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@owlid/ui/components/ui/card'
+import { Badge } from '@owlid/ui/components/ui/badge'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@owlid/ui/components/ui/tabs'
 import {
   Table,
   TableBody,
@@ -11,8 +17,25 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '~/components/ui/table'
-import { useProviders, useOidcProviders } from '~/hooks/use-issuer'
+} from '@owlid/ui/components/ui/table'
+import { Switch } from '@owlid/ui/components/ui/switch'
+import { useProviders, useOidcProviders, useToggleProvider } from '~/hooks/use-issuer'
+import type { ProviderFlowType } from '@owlid/issuer-client'
+
+function flowTypeLabel(t: ProviderFlowType): string {
+  switch (t) {
+    case 'saml_redirect':
+      return 'SAML redirect'
+    case 'qr_polling':
+      return 'QR + polling'
+    case 'webhook_async':
+      return 'Webhook async'
+    case 'form_based':
+      return 'Form'
+    default:
+      return t
+  }
+}
 
 export const Route = createFileRoute('/providers')({
   component: ProvidersPage,
@@ -21,6 +44,7 @@ export const Route = createFileRoute('/providers')({
 function ProvidersPage() {
   const providers = useProviders()
   const oidcProviders = useOidcProviders()
+  const toggle = useToggleProvider()
 
   return (
     <div className="space-y-6">
@@ -54,34 +78,46 @@ function ProvidersPage() {
                     <TableHead>Provider ID</TableHead>
                     <TableHead>Name</TableHead>
                     <TableHead>Type</TableHead>
+                    <TableHead className="text-right">Enabled</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {providers.isLoading && (
                     <TableRow>
-                      <TableCell colSpan={3} className="text-center text-muted-foreground">
+                      <TableCell colSpan={4} className="text-center text-muted-foreground">
                         Loading...
                       </TableCell>
                     </TableRow>
                   )}
                   {providers.data?.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={3} className="text-center text-muted-foreground">
+                      <TableCell colSpan={4} className="text-center text-muted-foreground">
                         No identity providers configured
                       </TableCell>
                     </TableRow>
                   )}
-                  {providers.data?.map((p) => (
-                    <TableRow key={p.id}>
-                      <TableCell>
-                        <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{p.id}</code>
-                      </TableCell>
-                      <TableCell className="font-medium">{p.name}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{p.type}</Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {providers.data?.map((p) => {
+                    const pending = toggle.isPending && toggle.variables?.id === p.id
+                    return (
+                      <TableRow key={p.id}>
+                        <TableCell>
+                          <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{p.id}</code>
+                        </TableCell>
+                        <TableCell className="font-medium">{p.name}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{flowTypeLabel(p.flowType)}</Badge>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Switch
+                            checked={p.enabled}
+                            disabled={pending}
+                            onCheckedChange={(next) => toggle.mutate({ id: p.id, enable: next })}
+                            aria-label={`Toggle provider ${p.id}`}
+                          />
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             </CardContent>

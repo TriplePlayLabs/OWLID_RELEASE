@@ -284,9 +284,26 @@ impl PublicKey {
         hex::encode(self.to_bytes())
     }
 
-    /// Import from hex string (defaults to Ed25519)
+    /// Import from hex string. Detects the signature algorithm from the
+    /// decoded byte length:
+    ///   * 32 bytes → Ed25519 raw public key
+    ///   * 33 bytes (compressed) or 65 bytes (uncompressed) → ECDSA P-256 (SEC1)
+    /// Pass an explicit algorithm via `from_hex_with_algorithm` to bypass
+    /// detection (useful when both encodings happen to share a length).
     pub fn from_hex(hex_str: &str) -> Result<Self, SignatureError> {
-        Self::from_hex_with_algorithm(hex_str, SignatureAlgorithm::Ed25519)
+        let bytes = hex::decode(hex_str)
+            .map_err(|e| SignatureError::InvalidPublicKey(format!("Invalid hex: {}", e)))?;
+        let alg = match bytes.len() {
+            32 => SignatureAlgorithm::Ed25519,
+            33 | 65 => SignatureAlgorithm::EcdsaP256,
+            n => {
+                return Err(SignatureError::InvalidPublicKey(format!(
+                    "Unrecognized public key length: {} bytes (expected 32 for Ed25519, or 33/65 for P-256 SEC1)",
+                    n
+                )))
+            }
+        };
+        Self::from_bytes_with_algorithm(&bytes, alg)
     }
 
     /// Import from hex string with specified algorithm

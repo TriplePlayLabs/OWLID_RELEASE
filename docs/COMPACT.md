@@ -1,35 +1,8 @@
-# Compact Language Knowledge Base for NightID/OwlID
+# Compact language reference
 
-> Comprehensive reference for Midnight's Compact smart contract language.
-> Compiled from official docs, GitHub repos, OpenZeppelin contracts, and community resources.
-
----
-
-## Table of Contents
-
-1. [Overview](#1-overview)
-2. [Language Basics](#2-language-basics)
-3. [Type System](#3-type-system)
-4. [Ledger (On-Chain State)](#4-ledger-on-chain-state)
-5. [Ledger ADTs](#5-ledger-adts)
-6. [Circuits (Entry Points)](#6-circuits-entry-points)
-7. [Witnesses (Private Data)](#7-witnesses-private-data)
-8. [Privacy Model & `disclose`](#8-privacy-model--disclose)
-9. [Control Flow](#9-control-flow)
-10. [Standard Library](#10-standard-library)
-11. [Module System & Imports](#11-module-system--imports)
-12. [Constructors](#12-constructors)
-13. [Compilation & Tooling](#13-compilation--tooling)
-14. [TypeScript SDK Wiring](#14-typescript-sdk-wiring)
-15. [Infrastructure](#15-infrastructure)
-16. [Code Examples](#16-code-examples)
-17. [NightID Contract Design](#17-nightid-contract-design)
-18. [Language Constraints](#18-language-constraints)
-19. [Advanced Patterns](#19-advanced-patterns)
-20. [Version Changelog (0.27 → 0.29)](#20-version-changelog-027--029)
-21. [Testing Compact Contracts](#21-testing-compact-contracts)
-22. [Deployment & DApp Integration](#22-deployment--dapp-integration)
-23. [OpenZeppelin Compact Contracts](#23-openzeppelin-compact-contracts)
+> Reference notes for Midnight's Compact smart contract language. Compiled from official docs, GitHub repos, OpenZeppelin contracts, and community resources.
+>
+> **Toolchain target**: this repo pins Compact `0.31.0` (`compact update 0.31.0`). The version-changelog section below stops at 0.29 — review against the upstream changelog before relying on a specific feature.
 
 ---
 

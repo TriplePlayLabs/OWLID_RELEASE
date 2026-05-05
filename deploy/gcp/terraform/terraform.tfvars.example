@@ -1,0 +1,29 @@
+project_id        = "owlid-491411"
+region            = "europe-west1"
+billing_account   = "014A28-B098BA-C0B96E"
+budget_amount_eur = 300
+domain            = "owlid.app"
+dns_zone_name     = "owlid-app"
+
+# image_tag = "latest"
+# use_placeholder_images = true   # set to true on the first apply if images aren't built yet
+
+# --- Runtime mode -----------------------------------------------------------
+# 'development' is correct for .run.app deploy (Cloud Run hostnames are on
+# the Public Suffix List so cross-service cookies aren't possible there).
+# Flip to 'production' after wiring the custom domain.
+app_env = "development"
+
+# Apex domain for the verification admin cookie. Leave empty until a custom
+# domain is ACTIVE and frontends are mapped to subdomains.
+# When set: e.g. "owlid.app" -> cookie scope spans api/admin/app/verifier subdomains.
+admin_cookie_domain = ""
+
+# Extra CORS origins on top of the predictable frontend Cloud Run URLs.
+# Add custom-domain origins here once the domain is mapped:
+# extra_cors_origins = ["https://app.owlid.app", "https://admin.owlid.app", "https://verifier.owlid.app"]
+extra_cors_origins = []
+
+# Midnight wiring (off until real chain endpoints are configured).
+midnight_auto_register_issuer = false
+midnight_sidecar_timeout_ms   = 30000

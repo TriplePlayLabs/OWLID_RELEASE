@@ -1,331 +1,235 @@
-# OwlID End-to-End Scenarios
+# Real-world scenarios
 
-Reference scenarios demonstrating complete data flows through the OwlID system.
-Each scenario shows the full lifecycle from credential issuance through verification.
+Concrete products you can build with OwlID. Each shows the user-facing flow plus the SDK calls that drive it.
 
----
+## 1. Age gate for a bar / venue
 
-## Scenario 1: Bar Age Check (Anonymous Proof)
+Goal: confirm a customer is 18+ before serving alcohol. No name, no birthday — just the green check.
 
-**Goal:** Alice proves she is 18+ to enter a bar without revealing her name, birthday, or any personal data.
+```ts
+import { OwlVerifier } from '@owlid/sdk'
 
-### Actors
+const verifier = new OwlVerifier({ apiKey: process.env.OWLID_API_KEY! })
 
-- **Government (Issuer):** Netherlands DigiD mock provider
-- **Alice (Owner):** Holds a credential on her phone
-- **Bar Bouncer (Verifier):** Needs proof of age >= 18
+const result = await verifier.requestPresentation({
+  verifierName: 'Acme Bar',
+  predicates: [{ id: 'isOver18', label: 'Over 18' }],
+  onQr: (qrPayload) => terminal.showQr(qrPayload),
+  timeoutMs: 60_000,
+})
 
-### Step-by-Step Flow
-
-**1. Credential Issuance**
-
-Alice verifies her identity through the issuer service using mock DigiD.
-
-```
-POST http://localhost:8001/sessions
-{"providerId": "mock-digid"}
--> {"sessionId": "abc-123", "providerId": "mock-digid", "flowType": "form_based"}
-
-POST http://localhost:8001/sessions/abc-123/auto-verify
--> {"firstName": "Jan", "lastName": "de Vries", "dateOfBirth": "1985-03-15",
-    "nationality": "Dutch", "isOver18": true, ...}
-
-POST http://localhost:8001/sessions/abc-123/issue
-{"ownerPublicKey": "<alice_ed25519_hex>", "keyAlgorithm": "ed25519"}
--> {"success": true, "credential": {"root_hash": "a1b2c3...", "attributes": {...}, "salt": "..."}}
-```
-
-Alice stores the `credential` (ProofDocument) in her wallet.
-
-**2. Token Generation (Client-Side)**
-
-The bar's terminal generates a random challenge and displays a QR code.
-Alice's wallet builds a token proving age >= 18 with zero disclosure.
-
-```rust
-let request = ProofRequest {
-    disclose: vec![],                    // No personal info disclosed
-    predicates: vec![PredicateRequest {
-        attribute: "dateOfBirth",
-        op: PredicateOp::GreaterOrEqual,
-        value: json!(18),                // Prove age >= 18
-    }],
-    trusted_issuers: vec![gov_pubkey],
-    challenge: "bar-challenge-f8a2b1",
-};
-
-let token = Token::generate(&mut proof_doc, &request, &alice_key, 300)?;
-let compact = token.to_compact()?;      // "NID1:..." (~1500 chars, fits QR)
-```
-
-**3. Token Verification**
-
-The bar's terminal sends the compact token to the verification service.
-
-```
-POST http://localhost:8000/verify
-X-API-Key: <bar_api_key>
-{"token": "NID1:...", "challenge": "bar-challenge-f8a2b1"}
-
--> {"valid": true, "subjects": {"issuerKey": "...", "ownerKey": "...", "rootHash": "..."}}
-```
-
-**What the verifier sees:**
-
-- `valid: true` (Alice is 18+)
-- `issuerKey` (government's public key -- trusted)
-- No name, no birthday, no nationality -- just the cryptographic proof
-
-**What the verifier does NOT see:**
-
-- Alice's name, date of birth, address, nationality
-- Which specific age Alice is (only that it's >= 18)
-
-### Privacy Properties
-
-- ZK proof reveals nothing except "age >= 18"
-- Per-document salt prevents linking this proof to other verifications
-- Challenge prevents replay (one-time use)
-
----
-
-## Scenario 2: Employer KYC Check (Selective Disclosure + Predicate)
-
-**Goal:** Bob proves his name and that he has KYC level >= 2 to a potential employer.
-
-### Actors
-
-- **Government (Issuer):** BankID mock provider (Sweden)
-- **Bob (Owner):** Job applicant
-- **Employer (Verifier):** Needs name + KYC level proof
-
-### Step-by-Step Flow
-
-**1. Credential Issuance**
-
-```
-POST http://localhost:8001/sessions
-{"providerId": "mock-bankid"}
-
-POST http://localhost:8001/sessions/<id>/auto-verify
--> {"firstName": "Erik", "lastName": "Svensson", "nationality": "Swedish",
-    "verificationLevel": "High", ...}
-
-POST http://localhost:8001/sessions/<id>/issue
-{"ownerPublicKey": "<bob_hex>", "keyAlgorithm": "ed25519"}
--> {"success": true, "credential": {...}}
-```
-
-**2. Token Generation**
-
-```rust
-let request = ProofRequest {
-    disclose: vec![
-        "firstName".to_string(),     // Employer sees the name
-        "lastName".to_string(),
-    ],
-    predicates: vec![PredicateRequest {
-        attribute: "verificationLevel",
-        op: PredicateOp::GreaterOrEqual,
-        value: json!(2),             // Prove KYC >= Standard
-    }],
-    trusted_issuers: vec![gov_pubkey],
-    challenge: "employer-check-9c3d",
-};
-
-let token = Token::generate(&mut proof_doc, &request, &bob_key, 3600)?;
-```
-
-**3. Verification**
-
-```
-POST http://localhost:8000/verify
-{"token": "NID1:...", "challenge": "employer-check-9c3d"}
-
--> {
-     "valid": true,
-     "subjects": {
-       "firstName": "Erik",
-       "lastName": "Svensson",
-       "issuerKey": "...",
-       "ownerKey": "..."
-     }
-   }
-```
-
-**What the employer sees:** Name + proof of KYC level >= 2.
-**What the employer does NOT see:** Nationality, address, national ID, exact KYC level.
-
----
-
-## Scenario 3: EU Border Crossing (Nationality Set Membership)
-
-**Goal:** Alice proves she is an EU citizen to cross a border without revealing which country.
-
-### Token Generation
-
-```rust
-let request = ProofRequest {
-    disclose: vec!["firstName".to_string()],
-    predicates: vec![PredicateRequest {
-        attribute: "nationality",
-        op: PredicateOp::InSet,
-        value: json!([
-            "Austrian", "Belgian", "Bulgarian", "Croatian", "Cypriot",
-            "Czech", "Danish", "Dutch", "Estonian", "Finnish", "French",
-            "German", "Greek", "Hungarian", "Irish", "Italian", "Latvian",
-            "Lithuanian", "Luxembourgish", "Maltese", "Polish", "Portuguese",
-            "Romanian", "Slovak", "Slovenian", "Spanish", "Swedish"
-        ]),
-    }],
-    trusted_issuers: vec![gov_pubkey],
-    challenge: "border-x9f2",
-};
-```
-
-### Verification Result
-
-```json
-{
-  "valid": true,
-  "subjects": {
-    "firstName": "Jan",
-    "issuerKey": "...",
-    "ownerKey": "..."
-  }
+if (result.valid) {
+  bar.allowEntry()
+} else {
+  bar.deny(result.error)
 }
 ```
 
-The border agent knows Alice is an EU citizen but not which member state.
-The nationality ZK proof uses a Pedersen Merkle tree with 27 leaves (one per EU country).
+**What the bar sees**: `valid: true`, plus the issuer's public key (a trusted government IdP). Nothing else.
+
+**What the bar does NOT see**: name, exact age, address, document number, photo.
+
+**Privacy properties**:
+
+- Per-credential salt prevents linking this proof to other venues.
+- The challenge is single-use — a recorded token cannot be replayed.
+- The user's passkey signs the token in the secure enclave; the wallet never exports key material.
 
 ---
 
-## Scenario 4: Anonymous Forum Registration (Ring Signature)
+## 2. EU-only marketplace listing
 
-**Goal:** Alice registers on a forum proving she has a valid credential without revealing her identity.
+Goal: a service operates only in the EU and needs to confirm sellers are EU residents.
 
-### Token Generation
-
-Alice signs with a ring signature. The verifier knows ONE of the ring members signed, but not which.
-
-```rust
-let prepared = Token::prepare(&mut proof_doc, &request, 3600)?;
-
-let owner_private: [u8; 32] = alice.to_bytes()[..32].try_into().unwrap();
-let ring: Vec<[u8; 32]> = vec![
-    to_32(alice.public_key().to_bytes()),
-    to_32(decoy1.public_key().to_bytes()),
-    to_32(decoy2.public_key().to_bytes()),
-    to_32(decoy3.public_key().to_bytes()),
-];
-
-let token = Token::finalize_ring_sig(prepared, &owner_private, &ring)?;
+```ts
+const result = await verifier.requestPresentation({
+  verifierName: 'EU Marketplace',
+  predicates: [{ id: 'nationality:eu', label: 'EU citizenship' }],
+  onQr: (payload) => listing.renderQr(payload),
+})
 ```
 
-### Verification Result
+The proof is a Groth16 ZK proof that the seller's nationality belongs to the
+27-member `eu` dataset (`AT, BE, BG, …`) — the verifier learns _yes/no_,
+never the specific country. The dataset is registered in `zk-circuits` and
+served by the verification service at `GET /circuit-data/eu`; the verifier
+recomputes the canonical Merkle root server-side rather than trusting any
+list the holder sends.
 
-```json
-{
-  "valid": true,
-  "subjects": {
-    "issuerKey": "...",
-    "rootHash": "..."
-  }
+---
+
+## 3. Hire-only-KYC-verified contractors
+
+Goal: a remote-work platform requires every contractor to have completed at least KYC tier 2 with any approved provider.
+
+```ts
+const result = await verifier.requestPresentation({
+  verifierName: 'Acme Talent',
+  predicates: [{ id: 'kycLevel2', label: 'KYC tier 2 or higher' }],
+  disclose: ['firstName', 'lastName'],
+  onQr: (payload) => onboarding.showQr(payload),
+})
+
+if (result.valid) {
+  await onboarding.complete({
+    firstName: result.subjects?.firstName,
+    lastName: result.subjects?.lastName,
+  })
 }
 ```
 
-No owner key is revealed. The forum knows a valid credential holder signed, but cannot determine which of the 4 ring members it was. Combined with a ZK age predicate, Alice can prove she's 18+ anonymously.
+Name comes back in plaintext (it's on the offer letter); KYC tier is a ZK predicate — the platform never sees the underlying KYC report.
 
 ---
 
-## Scenario 5: Credential Revocation Mid-Session
+## 4. Anti-bot signup (verified humans only)
 
-**Goal:** Government revokes Alice's credential while she's using it; subsequent verifications fail.
+Goal: a forum or event signup wants to confirm visitors are real humans without learning their identity.
 
-### Flow
-
-```
-# 1. Alice verifies successfully
-POST /verify {"token": "NID1:...", "challenge": "session-1"}
--> {"valid": true}
-
-# 2. Government revokes the credential
-POST /revocations/revoke
-{"credential_id": "<root_hash>", "issuer_public_key": "<gov_key>", "reason": "Document expired"}
--> {"success": true}
-
-# 3. Alice tries to verify again (new challenge)
-POST /verify {"token": "NID1:...", "challenge": "session-2"}
--> {"valid": false, "error": "Credential revoked: <root_hash>"}
-
-# 4. Government reactivates after review
-POST /revocations/reactivate {"credential_id": "<root_hash>"}
--> {"success": true}
-
-# 5. Alice can verify again
-POST /verify {"token": "NID1:...", "challenge": "session-3"}
--> {"valid": true}
+```ts
+const result = await verifier.requestPresentation({
+  verifierName: 'Acme Community',
+  predicates: [{ id: 'isOver13', label: 'Real human, age-appropriate' }],
+  onQr: (payload) => signup.showQr(payload),
+})
 ```
 
-Revocation propagates immediately through the in-memory cache.
-WebSocket subscribers receive real-time notifications at `ws://localhost:8000/ws/revocations`.
+The user proves they hold a credential issued by a trusted KYC provider, plus an age threshold. The signup form learns nothing else — no email, no document, no profile data — and gets bot-resistance for free.
 
 ---
 
-## Scenario 6: GDPR Right-to-Erasure
+## 5. Conference / event ticketing
 
-**Goal:** Alice requests deletion of all her data from the system.
+Goal: gate access to a paid event. Each ticket is a credential issued at purchase; holders present a single-use proof at the door without exposing the QR-code-as-bearer-token pattern that gets screenshots resold on Telegram.
 
-### Flow
+**Issuance** — when someone buys a ticket, your back office mints a credential bound to a holder public key (the user's wallet, registered at checkout):
 
+```ts
+import { OwlIssuer } from '@owlid/sdk'
+
+const issuer = new OwlIssuer({ apiKey: process.env.OWLID_API_KEY! })
+
+const session = await issuer.startSession('owlcon-checkout')
+await issuer.submitClaims(session.id, {
+  eventId: 'OWLCON-2026',
+  tier: 'vip',
+  ticketId: ticket.id,
+  validFrom: '2026-09-15T08:00:00Z',
+  validUntil: '2026-09-17T22:00:00Z',
+  transferable: false,
+})
+
+const credential = await issuer.issue(session.id, {
+  publicKey: holderPublicKey,
+  algorithm: 'p256',
+})
+// hand `credential.document` to the wallet
 ```
-DELETE /admin/gdpr-erasure/<alice_public_key>
-X-API-Key: <admin_key>
 
--> {
-     "owner_public_key": "<alice_public_key>",
-     "credentials_revoked": 2,
-     "records_anonymized": 2,
-     "erased_at": "2026-03-15T12:00:00Z",
-     "receipt_id": "gdpr-abc-123"
-   }
+**At the door** — the scanner runs a QR presentation flow, asking only for `eventId`, the validity window, and (for VIP-only fast-track) the tier:
+
+```ts
+import { OwlVerifier } from '@owlid/sdk'
+
+const verifier = new OwlVerifier({ apiKey: process.env.OWLID_DOOR_KEY! })
+
+const result = await verifier.requestPresentation({
+  verifierName: 'OwlCon 2026 Entrance',
+  predicates: [
+    { id: 'isThisEvent', label: 'Valid OwlCon 2026 ticket' },
+    { id: 'isVip', label: 'VIP tier' },
+  ],
+  onQr: (payload) => scanner.showQr(payload),
+  timeoutMs: 30_000,
+})
+
+if (result.valid) scanner.unlockGate()
 ```
 
-**What happens:**
+**Why it beats QR-image tickets**:
 
-1. All active credentials for Alice are revoked
-2. Credential data in the database is replaced with `{"anonymized": true}`
-3. Verification logs remain but with hashed identifiers only (no PII)
-4. An audit event is recorded with the erasure receipt ID
-5. The receipt ID serves as proof that erasure was performed
+- The token is single-use — the platform consumes the door's nonce on `verify()`. A screenshot replays as `valid: false`.
+- The wallet signs each token with the user's passkey at scan time. A photo of the wallet screen has no signing material.
+- If a ticket is refunded or charged back, the issuer revokes the credential. The door's verifier sees the change in real time via `subscribeRevocations`.
+- Hidden attributes stay hidden — you can put the buyer's name on the credential for support reasons without the door scanner ever reading it.
+
+**Per-session passes** (multi-day badge): same credential, holder generates a fresh token per scan. Each scan binds to a new door challenge — no replay window.
+
+**Transferable tickets** (resale market): set `transferable: true` and re-issue under the new buyer's key when ownership changes. Old credential goes on the revocation registry the same instant.
 
 ---
 
-## Running These Scenarios
+## 6. Anonymous voting / DAO membership
 
-All scenarios are automated in the E2E test suite:
+Goal: prove "I'm a member of this group" without revealing _which_ member. Ring signatures attach a signature that any one of N ring keys could have produced — verifiers learn the holder is in the ring, not which one.
 
-```bash
-# Start services
-just db-start
-just dev-backend
+```ts
+import { Credential, Token } from '@owlid/sdk'
 
-# Run verification service E2E tests (47 tests)
-VERIFICATION_SERVICE_URL=http://localhost:8000 \
-cargo test -p owl-verification-service --test e2e_api -- --ignored --test-threads=1
+const credential = Credential.fromJson(stored)
+const prepared = credential.prepare(proofRequest, 3600)
 
-# Run issuer service E2E tests (15 tests)
-ISSUER_SERVICE_URL=http://localhost:8001 \
-cargo test -p owl-issuer-service --test e2e_api -- --ignored --test-threads=1
+const token = Token.finalizeRingSig(prepared, ownerPrivateHex, [
+  ownerPublicHex,
+  decoy1Hex,
+  decoy2Hex,
+  decoy3Hex,
+])
+
+const compact = token.toCompact() // submit to vote
 ```
 
-Key test functions per scenario:
+Verifier-side:
 
-- Scenario 1: `test_verify_zk_age_predicate`
-- Scenario 2: `test_t016_zk_kyc_predicate`, `test_verify_valid_token`
-- Scenario 3: `test_t016_zk_nationality_predicate`
-- Scenario 4: `test_t022_ring_signature_anonymity`
-- Scenario 5: `test_revoked_token_fails_verification`, `test_suspend_and_reactivate_credential`
-- Scenario 6: `test_t019_gdpr_erasure`
-- Cross-service: `test_cross_service_issue_then_verify` (issuer service tests)
+```ts
+const result = await verifier.verify(compact, ballot.challenge)
+// valid: true, but no ownerKey is exposed
+```
+
+---
+
+## 7. Stolen-device credential revocation
+
+Goal: a user's phone is stolen. The issuer revokes the credential; subsequent verifications fail immediately and verifiers can drop cached results.
+
+Issuer side (operator dashboard or your back office):
+
+```ts
+// admin tooling — not part of the public SDK
+// (revokes by credential rootHash via the OwlID admin API)
+```
+
+Verifier side, optional live invalidation:
+
+```ts
+const unsubscribe = verifier.subscribeRevocations((event) => {
+  cache.invalidate(event.credentialId)
+})
+```
+
+Next `verify()` call returns `{ valid: false, error: 'Credential revoked' }`.
+
+---
+
+## 8. GDPR right-to-erasure
+
+Goal: an EU resident exercises their right to be forgotten. Their identifying data on the platform is anonymized; cryptographic audit trails remain hash-only.
+
+The user (or their support rep) triggers erasure from the operator dashboard. The platform:
+
+1. Revokes every active credential bound to the holder's public key.
+2. Replaces stored claim data with anonymised placeholders.
+3. Retains hash-only audit records (compliance) but strips PII.
+4. Returns a signed receipt the user keeps as proof.
+
+OwlID was designed so the platform mostly stores hashes already — there's very little PII to erase. The flow exists for compliance, not because the system retains a copy of the user's documents.
+
+---
+
+## Common patterns
+
+- **Render the QR full-screen** so phones don't have to crop the camera frame.
+- **Use a short challenge TTL** (60 s) for unattended kiosks, longer (5 min) for online flows.
+- **Cache verification results** keyed by token hash, expire on either TTL or a revocation push event.
+- **Map `result.error` to user-friendly messages** — the platform returns codes like `Credential revoked`, `Token expired`, `Untrusted issuer`.
+- **For mobile-only verifiers**, use `OwlVerifier.openPresentation()` plus a deep link rather than QR.

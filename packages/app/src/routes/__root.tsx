@@ -4,7 +4,8 @@ import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
-import { TooltipProvider } from '~/components/ui/tooltip'
+import { TooltipProvider } from '@owlid/ui/components/ui/tooltip'
+import { ModalsPortal } from '@owlid/ui/modal'
 import { Toaster } from 'sonner'
 
 import appCss from '../styles.css?url'
@@ -108,6 +109,11 @@ export const Route = createRootRoute({
         href: 'https://fonts.googleapis.com/css2?family=Inter:wght@300..700&family=JetBrains+Mono:wght@400;500&display=swap',
       },
     ],
+    scripts: [
+      // Runtime config — see docker/runtime-config.sh. Loaded eagerly so
+      // window.__OWLID_CONFIG__ is in place before app code reads it.
+      { src: '/config.js' },
+    ],
   }),
 
   shellComponent: RootDocument,
@@ -124,6 +130,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           <TooltipProvider>
             <Toaster />
             {children}
+            <ModalsPortal />
             <ReactQueryDevtools initialIsOpen={false} />
             <TanStackDevtools
               config={{

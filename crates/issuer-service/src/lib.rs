@@ -52,10 +52,12 @@ pub mod database;
 pub mod db;
 pub mod error;
 pub mod issuance;
+pub mod middleware;
 pub mod mock_provider;
 pub mod models;
 pub mod normalizer;
 pub mod oidc;
+pub mod oidc_state;
 pub mod polling;
 pub mod provider;
 pub mod webhooks;
@@ -68,13 +70,13 @@ pub use error::{IdpError, PendingDetails, Result, VerificationWarning};
 pub use mock_provider::{MockBankIdProvider, MockDigiDProvider, MockProvider, MockProviderFactory};
 pub use models::{is_eu_citizen, is_over_age};
 pub use models::{
-    FlowState, IdentitySubmissionForm, ProviderInfo, SessionStatus, VerificationLevel,
+    FlowState, IdentitySubmissionForm, ProviderDescriptor, SessionStatus, VerificationLevel,
     VerificationSession, VerifiedIdentityClaims,
 };
 pub use normalizer::RawProviderClaims;
 pub use provider::{
     DiditConfig, DiditProvider, DigitalIdentityProvider, FormConfig, FormField, FormFieldType,
-    PollResult, ProviderFlowType, ProviderInfoExtended, ProviderRegistry, VerificationStart,
+    PollResult, ProviderFlowType, ProviderInfo, ProviderRegistry, VerificationStart,
     WebhookPayload,
 };
 pub use normalizer::DiditVerificationData;

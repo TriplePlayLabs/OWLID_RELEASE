@@ -6,9 +6,9 @@
  */
 
 import { Loader2, Building2, Globe, Shield, ChevronRight } from 'lucide-react'
-import { Button } from '~/components/ui/button'
+import { Button } from '@owlid/ui/components/ui/button'
 import { useProviders } from '~/hooks/use-idp-api'
-import type { ProviderInfoExtended, ProviderFlowType } from '@owlid/sdk'
+import type { ProviderInfoExtended, ProviderFlowType } from '@owlid/sdk/issuer'
 
 interface ProviderSelectorProps {
   onSelect: (provider: ProviderInfoExtended) => void

@@ -57,7 +57,7 @@ fn test_age_predicate() {
     // Verify succeeds
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    assert!(token.verify(&trusted, "age-test-challenge", &registry).is_ok());
+    assert!(token.verify(&trusted, "age-test-challenge", &registry, &[]).is_ok());
 
     // firstName is disclosed
     assert_eq!(token.subjects().get("firstName"), Some(&json!("Alice")));
@@ -118,7 +118,7 @@ fn test_fake_age_binding_fails() {
     let tampered_token: Token = serde_json::from_value(token_json).unwrap();
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    let result = tampered_token.verify(&trusted, "binding-test", &registry);
+    let result = tampered_token.verify(&trusted, "binding-test", &registry, &[]);
     assert!(result.is_err(), "Tampered binding should fail verification");
 }
 
@@ -139,7 +139,7 @@ fn test_nationality_predicate() {
         predicates: vec![PredicateRequest {
             attribute: "nationality".to_string(),
             op: PredicateOp::InSet,
-            value: json!(["NL", "DE", "FR"]),
+            value: json!("eu"),
         }],
         trusted_issuers: vec![issuer.public_key().to_hex()],
         challenge: "nat-test".to_string(),
@@ -149,7 +149,7 @@ fn test_nationality_predicate() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    assert!(token.verify(&trusted, "nat-test", &registry).is_ok());
+    assert!(token.verify(&trusted, "nat-test", &registry, &[]).is_ok());
 
     // nationality should NOT be in subjects (committed only)
     assert!(token.subjects().get("nationality").is_none());
@@ -182,7 +182,7 @@ fn test_kyc_predicate() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    assert!(token.verify(&trusted, "kyc-test", &registry).is_ok());
+    assert!(token.verify(&trusted, "kyc-test", &registry, &[]).is_ok());
 }
 
 // =========================================================================
@@ -217,7 +217,7 @@ fn test_mixed_disclosure_and_predicates() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    assert!(token.verify(&trusted, "mixed-test", &registry).is_ok());
+    assert!(token.verify(&trusted, "mixed-test", &registry, &[]).is_ok());
 
     // firstName visible
     assert_eq!(token.subjects().get("firstName"), Some(&json!("Bob")));
@@ -254,7 +254,7 @@ fn test_is_resident_predicate() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    assert!(token.verify(&trusted, "resident-test", &registry).is_ok());
+    assert!(token.verify(&trusted, "resident-test", &registry, &[]).is_ok());
 
     // isResident should NOT be in subjects (committed only)
     assert!(token.subjects().get("isResident").is_none());
@@ -303,7 +303,7 @@ fn test_predicate_with_ring_sig() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    assert!(token.verify(&trusted, "ring-pred-test", &registry).is_ok());
+    assert!(token.verify(&trusted, "ring-pred-test", &registry, &[]).is_ok());
 }
 
 // =========================================================================
@@ -335,6 +335,6 @@ fn test_predicate_with_prepare_finalize_standard() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    assert!(token.verify(&trusted, "prepare-test", &registry).is_ok());
+    assert!(token.verify(&trusted, "prepare-test", &registry, &[]).is_ok());
     assert_eq!(token.subjects().get("firstName"), Some(&json!("Eve")));
 }

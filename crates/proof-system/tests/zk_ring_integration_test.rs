@@ -39,7 +39,7 @@ fn test_token_with_zk_age_proof() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    let result = token.verify(&trusted, "zk_test_challenge", &registry);
+    let result = token.verify(&trusted, "zk_test_challenge", &registry, &[]);
     assert!(result.is_ok(), "Token with ZK proof should verify: {:?}", result.err());
     assert_eq!(token.zk_proofs().len(), 1);
 }
@@ -80,7 +80,7 @@ fn test_token_with_multiple_zk_proofs() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    let result = token.verify(&trusted, "multi_zk_test", &registry);
+    let result = token.verify(&trusted, "multi_zk_test", &registry, &[]);
     assert!(result.is_ok(), "Token with multiple ZK proofs should verify: {:?}", result.err());
     assert_eq!(token.zk_proofs().len(), 2);
 }
@@ -109,7 +109,7 @@ fn test_token_without_zk_proofs_still_works() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    assert!(token.verify(&trusted, "no_zk_test", &registry).is_ok());
+    assert!(token.verify(&trusted, "no_zk_test", &registry, &[]).is_ok());
     assert_eq!(token.zk_proofs().len(), 0);
 }
 
@@ -166,7 +166,7 @@ fn test_token_with_ring_signature() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    let result = token.verify(&trusted, "ring_sig_test", &registry);
+    let result = token.verify(&trusted, "ring_sig_test", &registry, &[]);
     assert!(result.is_ok(), "Ring signature token should verify: {:?}", result.err());
 }
 
@@ -206,7 +206,7 @@ fn test_ring_signature_token_serialization_roundtrip() {
 
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    let result = deserialized.verify(&trusted, "ring_serde_test", &registry);
+    let result = deserialized.verify(&trusted, "ring_serde_test", &registry, &[]);
     assert!(result.is_ok(), "Deserialized ring sig token should verify: {:?}", result.err());
 }
 
@@ -253,7 +253,7 @@ fn test_token_with_ring_signature_and_zk_proof() {
     // Verify - both ring signature AND ZK proof should be checked
     let registry = RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
-    let result = token.verify(&trusted, "combined_test", &registry);
+    let result = token.verify(&trusted, "combined_test", &registry, &[]);
     assert!(
         result.is_ok(),
         "Token with ring sig + ZK proof should verify: {:?}",

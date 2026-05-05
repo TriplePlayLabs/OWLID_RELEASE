@@ -16,6 +16,9 @@ pub struct ApiKey {
     pub last_used_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_by: Option<String>,
+    pub key_type: String,
+    pub environment: String,
+    pub key_preview: Option<String>,
 }
 
 impl ApiKey {

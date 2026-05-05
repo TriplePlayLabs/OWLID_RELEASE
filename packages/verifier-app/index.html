@@ -11,6 +11,13 @@
   </head>
   <body class="bg-zinc-950 text-white antialiased">
     <div id="root"></div>
+    <!--
+      Runtime config — overrides VITE_* build-time defaults.
+      In production, /config.js is generated at container start by
+      docker/runtime-config.sh from env vars. In dev, the file is missing
+      and the tag is a no-op.
+    -->
+    <script src="/config.js" defer></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

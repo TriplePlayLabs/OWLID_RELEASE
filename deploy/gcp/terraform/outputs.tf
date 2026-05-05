@@ -1,0 +1,10 @@
+output "verification_url" { value = google_cloud_run_v2_service.verification.uri }
+output "issuer_url" { value = google_cloud_run_v2_service.issuer.uri }
+output "sidecar_url" { value = google_cloud_run_v2_service.sidecar.uri }
+output "app_url" { value = google_cloud_run_v2_service.frontend["app"].uri }
+output "admin_url" { value = google_cloud_run_v2_service.frontend["admin"].uri }
+output "verifier_url" { value = google_cloud_run_v2_service.frontend["verifier"].uri }
+output "sql_connection" { value = google_sql_database_instance.owlid.connection_name }
+output "runtime_sa_email" { value = google_service_account.runtime.email }
+output "image_prefix" { value = local.image_prefix }
+output "dns_name_servers" { value = google_dns_managed_zone.owlid_app.name_servers }

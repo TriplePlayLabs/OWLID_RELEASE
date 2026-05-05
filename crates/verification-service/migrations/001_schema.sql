@@ -1,23 +1,34 @@
 -- Verification Service Schema
 -- GDPR compliant with audit trails and data lifecycle management
 
--- API Keys for authentication
+-- API Keys for authentication.
+-- Format: `owlid_{pk|sk}_{live|test}_<base62>`.
+--   pk = publishable (browser-safe, scoped to `verify`)
+--   sk = secret (server-only, any permission)
+-- key_hash stores SHA-256 of the full key and is the lookup index.
+-- key_preview is a redacted display string (`owlid_sk_live_…AbCd`).
 CREATE TABLE api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    key_hash VARCHAR(64) NOT NULL UNIQUE, -- SHA256 hash of the API key
+    key_hash VARCHAR(64) NOT NULL UNIQUE,
+    key_type VARCHAR(8) NOT NULL,
+    environment VARCHAR(8) NOT NULL,
+    key_preview VARCHAR(48) NOT NULL,
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    permissions JSONB NOT NULL DEFAULT '[]', -- ["verify", "manage_issuers", "manage_revocations"]
+    permissions JSONB NOT NULL DEFAULT '[]',
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_used_at TIMESTAMPTZ,
     expires_at TIMESTAMPTZ,
     created_by VARCHAR(255),
-    CONSTRAINT valid_expiry CHECK (expires_at IS NULL OR expires_at > created_at)
+    CONSTRAINT valid_expiry CHECK (expires_at IS NULL OR expires_at > created_at),
+    CONSTRAINT api_keys_type_check CHECK (key_type IN ('pk', 'sk')),
+    CONSTRAINT api_keys_env_check  CHECK (environment IN ('live', 'test'))
 );
 
-CREATE INDEX idx_api_keys_hash ON api_keys(key_hash) WHERE is_active = true;
-CREATE INDEX idx_api_keys_active ON api_keys(is_active, expires_at);
+CREATE INDEX idx_api_keys_hash    ON api_keys(key_hash) WHERE is_active = true;
+CREATE INDEX idx_api_keys_active  ON api_keys(is_active, expires_at);
+CREATE INDEX idx_api_keys_type_env ON api_keys(key_type, environment) WHERE is_active = true;
 
 -- Trusted issuers registry
 CREATE TABLE trusted_issuers (

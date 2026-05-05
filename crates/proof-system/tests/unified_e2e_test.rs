@@ -103,14 +103,14 @@ fn e2e_bar_age_check() {
     assert_eq!(token.zk_proofs().len(), 1, "Should have exactly 1 ZK proof");
 
     // Verify succeeds
-    let result = token.verify(&w.trusted(), "bar-challenge-001", &w.registry);
+    let result = token.verify(&w.trusted(), "bar-challenge-001", &w.registry, &[]);
     assert!(result.is_ok(), "Verification should succeed: {:?}", result.err());
     println!("2. ✓ Verification passed — bouncer confirms Alice is over 18");
 
     // Serialize round-trip (simulate network transfer)
     let json = serde_json::to_string(&token).unwrap();
     let deserialized: Token = serde_json::from_str(&json).unwrap();
-    let result = deserialized.verify(&w.trusted(), "bar-challenge-001", &w.registry);
+    let result = deserialized.verify(&w.trusted(), "bar-challenge-001", &w.registry, &[]);
     assert!(result.is_ok(), "Deserialized token should verify: {:?}", result.err());
     println!("3. ✓ Serialization round-trip verified");
 
@@ -155,7 +155,7 @@ fn e2e_employer_kyc_check() {
     assert!(token.subjects().get("dateOfBirth").is_none());
     assert!(token.subjects().get("documentNumber").is_none());
 
-    let result = token.verify(&w.trusted(), "employer-challenge-002", &w.registry);
+    let result = token.verify(&w.trusted(), "employer-challenge-002", &w.registry, &[]);
     assert!(result.is_ok(), "Verification should succeed: {:?}", result.err());
     println!("2. ✓ Employer sees name + confirms KYC level sufficient");
 
@@ -176,11 +176,7 @@ fn e2e_eu_border_nationality() {
         predicates: vec![PredicateRequest {
             attribute: "nationality".to_string(),
             op: PredicateOp::InSet,
-            value: json!([
-                "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
-                "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
-                "PL", "PT", "RO", "SK", "SI", "ES", "SE"
-            ]),
+            value: json!("eu"),
         }],
         trusted_issuers: vec![w.issuer.public_key().to_hex()],
         challenge: "border-challenge-003".to_string(),
@@ -193,7 +189,7 @@ fn e2e_eu_border_nationality() {
     assert!(token.subjects().get("nationality").is_none(), "nationality should be hidden");
     assert!(token.payload().committed_attributes.contains_key("nationality"));
 
-    let result = token.verify(&w.trusted(), "border-challenge-003", &w.registry);
+    let result = token.verify(&w.trusted(), "border-challenge-003", &w.registry, &[]);
     assert!(result.is_ok(), "Verification should succeed: {:?}", result.err());
     println!("2. ✓ Border officer confirms EU nationality without seeing which country");
 
@@ -220,7 +216,7 @@ fn e2e_multi_predicate() {
             PredicateRequest {
                 attribute: "nationality".to_string(),
                 op: PredicateOp::InSet,
-                value: json!(["NL", "DE", "FR", "BE"]),
+                value: json!("eu"),
             },
             PredicateRequest {
                 attribute: "verificationLevel".to_string(),
@@ -243,7 +239,7 @@ fn e2e_multi_predicate() {
     assert_eq!(token.payload().committed_attributes.len(), 3);
     assert_eq!(token.subjects().get("firstName"), Some(&json!("Alice")));
 
-    let result = token.verify(&w.trusted(), "multi-pred-004", &w.registry);
+    let result = token.verify(&w.trusted(), "multi-pred-004", &w.registry, &[]);
     assert!(result.is_ok(), "Verification should succeed: {:?}", result.err());
     println!("2. ✓ All 3 predicates verified");
 
@@ -292,14 +288,14 @@ fn e2e_anonymous_ring_sig() {
     println!("2. Token finalized with ring signature (ring size: {})", ring.len());
 
     // Verify
-    let result = token.verify(&w.trusted(), "ring-anon-005", &w.registry);
+    let result = token.verify(&w.trusted(), "ring-anon-005", &w.registry, &[]);
     assert!(result.is_ok(), "Ring sig token should verify: {:?}", result.err());
     println!("3. ✓ Anonymous age proof verified — verifier doesn't know WHO signed");
 
     // Serialize round-trip
     let json = serde_json::to_string(&token).unwrap();
     let deserialized: Token = serde_json::from_str(&json).unwrap();
-    assert!(deserialized.verify(&w.trusted(), "ring-anon-005", &w.registry).is_ok());
+    assert!(deserialized.verify(&w.trusted(), "ring-anon-005", &w.registry, &[]).is_ok());
     println!("4. ✓ Serialization round-trip verified");
 
     println!("=== Anonymous Ring Signature PASSED ===\n");
@@ -331,7 +327,7 @@ fn e2e_prepare_finalize_standard() {
     assert_eq!(token.subjects().get("firstName"), Some(&json!("Alice")));
     assert!(token.subjects().get("dateOfBirth").is_none());
 
-    let result = token.verify(&w.trusted(), "prep-std-006", &w.registry);
+    let result = token.verify(&w.trusted(), "prep-std-006", &w.registry, &[]);
     assert!(result.is_ok(), "Standard-finalized token should verify: {:?}", result.err());
     println!("1. ✓ prepare → finalize_standard works");
 
@@ -366,7 +362,7 @@ fn e2e_tampering_committed_hash() {
         json!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
 
     let tampered: Token = serde_json::from_value(val).unwrap();
-    let result = tampered.verify(&w.trusted(), "tamper-007", &w.registry);
+    let result = tampered.verify(&w.trusted(), "tamper-007", &w.registry, &[]);
     assert!(result.is_err(), "Tampered committed hash should fail");
     println!("1. ✓ Modified committed leaf hash correctly rejected");
 
@@ -401,7 +397,7 @@ fn e2e_tampering_zk_binding() {
         json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
     let tampered: Token = serde_json::from_value(val).unwrap();
-    let result = tampered.verify(&w.trusted(), "tamper-bind-008", &w.registry);
+    let result = tampered.verify(&w.trusted(), "tamper-bind-008", &w.registry, &[]);
     assert!(result.is_err(), "Tampered ZK binding should fail");
     println!("1. ✓ Modified ZK proof binding correctly rejected");
 
@@ -435,7 +431,7 @@ fn e2e_tampering_disclosed_attribute() {
     val["payload"]["subjects"]["firstName"] = json!("Bob");
 
     let tampered: Token = serde_json::from_value(val).unwrap();
-    let result = tampered.verify(&w.trusted(), "tamper-disc-009", &w.registry);
+    let result = tampered.verify(&w.trusted(), "tamper-disc-009", &w.registry, &[]);
     assert!(result.is_err(), "Tampered disclosed attribute should fail");
     println!("1. ✓ Modified disclosed attribute correctly rejected");
 
@@ -465,7 +461,7 @@ fn e2e_revocation_mid_session() {
     let token = Token::generate(&mut w.proof_doc, &request, &w.alice, 3600).unwrap();
 
     // Initially valid
-    let result = token.verify(&w.trusted(), "revoke-010", &w.registry);
+    let result = token.verify(&w.trusted(), "revoke-010", &w.registry, &[]);
     assert!(result.is_ok(), "Should pass before revocation: {:?}", result.err());
     println!("1. ✓ Token valid before revocation");
 
@@ -479,13 +475,13 @@ fn e2e_revocation_mid_session() {
     println!("2. Government revoked credential");
 
     // Now verification fails
-    let result = token.verify(&w.trusted(), "revoke-010", &w.registry);
+    let result = token.verify(&w.trusted(), "revoke-010", &w.registry, &[]);
     assert!(result.is_err(), "Should fail after revocation");
     println!("3. ✓ Token correctly rejected after revocation");
 
     // Government reactivates
     w.registry.reactivate(root_hash, w.issuer.public_key().to_hex());
-    let result = token.verify(&w.trusted(), "revoke-010", &w.registry);
+    let result = token.verify(&w.trusted(), "revoke-010", &w.registry, &[]);
     assert!(result.is_ok(), "Should pass after reactivation: {:?}", result.err());
     println!("4. ✓ Token valid again after reactivation");
 
@@ -512,7 +508,7 @@ fn e2e_untrusted_issuer() {
     let token = Token::generate(&mut w.proof_doc, &request, &w.alice, 3600).unwrap();
 
     // Verify with fake issuer
-    let result = token.verify(&[fake_issuer.public_key()], "untrusted-011", &w.registry);
+    let result = token.verify(&[fake_issuer.public_key()], "untrusted-011", &w.registry, &[]);
     assert!(result.is_err(), "Should reject untrusted issuer");
     println!("1. ✓ Untrusted issuer correctly rejected");
 
@@ -541,7 +537,7 @@ fn e2e_wrong_challenge() {
 
     let token = Token::generate(&mut w.proof_doc, &request, &w.alice, 3600).unwrap();
 
-    let result = token.verify(&w.trusted(), "wrong-challenge", &w.registry);
+    let result = token.verify(&w.trusted(), "wrong-challenge", &w.registry, &[]);
     assert!(result.is_err(), "Should reject wrong challenge");
     println!("1. ✓ Wrong challenge correctly rejected (replay prevention works)");
 
@@ -573,7 +569,7 @@ fn e2e_disclosure_only_no_predicates() {
     assert!(token.payload().committed_attributes.is_empty());
     assert!(token.zk_proofs().is_empty());
 
-    let result = token.verify(&w.trusted(), "disc-only-014", &w.registry);
+    let result = token.verify(&w.trusted(), "disc-only-014", &w.registry, &[]);
     assert!(result.is_ok(), "Disclosure-only token should verify: {:?}", result.err());
     println!("1. ✓ Disclosure-only ProofRequest works (no ZK proofs needed)");
 
@@ -614,7 +610,7 @@ fn e2e_predicate_attribute_also_disclosed() {
     // ZK proof is still present
     assert_eq!(token.zk_proofs().len(), 1);
 
-    let result = token.verify(&w.trusted(), "both-015", &w.registry);
+    let result = token.verify(&w.trusted(), "both-015", &w.registry, &[]);
     assert!(result.is_ok(), "Should verify: {:?}", result.err());
     println!("1. ✓ Attribute both disclosed AND proven via ZK works correctly");
 
@@ -648,7 +644,7 @@ fn e2e_full_real_world_scenario() {
         };
 
         let token = Token::generate(&mut w.proof_doc, &request, &w.alice, 300).unwrap();
-        assert!(token.verify(&w.trusted(), "bar-session-a1", &w.registry).is_ok());
+        assert!(token.verify(&w.trusted(), "bar-session-a1", &w.registry, &[]).is_ok());
         println!("   ✓ Alice proves age >= 18 without revealing anything else");
     }
 
@@ -666,7 +662,7 @@ fn e2e_full_real_world_scenario() {
                 PredicateRequest {
                     attribute: "nationality".to_string(),
                     op: PredicateOp::InSet,
-                    value: json!(["NL", "DE", "FR", "BE", "LU"]),
+                    value: json!("eu"),
                 },
             ],
             trusted_issuers: vec![w.issuer.public_key().to_hex()],
@@ -676,7 +672,7 @@ fn e2e_full_real_world_scenario() {
         let token = Token::generate(&mut w.proof_doc, &request, &w.alice, 3600).unwrap();
         assert_eq!(token.subjects().get("firstName"), Some(&json!("Alice")));
         assert!(token.subjects().get("nationality").is_none());
-        assert!(token.verify(&w.trusted(), "bank-session-b1", &w.registry).is_ok());
+        assert!(token.verify(&w.trusted(), "bank-session-b1", &w.registry, &[]).is_ok());
         println!("   ✓ Bank sees name, confirms KYC >= 2, EU nationality — no DOB or doc# leaked");
     }
 
@@ -709,7 +705,7 @@ fn e2e_full_real_world_scenario() {
         let token = Token::finalize_ring_sig(prepared, &pk, &ring).unwrap();
 
         assert!(token.subjects().get("firstName").is_none());
-        assert!(token.verify(&w.trusted(), "forum-session-c1", &w.registry).is_ok());
+        assert!(token.verify(&w.trusted(), "forum-session-c1", &w.registry, &[]).is_ok());
         println!("   ✓ Forum knows Alice is 18+ and has a valid credential, but NOT who she is");
     }
 
@@ -731,13 +727,13 @@ fn e2e_full_real_world_scenario() {
         };
 
         let token = Token::generate(&mut w.proof_doc, &request, &w.alice, 3600).unwrap();
-        let result = token.verify(&w.trusted(), "post-revoke-d1", &w.registry);
+        let result = token.verify(&w.trusted(), "post-revoke-d1", &w.registry, &[]);
         assert!(result.is_err(), "Should fail after revocation");
         println!("   ✓ All new tokens rejected after revocation");
 
         // Reactivate
         w.registry.reactivate(root_hash, w.issuer.public_key().to_hex());
-        let result = token.verify(&w.trusted(), "post-revoke-d1", &w.registry);
+        let result = token.verify(&w.trusted(), "post-revoke-d1", &w.registry, &[]);
         assert!(result.is_ok());
         println!("   ✓ Tokens accepted again after reactivation");
     }

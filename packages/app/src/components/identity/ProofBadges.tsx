@@ -1,45 +1,58 @@
-import { Lock } from 'lucide-react'
-import type { GeneratedProof } from '~/types/proof'
+import type { DerivedProof } from '~/types/proof'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@owlid/ui/components/ui/tooltip'
 
 interface ProofBadgesProps {
-  proofs: GeneratedProof[]
-  onViewProof: (proof: GeneratedProof) => void
+  proofs: DerivedProof[]
 }
 
-export function ProofBadges({ proofs, onViewProof }: ProofBadgesProps) {
+// Compact tag list of every ZK predicate this credential can satisfy.
+// A tiny coloured dot signals the predicate's outcome on the holder's
+// claims (green = currently satisfied, dim red = wouldn't satisfy).
+export function ProofBadges({ proofs }: ProofBadgesProps) {
   if (proofs.length === 0) return null
 
   return (
-    <div className="mt-8 w-full max-w-[420px]">
-      <div className="flex items-center gap-2 mb-4">
-        <div className="h-px bg-white/10 flex-1"></div>
-        <span className="text-xs text-muted-foreground uppercase tracking-wider">
+    <section className="mt-6 w-full max-w-md">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-[10px] font-medium tracking-[0.18em] uppercase text-muted-foreground/70">
           What you can prove
         </span>
         <div className="h-px bg-white/10 flex-1"></div>
       </div>
-      <div className="flex flex-wrap gap-3 justify-center">
-        {proofs.map((proof) => (
-          <button
-            key={proof.id}
-            onClick={() => onViewProof(proof)}
-            aria-label={`View proof: ${proof.name}`}
-            className="flex flex-col items-center gap-2 p-3 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 transition-all group"
-            data-testid={`proof-icon-${proof.id}`}
-          >
-            <div
-              className={`p-2 rounded-full ${
-                proof.result ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-              }`}
-            >
-              <Lock className="w-5 h-5" />
-            </div>
-            <span className="text-xs text-muted-foreground group-hover:text-white transition-colors max-w-[80px] text-center leading-tight">
-              {proof.name}
-            </span>
-          </button>
-        ))}
-      </div>
-    </div>
+      <TooltipProvider delayDuration={150}>
+        <ul className="flex flex-wrap gap-1.5" data-testid="proof-tags">
+          {proofs.map((proof) => (
+            <li key={proof.id}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="group inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-white/[0.07] hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
+                    data-testid={`proof-tag-${proof.id}`}
+                  >
+                    <span
+                      aria-hidden
+                      className={`h-1.5 w-1.5 rounded-full ${
+                        proof.result ? 'bg-green-400' : 'bg-red-400/60'
+                      }`}
+                    />
+                    <span>{proof.claim}</span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-[240px] text-xs">
+                  <p className="font-medium mb-0.5">{proof.title}</p>
+                  <p className="opacity-70 leading-snug">{proof.description}</p>
+                </TooltipContent>
+              </Tooltip>
+            </li>
+          ))}
+        </ul>
+      </TooltipProvider>
+    </section>
   )
 }

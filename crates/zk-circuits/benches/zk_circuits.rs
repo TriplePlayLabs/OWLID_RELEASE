@@ -50,15 +50,15 @@ fn bench_nationality(c: &mut Criterion) {
 
     let pk = get_pk(&ZkProofType::Nationality);
     let pvk = get_pvk(&ZkProofType::Nationality);
-    let allowed: &[&str] = &["NL", "DE", "FR", "BE", "IT", "ES"];
+    let set_name = "eu";
 
     group.bench_function("prove", |b| {
         b.iter(|| {
-            nationality::prove(pk, "NL", allowed).expect("nationality prove failed");
+            nationality::prove(pk, "NL", set_name).expect("nationality prove failed");
         });
     });
 
-    let proof = nationality::prove(pk, "NL", allowed).expect("nationality prove failed");
+    let proof = nationality::prove(pk, "NL", set_name).expect("nationality prove failed");
     group.bench_function("verify", |b| {
         b.iter(|| {
             nationality::verify(pvk, &proof).expect("nationality verify failed");

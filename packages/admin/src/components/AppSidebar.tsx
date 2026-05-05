@@ -12,7 +12,7 @@ import {
   Key,
   LogOut,
 } from 'lucide-react'
-import { useAuth } from '~/contexts/auth-context'
+import { useAuth } from '~/hooks/use-auth'
 
 import {
   Sidebar,
@@ -26,7 +26,7 @@ import {
   SidebarMenuItem,
   SidebarFooter,
   SidebarRail,
-} from '~/components/ui/sidebar'
+} from '@owlid/ui/components/ui/sidebar'
 
 const navMain = [
   { title: 'Dashboard', to: '/', icon: LayoutDashboard },
@@ -49,7 +49,7 @@ const navSystem = [
 export function AppSidebar() {
   const routerState = useRouterState()
   const currentPath = routerState.location.pathname
-  const { username, logout } = useAuth()
+  const { username, logoutMutation } = useAuth()
 
   return (
     <Sidebar collapsible="icon">
@@ -155,7 +155,8 @@ export function AppSidebar() {
               size="sm"
               className="text-xs text-muted-foreground"
               tooltip="Sign out"
-              onClick={logout}
+              disabled={logoutMutation.isPending}
+              onClick={() => logoutMutation.mutate()}
             >
               <LogOut className="size-4" />
               <span>Sign out</span>

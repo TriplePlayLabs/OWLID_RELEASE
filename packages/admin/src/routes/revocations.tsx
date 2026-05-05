@@ -3,12 +3,18 @@ import { useState } from 'react'
 import { Ban, RotateCcw, Pause, Search } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
-import { Button } from '~/components/ui/button'
-import { Input } from '~/components/ui/input'
-import { Label } from '~/components/ui/label'
-import { Badge } from '~/components/ui/badge'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@owlid/ui/components/ui/card'
+import { Button } from '@owlid/ui/components/ui/button'
+import { Input } from '@owlid/ui/components/ui/input'
+import { Label } from '@owlid/ui/components/ui/label'
+import { Badge } from '@owlid/ui/components/ui/badge'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@owlid/ui/components/ui/tabs'
 import {
   Table,
   TableBody,
@@ -16,16 +22,15 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '~/components/ui/table'
+} from '@owlid/ui/components/ui/table'
 import {
   useRevokedCredentials,
   useRevokeCredential,
   useSuspendCredential,
   useReactivateCredential,
   useCheckRevocation,
-  type RevocationEntry,
 } from '~/hooks/use-verification'
-import type { CheckRevocationResponse } from '@owlid/sdk'
+import type { CheckRevocationResponse, RevocationEntry } from '@owlid/verifier-client'
 
 export const Route = createFileRoute('/revocations')({
   component: RevocationsPage,
@@ -115,7 +120,7 @@ function RevokedList() {
                 </TableCell>
                 <TableCell className="text-sm">{entry.reason ?? '—'}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {new Date(entry.revokedAt).toLocaleDateString()}
+                  {entry.revokedAt ? new Date(entry.revokedAt).toLocaleDateString() : '—'}
                 </TableCell>
                 <TableCell>
                   <Button

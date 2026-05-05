@@ -10,10 +10,17 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react'
 import {
+  circuitsForPredicates,
   Credential,
+  ensureProvingKeysFor,
   PreparedToken,
   Token as NativeToken,
+} from '@owlid/sdk/native'
+import {
   encodeSessionEngagement,
+  getVerificationUrl,
+  getWsBaseUrl,
+  parseProofError,
   storage,
   type SessionEngagement,
   type PresentationRequest,
@@ -23,6 +30,7 @@ import {
   type WebAuthnSignatureData,
 } from '@owlid/sdk'
 import { useWebAuthn } from '~/hooks/use-webauthn'
+import { usePredicates } from '~/hooks/use-predicates'
 import { getProofPredicates } from '~/utils/proof-utils'
 
 // ---------------------------------------------------------------------------
@@ -38,13 +46,36 @@ export type PresentationState =
   | 'generating'
   | 'sending'
   | 'complete'
+  /**
+   * Holder evaluated the predicate locally and does not satisfy it. This is
+   * a normal terminal state — distinct from `error` so the UI doesn't claim
+   * something went wrong.
+   */
+  | 'not_satisfied'
   | 'error'
+
+/**
+ * Result of evaluating one requested predicate against the holder's local
+ * credential, before any proof is generated. Drives the consent screen
+ * badges. Pure-local — never crosses the wire.
+ */
+export interface PredicateCheck {
+  id: string
+  label: string
+  satisfied: boolean
+}
 
 export interface PresentationResult {
   state: PresentationState
   sessionQr: string | null
   request: PresentationRequest | null
+  /** Pre-flight pass/fail per requested predicate, or `null` while loading. */
+  predicateChecks: PredicateCheck[] | null
+  /** Generic, sanitized message for the `error` state. Never includes
+   * credential-derived data — those flow into `not_satisfied` instead. */
   error: string | null
+  /** Set in `not_satisfied`; the field name the failing predicate targeted. */
+  unmetAttribute: string | null
   startPresentation: () => Promise<void>
   approve: () => Promise<void>
   deny: () => void
@@ -55,7 +86,7 @@ export interface PresentationResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const VERIFICATION_URL = import.meta.env.VITE_VERIFICATION_URL || 'http://localhost:8000'
+const VERIFICATION_URL = getVerificationUrl()
 const MAX_RECONNECT_ATTEMPTS = 3
 const RECONNECT_DELAY_MS = 1500
 
@@ -63,13 +94,17 @@ const RECONNECT_DELAY_MS = 1500
 // Helpers (same pattern as use-proofs.ts)
 // ---------------------------------------------------------------------------
 
-function prepareTokenForWebAuthn(
+async function prepareTokenForWebAuthn(
   credentialJson: string,
   predicates: ProofRequest['predicates'],
   disclose: string[],
   challenge: string,
   ttlSeconds: number = 3600,
 ) {
+  // No-op on native, IDB-cached fetch on WASM. Only loads circuits the
+  // request actually needs.
+  await ensureProvingKeysFor(circuitsForPredicates(predicates))
+
   const proofDoc = Credential.fromJson(credentialJson)
 
   const proofRequest: ProofRequest = {
@@ -110,13 +145,71 @@ export function usePresentation(): PresentationResult {
   const [sessionQr, setSessionQr] = useState<string | null>(null)
   const [request, setRequest] = useState<PresentationRequest | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [unmetAttribute, setUnmetAttribute] = useState<string | null>(null)
+  const [predicateChecks, setPredicateChecks] = useState<PredicateCheck[] | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const reconnectAttemptRef = useRef(0)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Mirror of `state` for use inside async ws callbacks (close/error/message)
+  // where the captured closure would otherwise be stale.
+  const stateRef = useRef<PresentationState>('idle')
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
 
   const { signForToken } = useWebAuthn()
+  const { data: registry } = usePredicates()
+
+  // Pre-flight: when the verifier sends a request, evaluate each predicate
+  // against the local credential before the user even sees the consent
+  // screen. This is pure-local — `evaluatePredicates` reads plaintext
+  // attributes and returns booleans, no proof, no network. Drives the
+  // consent UI's pass/fail badges.
+  useEffect(() => {
+    let cancelled = false
+    if (!request) {
+      setPredicateChecks(null)
+      return () => {
+        cancelled = true
+      }
+    }
+    ;(async () => {
+      try {
+        const credentialData = await storage.loadCredentialData()
+        if (!credentialData || cancelled) return
+        const proofDoc = Credential.fromJson(JSON.stringify(credentialData.credential))
+        const results: PredicateCheck[] = request.requestedPredicates.map((p) => {
+          const proofPreds = getProofPredicates(p.id, registry)
+          if (proofPreds.length === 0) {
+            return { id: p.id, label: p.label, satisfied: false }
+          }
+          const evalRequest: ProofRequest = {
+            disclose: [],
+            predicates: proofPreds,
+            trustedIssuers: [],
+            challenge: '',
+          }
+          try {
+            const json = proofDoc.evaluatePredicates(evalRequest)
+            const arr = JSON.parse(json) as Array<{ satisfied: boolean }>
+            const satisfied = arr.length > 0 && arr.every((e) => e.satisfied)
+            return { id: p.id, label: p.label, satisfied }
+          } catch {
+            // Malformed input or missing attribute — treat as unsatisfied.
+            return { id: p.id, label: p.label, satisfied: false }
+          }
+        })
+        if (!cancelled) setPredicateChecks(results)
+      } catch {
+        if (!cancelled) setPredicateChecks(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [request, registry])
 
   // Clean up WebSocket and timers
   const cleanup = useCallback(() => {
@@ -142,16 +235,10 @@ export function usePresentation(): PresentationResult {
   // Clean up on unmount
   useEffect(() => cleanup, [cleanup])
 
-  // Convert http(s) URL to ws(s) URL
-  const toWsUrl = useCallback((httpUrl: string): string => {
-    return httpUrl.replace(/^http/, 'ws')
-  }, [])
-
   // Connect WebSocket to session
   const connectWebSocket = useCallback(
     (sessionId: string) => {
-      const wsBase = toWsUrl(VERIFICATION_URL)
-      const wsUrl = `${wsBase}/ws/presentation/${sessionId}?role=holder`
+      const wsUrl = `${getWsBaseUrl()}/ws/presentation/${sessionId}?role=holder`
 
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
@@ -179,6 +266,20 @@ export function usePresentation(): PresentationResult {
             case 'error': {
               const wsErr = msg.payload as { code: string; message: string }
               console.error('[Presentation] Server error:', wsErr)
+              // The verifier intentionally closes its socket once it has
+              // received our response and finished verifying — backend
+              // relays that as a 'Peer disconnected' transport_error to
+              // us. From the holder's view that is a happy path, not a
+              // failure: don't override `complete` or replay an error
+              // message after we already finished.
+              if (
+                stateRef.current === 'complete' ||
+                stateRef.current === 'not_satisfied' ||
+                stateRef.current === 'error' ||
+                stateRef.current === 'idle'
+              ) {
+                break
+              }
               setError(wsErr.message || 'Server error')
               setState('error')
               break
@@ -199,13 +300,14 @@ export function usePresentation(): PresentationResult {
       ws.onclose = (event) => {
         console.log('[Presentation] WebSocket closed:', event.code, event.reason)
 
-        // Only reconnect if we were in an active session (not intentionally closed)
-        if (
-          state !== 'idle' &&
-          state !== 'complete' &&
-          state !== 'error' &&
-          reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS
-        ) {
+        // Use stateRef (not the captured `state` closure value) so we read
+        // the latest transition. Skip reconnect / error if we're already
+        // done — sending the response cleanly is the happy path.
+        const cur = stateRef.current
+        if (cur === 'idle' || cur === 'complete' || cur === 'not_satisfied' || cur === 'error')
+          return
+
+        if (reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttemptRef.current += 1
           console.log(
             `[Presentation] Reconnecting (${reconnectAttemptRef.current}/${MAX_RECONNECT_ATTEMPTS})...`,
@@ -213,19 +315,23 @@ export function usePresentation(): PresentationResult {
           reconnectTimerRef.current = setTimeout(() => {
             connectWebSocket(sessionId)
           }, RECONNECT_DELAY_MS)
-        } else if (reconnectAttemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        } else {
           setError('Connection lost. Please try again.')
           setState('error')
         }
       }
     },
-    [toWsUrl, state],
+    // No `state` dep — we read live state via stateRef inside the ws
+    // callbacks. Re-running this on every state change would tear down
+    // and re-open the socket mid-flow.
+    [],
   )
 
   // Start a new presentation session
   const startPresentation = useCallback(async () => {
     cleanup()
     setError(null)
+    setUnmetAttribute(null)
     setRequest(null)
     setSessionQr(null)
     setState('creating')
@@ -245,11 +351,14 @@ export function usePresentation(): PresentationResult {
 
       sessionIdRef.current = sessionId
 
-      // Build SessionEngagement QR data
+      // Build SessionEngagement QR data.
+      // ws.url is a relative path; the verifier prepends its own base. This
+      // lets the verifier reach the service via a different hostname/origin
+      // than the one the holder uses (typical for split deployments).
       const engagement: SessionEngagement = {
         version: 1,
         ws: {
-          url: `${toWsUrl(VERIFICATION_URL)}/ws/presentation/${sessionId}`,
+          url: `/ws/presentation/${sessionId}`,
           sessionId,
         },
         holderEphemeralKey: nonce,
@@ -266,7 +375,7 @@ export function usePresentation(): PresentationResult {
       setError(e instanceof Error ? e.message : 'Failed to start presentation')
       setState('error')
     }
-  }, [cleanup, toWsUrl, connectWebSocket])
+  }, [cleanup, connectWebSocket])
 
   // Approve: generate ZK proof and send it
   const approve = useCallback(async () => {
@@ -292,11 +401,13 @@ export function usePresentation(): PresentationResult {
 
       const credentialJson = JSON.stringify(credentialData.credential)
 
-      // Collect all predicates from the request
-      const allPredicates = request.requestedPredicates.flatMap((p) => getProofPredicates(p.id))
+      // Collect all predicates from the request, looking up wire shape via the registry.
+      const allPredicates = request.requestedPredicates.flatMap((p) =>
+        getProofPredicates(p.id, registry),
+      )
 
       // Phase 1: Prepare token with ZK predicates, using session nonce as challenge
-      const prepared = prepareTokenForWebAuthn(
+      const prepared = await prepareTokenForWebAuthn(
         credentialJson,
         allPredicates,
         request.requestedDisclosures,
@@ -342,8 +453,67 @@ export function usePresentation(): PresentationResult {
         cleanup()
       }, 5000)
     } catch (e) {
-      console.error('[Presentation] Proof generation failed:', e)
-      setError(e instanceof Error ? e.message : 'Proof generation failed')
+      // PRIVACY: never relay `e.message` — Rust-side errors used to embed
+      // the witness ("Age 33 is less than threshold 65"). The native SDK now
+      // emits typed errors through `parseProofError`; non-typed errors get
+      // a fixed sanitized message so nothing credential-derived crosses.
+      const proofErr = parseProofError(e)
+      const sendOverWs = (msg: WsMessage) => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          try {
+            wsRef.current.send(JSON.stringify(msg))
+          } catch {
+            // best-effort; verifier falls back to its transport_error path
+          }
+        }
+      }
+
+      if (proofErr?.code === 'PREDICATE_NOT_SATISFIED') {
+        // Normal terminal outcome — holder doesn't meet the requirement.
+        // Tell the verifier with a typed message carrying only the
+        // attribute name (which they already asked about), then move to a
+        // dedicated UI state — NOT `error`.
+        const attr = proofErr.attribute ?? ''
+        sendOverWs({
+          type: 'predicate_not_satisfied',
+          payload: { attribute: attr, predicateId: proofErr.predicateId },
+        })
+        setUnmetAttribute(attr || null)
+        setState('not_satisfied')
+        return
+      }
+
+      // Map specific known proof errors to user-facing messages. Anything
+      // unparsed becomes a generic "proof failed" — never surface raw
+      // `e.message` because that may carry private witness data from older
+      // SDK builds.
+      const localMessage = (() => {
+        switch (proofErr?.code) {
+          case 'MISSING_ATTRIBUTE':
+            return `Your credential is missing a required field${proofErr.attribute ? ` (${proofErr.attribute})` : ''}.`
+          case 'TOKEN_EXPIRED':
+            return 'Your credential has expired.'
+          case 'TOKEN_NOT_ACTIVE':
+            return 'Your credential is not yet active.'
+          case 'CHALLENGE_MISMATCH':
+            return 'Session challenge mismatch — please retry.'
+          case 'CREDENTIAL_REVOKED':
+            return 'Your credential has been revoked.'
+          case 'UNTRUSTED_ISSUER':
+            return "Your credential's issuer is not trusted by this verifier."
+          case 'PROOF_FAILED':
+            return 'Proof generation failed.'
+          default:
+            return 'Proof generation failed.'
+        }
+      })()
+
+      console.error(
+        '[Presentation] Proof generation failed (sanitized): %s',
+        proofErr?.code ?? 'unknown',
+      )
+      sendOverWs({ type: 'proof_failed', payload: { code: 'proof_failed' } })
+      setError(localMessage)
       setState('error')
     }
   }, [request, signForToken, cleanup])
@@ -363,6 +533,7 @@ export function usePresentation(): PresentationResult {
     setRequest(null)
     setSessionQr(null)
     setError(null)
+    setUnmetAttribute(null)
   }, [cleanup])
 
   // Cancel: close WS and reset
@@ -372,13 +543,16 @@ export function usePresentation(): PresentationResult {
     setRequest(null)
     setSessionQr(null)
     setError(null)
+    setUnmetAttribute(null)
   }, [cleanup])
 
   return {
     state,
     sessionQr,
     request,
+    predicateChecks,
     error,
+    unmetAttribute,
     startPresentation,
     approve,
     deny,

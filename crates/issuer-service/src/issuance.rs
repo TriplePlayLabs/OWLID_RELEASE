@@ -7,16 +7,54 @@ use crate::db::CredentialRepository;
 use crate::error::{IdpError, Result};
 use owl_crypto::{KeyPair, PublicKey, SignatureAlgorithm};
 use owl_proof_system::document::{Document, ProofDocument};
+use owl_proof_system::predicates::{self, PredicateParams};
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+/// Pick the predicate ids the credential can actually prove given its
+/// attribute shape. For set-membership predicates (e.g. `nationality:eu`),
+/// also check that the attribute value canonicalizes onto the dataset —
+/// otherwise the holder couldn't prove membership anyway, and advertising
+/// the predicate would mislead verifiers.
+fn derive_available_predicates(attrs: &BTreeMap<String, Value>) -> Vec<String> {
+    let mut present: Vec<&str> = Vec::new();
+    for (k, v) in attrs.iter() {
+        if v.is_null() {
+            continue;
+        }
+        present.push(k.as_str());
+    }
+
+    let mut out = Vec::new();
+    for pred in predicates::for_attributes(&present) {
+        if let PredicateParams::SetName(name) = pred.params {
+            let value = match attrs.get(pred.attribute).and_then(|v| v.as_str()) {
+                Some(v) => v,
+                None => continue,
+            };
+            let dataset = match owl_zk_circuits::data::lookup(name) {
+                Some(d) => d,
+                None => continue,
+            };
+            if dataset.canonicalize(value).is_none() {
+                continue;
+            }
+        }
+        out.push(pred.id.to_string());
+    }
+    out
+}
 
 /// Issue a credential directly without HTTP calls
 ///
 /// This function:
 /// 1. Parses the issuer and owner keys
 /// 2. Creates a Document with the provided attributes
-/// 3. Issues (signs) the document with the issuer's key
-/// 4. Optionally stores the credential in the database
+/// 3. Tags it with the predicate ids it can prove (filtered by the actual
+///    attribute shape — e.g. `nationality:eu` only when nationality is on the
+///    EU set)
+/// 4. Issues (signs) the document with the issuer's key
+/// 5. Optionally stores the credential in the database
 ///
 /// # Arguments
 ///
@@ -63,9 +101,12 @@ pub async fn issue_credential_direct(
     attrs.insert("issuerKey".to_string(), serde_json::json!(issuer_public_key_hex));
     attrs.insert("ownerKey".to_string(), serde_json::json!(owner_pk.to_hex()));
 
+    let available_predicates = derive_available_predicates(&attrs);
+
     // Create document
     let document = Document::new(attrs)
-        .map_err(|e| IdpError::CredentialIssuance(format!("Failed to create document: {}", e)))?;
+        .map_err(|e| IdpError::CredentialIssuance(format!("Failed to create document: {}", e)))?
+        .with_available_predicates(available_predicates);
 
     // Issue credential (sign with issuer key)
     let proof_document = document.issue(&issuer_keypair);

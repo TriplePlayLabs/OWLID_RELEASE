@@ -87,51 +87,105 @@ dev-full:
 # OpenAPI Client Generation
 # ============================================================================
 
-# Generate TypeScript API clients from running services (requires services on 8000/8001)
+# Regenerate the three API client packages directly from the OpenAPI specs.
+#
+# Strategy: filter the generator by tag per pass, so each client receives
+# ONLY the API classes it owns. Admin classes can never leak into a public
+# client because they are not generated for that package in the first place.
+#
+# Tag → client mapping (must stay in sync with utoipa `tag = "..."` attributes):
+#   verifier-client:
+#     verification spec: verification, presentation, monitoring, issuers,
+#                        revocations  (all public read)
+#   issuer-client:
+#     issuer spec:       info, providers, sessions, credentials, oidc,
+#                        polling
+#   admin-client:
+#     verification spec: metrics, admin-issuers, admin-revocations, gdpr,
+#                        admin
+#     issuer spec:       callbacks, admin (provider toggles)
+#
+# The hand-written wrappers (each package's `src/index.ts` and
+# `src/**/apis/index.ts`) are preserved.
 generate-api-client:
     #!/usr/bin/env bash
-    set -e
+    set -euo pipefail
     SPECS=$(mktemp -d -p "$HOME")
-    SDK_GEN="$(pwd)/packages/sdk/src/generated"
     GEN_IMAGE="openapitools/openapi-generator-cli:v7.12.0"
-    # Generator options (see: docker run --rm $GEN_IMAGE config-help -g typescript-fetch)
-    #   supportsES6            - ES6+ output
-    #   typescriptThreePlus    - TS 3+ features
-    #   withInterfaces         - generate interfaces alongside classes
-    #   importFileExtension=.js - NodeNext module resolution compatible
-    #   stringEnums            - string enums instead of objects
-    #   enumPropertyNaming=original - preserve Rust enum casing
-    #   useSingleRequestParameter   - single object arg per method
-    #   modelPropertyNaming=camelCase - match JSON conventions
-    # Global properties:
-    #   modelDocs=false,apiDocs=false - no markdown docs
-    #   modelTests=false,apiTests=false - no test stubs
-    GLOBAL="--global-property=modelDocs=false,apiDocs=false,modelTests=false,apiTests=false"
     PROPS="--additional-properties=supportsES6=true,typescriptThreePlus=true,withInterfaces=true,importFileExtension=.js,stringEnums=true,enumPropertyNaming=original,useSingleRequestParameter=true,modelPropertyNaming=camelCase"
+    # `apis=X:Y` selects which Api class basenames are generated (basename =
+    # PascalCase of the OpenAPI tag). `models` and `supportingFiles` (sans
+    # values) re-include the model files + runtime.ts that the apis filter
+    # would otherwise prune.
+    GLOBAL_BASE="modelDocs=false,apiDocs=false,modelTests=false,apiTests=false,models,supportingFiles"
+
     echo "Fetching OpenAPI specs..."
     curl -sf http://localhost:8000/openapi.json > "$SPECS/verification.json"
     curl -sf http://localhost:8001/openapi.json > "$SPECS/issuer.json"
-    # Clean previous
-    docker run --rm -v "$SDK_GEN:/out" alpine sh -c "rm -rf /out/verification /out/issuer" 2>/dev/null || rm -rf "$SDK_GEN/verification" "$SDK_GEN/issuer"
-    mkdir -p "$SDK_GEN"
-    echo "Generating verification client..."
-    docker run --rm -v "$SPECS:/specs:ro" -v "$SDK_GEN:/out" $GEN_IMAGE generate \
-        -i /specs/verification.json -g typescript-fetch -o /out/verification $GLOBAL $PROPS > /dev/null 2>&1
-    echo "Generating issuer client..."
-    docker run --rm -v "$SPECS:/specs:ro" -v "$SDK_GEN:/out" $GEN_IMAGE generate \
-        -i /specs/issuer.json -g typescript-fetch -o /out/issuer $GLOBAL $PROPS > /dev/null 2>&1
-    # Fix ownership, flatten src/, remove scaffolding
-    docker run --rm -v "$SDK_GEN:/out" alpine sh -c "chown -R $(id -u):$(id -g) /out"
-    for dir in "$SDK_GEN/verification" "$SDK_GEN/issuer"; do
-        rm -f "$dir"/{package.json,tsconfig.json,tsconfig.esm.json,README.md,.npmignore,.gitignore,.openapi-generator-ignore}
-        rm -rf "$dir/.openapi-generator"
-        if [ -d "$dir/src" ]; then cp -r "$dir/src/"* "$dir/" && rm -rf "$dir/src"; fi
-    done
-    rm -rf "$SPECS"
-    echo "Done."
-    echo "  Clients:    packages/sdk/src/generated/{verification,issuer}/"
-    echo "  Swagger UI: http://localhost:8000/swagger-ui"
-    echo "              http://localhost:8001/swagger-ui"
+
+    REPO="$(pwd)"
+    OUT=$(mktemp -d -p "$HOME")
+
+    # Helper: generate one tagged subset into a dest dir then copy the
+    # selected api class files into the target package. $1=spec, $2=tags
+    # (colon-separated for openapi-generator), $3=dest path under $OUT.
+    gen_subset() {
+        local spec=$1 tags=$2 dest=$3
+        docker run --rm \
+            -v "$SPECS:/specs:ro" \
+            -v "$OUT:/out" \
+            $GEN_IMAGE generate \
+            -i "/specs/$spec" -g typescript-fetch -o "/out/$dest" \
+            --global-property="$GLOBAL_BASE,apis=$tags" $PROPS > /dev/null
+        docker run --rm -v "$OUT:/out" alpine sh -c "chown -R $(id -u):$(id -g) /out/$dest"
+        local d="$OUT/$dest"
+        rm -f "$d"/{package.json,tsconfig.json,tsconfig.esm.json,README.md,.npmignore,.gitignore,.openapi-generator-ignore}
+        rm -rf "$d/.openapi-generator"
+        if [ -d "$d/src" ]; then cp -r "$d/src/"* "$d/" && rm -rf "$d/src"; fi
+    }
+
+    # ---- verifier-client (verification spec, public read tags) -------------
+    echo "Generating verifier-client..."
+    gen_subset verification.json "Verification:Presentation:Monitoring:Issuers:Revocations:Registry" verifier
+    VC="$REPO/packages/verifier-client/src"
+    cp "$OUT/verifier/runtime.ts" "$VC/runtime.ts"
+    rm -rf "$VC/models" && cp -r "$OUT/verifier/models" "$VC/models"
+    rm -f "$VC/apis"/*.ts
+    cp "$OUT/verifier/apis"/*.ts "$VC/apis/"
+
+    # ---- issuer-client (issuer spec, public tags) --------------------------
+    echo "Generating issuer-client..."
+    gen_subset issuer.json "Info:Providers:Sessions:Credentials:Oidc:Polling" issuer
+    IC="$REPO/packages/issuer-client/src"
+    cp "$OUT/issuer/runtime.ts" "$IC/runtime.ts"
+    rm -rf "$IC/models" && cp -r "$OUT/issuer/models" "$IC/models"
+    rm -f "$IC/apis"/*.ts
+    cp "$OUT/issuer/apis"/*.ts "$IC/apis/"
+
+    # ---- admin-client (operator-only — both specs) -------------------------
+    echo "Generating admin-client (verification half)..."
+    gen_subset verification.json "Metrics:AdminIssuers:AdminRevocations:Gdpr:Admin:AdminAuth" admin-verification
+    AC="$REPO/packages/admin-client/src"
+    mkdir -p "$AC/verification/apis"
+    cp "$OUT/admin-verification/runtime.ts" "$AC/verification/runtime.ts"
+    rm -rf "$AC/verification/models" && cp -r "$OUT/admin-verification/models" "$AC/verification/models"
+    rm -f "$AC/verification/apis"/*.ts
+    cp "$OUT/admin-verification/apis"/*.ts "$AC/verification/apis/"
+
+    echo "Generating admin-client (issuer half)..."
+    gen_subset issuer.json "Callbacks:Admin" admin-issuer
+    mkdir -p "$AC/issuer/apis"
+    cp "$OUT/admin-issuer/runtime.ts" "$AC/issuer/runtime.ts"
+    rm -rf "$AC/issuer/models" && cp -r "$OUT/admin-issuer/models" "$AC/issuer/models"
+    rm -f "$AC/issuer/apis"/*.ts
+    cp "$OUT/admin-issuer/apis"/*.ts "$AC/issuer/apis/"
+
+    rm -rf "$SPECS" "$OUT"
+    echo "Done. Top-level src/index.ts wrappers preserved (only generator-managed apis/index.ts was overwritten)."
+    echo "  packages/verifier-client/  - verifier customer API"
+    echo "  packages/issuer-client/    - issuer customer API"
+    echo "  packages/admin-client/     - operator-only API"
+    echo "  Swagger UI:                http://localhost:8000/swagger-ui , http://localhost:8001/swagger-ui"
 
 # Compact Contracts
 # ============================================================================
@@ -161,6 +215,23 @@ build-backend:
 
 build-frontend:
     bun run build
+
+# Regenerate Groth16 proving + verifying keys for the ZK circuits.
+# Writes ark-serialize compressed bytes into
+# crates/zk-circuits/artifacts/{age_range,kyc_status,nationality}.{pk,vk}.bin.
+# Deterministic — running this on a clean checkout produces byte-identical
+# output. Re-run after editing a circuit; commit the regenerated artifacts.
+#
+# SECURITY: dev/test only. Production deployment must replace these with
+# the output of a Phase-2 MPC ceremony (see crates/zk-circuits/CEREMONY.md).
+generate-zk-keys:
+    #!/usr/bin/env bash
+    set -e
+    echo "Generating Groth16 keys (deterministic dev seeds)…"
+    # --no-default-features so the lib does not include_bytes! the very
+    # files we are about to write.
+    cargo run -p owl-zk-circuits --bin keygen --no-default-features --release
+    echo "Done. Commit crates/zk-circuits/artifacts/ to track changes."
 
 build-sdk:
     #!/usr/bin/env bash
@@ -463,3 +534,44 @@ _ensure-sdk:
         echo "Building TypeScript SDK..."
         cd packages/sdk && bun run build
     fi
+
+
+# ============================================================================
+# GCP deploy (deploy/gcp)
+# ============================================================================
+
+# One-time GCS state bucket + terraform init
+gcp-bootstrap:
+    ./deploy/gcp/scripts/tf-bootstrap.sh
+
+# terraform plan inside deploy/gcp/terraform
+gcp-plan:
+    cd deploy/gcp/terraform && terraform plan
+
+# terraform apply inside deploy/gcp/terraform
+gcp-apply:
+    cd deploy/gcp/terraform && terraform apply
+
+# First apply with placeholder hello-world image (use before images are built)
+gcp-apply-placeholder:
+    cd deploy/gcp/terraform && terraform apply -var=use_placeholder_images=true
+
+# Build all 5 service images via Cloud Build (parallel)
+gcp-build:
+    ./deploy/gcp/scripts/build-all.sh
+
+# Apply DB migrations against Cloud SQL via temporary IP allowlist
+gcp-migrate:
+    ./deploy/gcp/scripts/migrate.sh
+
+# Tear down all TF-managed resources (interactive confirm)
+gcp-teardown:
+    ./deploy/gcp/scripts/teardown.sh
+
+# Show Cloud Run service URLs
+gcp-urls:
+    cd deploy/gcp/terraform && terraform output
+
+# One-shot cleanup of manual gcloud-created resources before TF takes over
+gcp-pre-tf-cleanup:
+    ./deploy/gcp/scripts/pre-tf-cleanup.sh

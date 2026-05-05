@@ -19,7 +19,8 @@ impl ApiKeyRepository {
         hex::encode(hasher.finalize())
     }
 
-    /// Create a new API key
+    /// Create a new API key with full metadata.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         key: &str,
@@ -28,6 +29,9 @@ impl ApiKeyRepository {
         permissions: Vec<String>,
         expires_at: Option<chrono::DateTime<Utc>>,
         created_by: Option<String>,
+        key_type: &str,
+        environment: &str,
+        key_preview: &str,
     ) -> Result<ApiKey> {
         let key_hash = Self::hash_key(key);
         let permissions_json = serde_json::to_value(permissions)
@@ -35,8 +39,10 @@ impl ApiKeyRepository {
 
         let api_key = sqlx::query_as::<_, ApiKey>(
             r#"
-            INSERT INTO api_keys (key_hash, name, description, permissions, expires_at, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO api_keys
+                (key_hash, name, description, permissions, expires_at, created_by,
+                 key_type, environment, key_preview)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
             "#,
         )
@@ -46,6 +52,9 @@ impl ApiKeyRepository {
         .bind(&permissions_json)
         .bind(&expires_at)
         .bind(&created_by)
+        .bind(key_type)
+        .bind(environment)
+        .bind(key_preview)
         .fetch_one(&self.pool)
         .await?;
 

@@ -1,10 +1,18 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { Activity, CheckCircle2, XCircle, TrendingUp, Server } from 'lucide-react'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
-import { Badge } from '~/components/ui/badge'
-import { Progress } from '~/components/ui/progress'
+import { Activity, CheckCircle2, XCircle, TrendingUp, Moon } from 'lucide-react'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@owlid/ui/components/ui/card'
+import { Progress } from '@owlid/ui/components/ui/progress'
 import { useMetrics, useVerificationHealth } from '~/hooks/use-verification'
 import { useIssuerHealth } from '~/hooks/use-issuer'
+import { useMidnightStatus } from '~/hooks/use-midnight'
+import { ServiceStatusCard, type ServiceState } from '~/components/ServiceStatusCard'
+import { getIssuerUrl, getVerificationUrl } from '@owlid/config'
 
 export const Route = createFileRoute('/')({
   component: DashboardPage,
@@ -14,8 +22,31 @@ function DashboardPage() {
   const metrics = useMetrics()
   const verificationHealth = useVerificationHealth()
   const issuerHealth = useIssuerHealth()
+  const midnight = useMidnightStatus()
 
   const successRate = metrics.data?.successRate ?? 0
+
+  // Map each service's hook state into the unified card's `state` enum so
+  // the dashboard renders consistently.
+  const verificationState: ServiceState = verificationHealth.isLoading
+    ? 'loading'
+    : verificationHealth.data?.ok
+      ? 'healthy'
+      : 'unreachable'
+  const issuerState: ServiceState = issuerHealth.isLoading
+    ? 'loading'
+    : issuerHealth.data?.ok
+      ? 'healthy'
+      : 'unreachable'
+  const midnightState: ServiceState = (() => {
+    if (midnight.isLoading) return 'loading'
+    if (!midnight.data) return 'unreachable'
+    if (!midnight.data.configured) return 'disabled'
+    if (!midnight.data.enabled) return 'disabled'
+    if (!midnight.data.sidecar.reachable) return 'unreachable'
+    if (!midnight.data.sidecar.connected) return 'degraded'
+    return 'healthy'
+  })()
 
   return (
     <div className="space-y-6">
@@ -25,52 +56,27 @@ function DashboardPage() {
       </div>
 
       {/* Service Health */}
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Verification Service</CardTitle>
-            <Server className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-2">
-              {verificationHealth.isLoading ? (
-                <Badge variant="outline">Checking...</Badge>
-              ) : verificationHealth.data ? (
-                <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
-                  <CheckCircle2 className="mr-1 h-3 w-3" /> Healthy
-                </Badge>
-              ) : (
-                <Badge variant="destructive">
-                  <XCircle className="mr-1 h-3 w-3" /> Unreachable
-                </Badge>
-              )}
-              <span className="text-xs text-muted-foreground">:8000</span>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Issuer Service</CardTitle>
-            <Server className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-2">
-              {issuerHealth.isLoading ? (
-                <Badge variant="outline">Checking...</Badge>
-              ) : issuerHealth.data ? (
-                <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
-                  <CheckCircle2 className="mr-1 h-3 w-3" /> Healthy
-                </Badge>
-              ) : (
-                <Badge variant="destructive">
-                  <XCircle className="mr-1 h-3 w-3" /> Unreachable
-                </Badge>
-              )}
-              <span className="text-xs text-muted-foreground">:8001</span>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="grid gap-4 md:grid-cols-3">
+        <ServiceStatusCard
+          name="Verification Service"
+          url={getVerificationUrl()}
+          state={verificationState}
+          latencyMs={verificationHealth.data?.latencyMs}
+        />
+        <ServiceStatusCard
+          name="Issuer Service"
+          url={getIssuerUrl()}
+          state={issuerState}
+          latencyMs={issuerHealth.data?.latencyMs}
+        />
+        <ServiceStatusCard
+          name="Midnight Sidecar"
+          url={midnight.data?.sidecarUrl}
+          state={midnightState}
+          latencyMs={midnight.data?.sidecar.latencyMs}
+          detail={midnight.data?.sidecar.error ?? undefined}
+          icon={<Moon className="h-4 w-4 text-muted-foreground" />}
+        />
       </div>
 
       {/* Metrics */}

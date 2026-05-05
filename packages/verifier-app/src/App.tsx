@@ -1,17 +1,22 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { ScanLine, ClipboardPaste, Shield, Loader2, Wifi, WifiOff } from 'lucide-react'
+import { ScanLine, ClipboardPaste, Shield, Loader2, Wifi, WifiOff, Copy } from 'lucide-react'
 import { toast } from 'sonner'
+import { QRCodeSVG } from 'qrcode.react'
 import { QrScanner } from './components/QrScanner'
 import { PasteInput } from './components/PasteInput'
 import { PredicateSelector } from './components/PredicateSelector'
 import { VerificationResult } from './components/VerificationResult'
 import { VerificationHistory } from './components/VerificationHistory'
 import { verifyToken, healthCheck, type VerifyResult } from './api'
+import { Badge } from '@owlid/ui/components/ui/badge'
+import { Button } from '@owlid/ui/components/ui/button'
+import { Card, CardContent } from '@owlid/ui/components/ui/card'
 import {
   decodeSessionEngagement,
   isPresentationEngagement,
   isCompactToken,
   type SessionEngagement,
+  type PredicateNotSatisfiedPayload,
   type PresentationPredicate,
   type PresentationRequest,
   type PresentationResponse,
@@ -40,10 +45,11 @@ type Step =
   | 'waiting'
   | 'verifying'
   | 'result'
-  // Legacy steps
-  | 'legacy-challenge'
-  | 'legacy-scan'
-  | 'legacy-paste'
+  | 'error'
+  // Manual steps (challenge-based, no live session)
+  | 'manual-challenge'
+  | 'manual-scan'
+  | 'manual-paste'
 
 export interface HistoryEntry {
   id: string
@@ -53,11 +59,27 @@ export interface HistoryEntry {
   result: VerifyResult
 }
 
-const VERIFICATION_URL = import.meta.env.VITE_VERIFICATION_URL || 'http://localhost:8000'
+import { resolveWsUrl } from '@owlid/sdk'
 
-/** Convert an HTTP(S) URL to WS(S) */
-function toWsUrl(httpUrl: string): string {
-  return httpUrl.replace(/^http/, 'ws')
+/**
+ * Map an attribute name (which the verifier already asked about) to a
+ * sanitized reason string. The holder's actual value is NEVER reflected back
+ * — the whole point of the ZK protocol is that the verifier learns only
+ * pass / fail, not the underlying witness.
+ */
+function predicateFailureReason(attribute: string | undefined): string {
+  switch (attribute) {
+    case 'dateOfBirth':
+      return 'Holder does not meet the age requirement.'
+    case 'nationality':
+      return 'Holder nationality is not in the accepted set.'
+    case 'verificationLevel':
+      return 'Holder KYC level is below the required level.'
+    case 'isResident':
+      return 'Holder is not a verified resident.'
+    default:
+      return 'Holder does not satisfy the requested predicate.'
+  }
 }
 
 export function App() {
@@ -67,8 +89,32 @@ export function App() {
   const [serviceOnline, setServiceOnline] = useState<boolean | null>(null)
   const [statusMessage, setStatusMessage] = useState('')
   const [engagement, setEngagement] = useState<SessionEngagement | null>(null)
+  const [errorMessage, setErrorMessage] = useState<string>('')
 
   const wsRef = useRef<WebSocket | null>(null)
+  // Mirror of `step` for use inside async callbacks where the closure would
+  // otherwise see a stale value. Updated SYNCHRONOUSLY by `transitionStep`
+  // so a ws message that fires between `setStep` and React's commit phase
+  // can still observe the latest intent.
+  const stepRef = useRef<Step>('idle')
+  const transitionStep = useCallback((s: Step) => {
+    stepRef.current = s
+    setStep(s)
+  }, [])
+
+  // Centralized error transition. Skips work when we're already in a
+  // post-flow state ('verifying', 'result', 'error') so a late ws.onclose
+  // doesn't blow away the result the user is reading.
+  const goToError = useCallback(
+    (message: string) => {
+      const cur = stepRef.current
+      if (cur === 'verifying' || cur === 'result' || cur === 'error') return
+      setErrorMessage(message)
+      transitionStep('error')
+      setEngagement(null)
+    },
+    [transitionStep],
+  )
 
   // Health check polling
   useEffect(() => {
@@ -106,20 +152,22 @@ export function App() {
       setStep('connecting')
       setStatusMessage('Connecting to session...')
 
-      // Build WebSocket URL: engagement has a relative path, prepend base
-      const wsBase = toWsUrl(VERIFICATION_URL)
-      const fullUrl = `${wsBase}${eng.ws.url}`
-
+      // resolveWsUrl handles both relative path (preferred — split deployments)
+      // and pre-absolute ws:// / wss:// URLs from older holders. Append the
+      // verifier role so the backend's WsSessionQuery accepts the upgrade.
+      const baseUrl = resolveWsUrl(eng.ws.url)
+      const fullUrl = baseUrl.includes('?')
+        ? `${baseUrl}&role=verifier`
+        : `${baseUrl}?role=verifier`
       const ws = new WebSocket(fullUrl)
       wsRef.current = ws
 
       ws.onopen = () => {
-        // Send join message identifying ourselves as the verifier
-        const joinMsg: WsMessage = {
-          type: 'session_ready',
-          payload: null,
-        }
-        ws.send(JSON.stringify(joinMsg))
+        // Don't send anything yet — the server will broadcast `session_ready`
+        // to BOTH parties as soon as the holder also connects. The presentation
+        // protocol restricts the verifier to sending only `request`, so any
+        // pre-pairing send gets
+        // rejected as `invalid_message` and tears down the session.
         setStep('selecting')
       }
 
@@ -133,24 +181,19 @@ export function App() {
       }
 
       ws.onerror = () => {
-        toast.error('WebSocket connection error')
-        setStep('idle')
-        setEngagement(null)
+        goToError('Could not reach the verification service. Check your connection and try again.')
         closeWs()
       }
 
       ws.onclose = (event) => {
-        // Only show error if we didn't intentionally close
-        if (step !== 'idle' && step !== 'result' && event.code !== 1000) {
-          toast.error('Connection lost', {
-            description: 'The session was disconnected. Please try again.',
-          })
-          setStep('idle')
-          setEngagement(null)
-        }
+        // Code 1000 = clean close (we initiated). Anything else = peer
+        // dropped or transport failure. Only escalate to an error UI if we
+        // were still mid-flow.
+        if (event.code === 1000) return
+        goToError('The session was disconnected before completing.')
       }
     },
-    [closeWs, step],
+    [closeWs, goToError],
   )
 
   const handleWsMessage = useCallback(
@@ -165,32 +208,66 @@ export function App() {
           // Holder sent their proof
           const response = msg.payload as PresentationResponse
           if (!response?.compactToken) {
-            toast.error('Received empty response from holder')
-            setStep('idle')
+            goToError('Holder sent an empty response.')
             closeWs()
             return
           }
+          // Lock the ref to 'verifying' SYNCHRONOUSLY so a backend
+          // 'Peer disconnected' error queued right after the response
+          // (holder closes its ws once it's done) can't hijack us into
+          // the error state mid-verification.
+          stepRef.current = 'verifying'
           handleVerifyPresentation(response.compactToken, eng.nonce)
           break
         }
 
         case 'consent_denied': {
           const err = msg.payload as WsError | null
-          toast.error('Holder declined', {
-            description: err?.message || 'The holder did not approve the verification request.',
+          goToError(err?.message || 'The holder declined this verification request.')
+          closeWs()
+          break
+        }
+
+        case 'predicate_not_satisfied': {
+          // Privacy: the holder's credential value does not satisfy the
+          // requested predicate. This is a normal verification outcome —
+          // surface it as `valid: false` with a sanitized reason, NOT as an
+          // error UI. The payload only carries the attribute name, which the
+          // verifier already asked about; never display free-form text from
+          // the holder side.
+          const payload = msg.payload as PredicateNotSatisfiedPayload | null
+          const reason = predicateFailureReason(payload?.attribute)
+          stepRef.current = 'result'
+          setResult({ valid: false, error: reason })
+          setStep('result')
+          addToHistory('(no token — predicate not satisfied)', eng.nonce, {
+            valid: false,
+            error: reason,
           })
-          setStep('idle')
-          setEngagement(null)
+          toast.error('Verification failed', { description: reason })
+          closeWs()
+          break
+        }
+
+        case 'proof_failed': {
+          // Holder hit a non-predicate failure. Render generic — never any
+          // holder-supplied text.
+          stepRef.current = 'result'
+          const reason = 'Holder could not generate a valid proof.'
+          setResult({ valid: false, error: reason })
+          setStep('result')
+          addToHistory('(no token — proof failed)', eng.nonce, { valid: false, error: reason })
+          toast.error('Verification failed', { description: reason })
           closeWs()
           break
         }
 
         case 'error': {
           const wsErr = msg.payload as WsError
-          toast.error('Session error', { description: wsErr?.message || 'Unknown error' })
-          setStep('idle')
-          setEngagement(null)
-          closeWs()
+          // Transport-level only. Do NOT render arbitrary holder strings —
+          // `error` from the relay covers things like `Peer disconnected`,
+          // not predicate outcomes (those have their own message types).
+          goToError(wsErr?.message || 'Session error.')
           break
         }
 
@@ -198,7 +275,7 @@ export function App() {
           break
       }
     },
-    [closeWs],
+    [closeWs, goToError],
   )
 
   const handleSendRequest = useCallback(
@@ -232,13 +309,13 @@ export function App() {
 
   const handleVerifyPresentation = useCallback(
     async (compactToken: string, nonce: string) => {
-      setStep('verifying')
+      transitionStep('verifying')
       setStatusMessage('Verifying proof...')
 
       try {
         const verifyResult = await verifyToken(compactToken, nonce)
         setResult(verifyResult)
-        setStep('result')
+        transitionStep('result')
         addToHistory(compactToken, nonce, verifyResult)
 
         if (verifyResult.valid) {
@@ -252,17 +329,17 @@ export function App() {
         const message = err instanceof Error ? err.message : 'Verification request failed'
         const failResult: VerifyResult = { valid: false, error: message }
         setResult(failResult)
-        setStep('result')
+        transitionStep('result')
         toast.error('Verification error', { description: message })
       } finally {
         closeWs()
       }
     },
-    [closeWs],
+    [closeWs, transitionStep],
   )
 
   // -----------------------------------------------------------------------
-  // QR scan handler (dispatches to new or legacy flow)
+  // QR scan handler (dispatches to presentation or manual flow)
   // -----------------------------------------------------------------------
 
   const handleQrScan = useCallback(
@@ -277,9 +354,10 @@ export function App() {
         }
         connectToSession(eng)
       } else if (isCompactToken(data)) {
-        // Legacy: direct token verify (need a challenge first)
-        toast.info('Legacy token detected', {
-          description: 'Use "Start Verification" for challenge-based flow, or paste the token.',
+        // Manual flow: direct token verify (need a challenge first)
+        toast.info('Token detected (manual flow)', {
+          description:
+            'Use "Start Verification" for challenge-based flow, or paste the token below.',
         })
         setStep('idle')
       } else {
@@ -293,24 +371,24 @@ export function App() {
   )
 
   // -----------------------------------------------------------------------
-  // Legacy direct verify (kept for backward compat)
+  // Manual flow: verifier mints challenge, holder signs it offline
   // -----------------------------------------------------------------------
 
-  const [legacyChallenge, setLegacyChallenge] = useState<string | null>(null)
+  const [manualChallenge, setManualChallenge] = useState<string | null>(null)
 
-  const startLegacyVerification = useCallback(async () => {
+  const startManualVerification = useCallback(async () => {
     try {
       const { getChallenge } = await import('./api')
       const resp = await getChallenge()
-      setLegacyChallenge(resp.challenge)
-      setStep('legacy-challenge')
+      setManualChallenge(resp.challenge)
+      setStep('manual-challenge')
       setResult(null)
     } catch {
       toast.error('Failed to get challenge from server')
     }
   }, [])
 
-  const handleLegacyVerify = useCallback(
+  const handleManualVerify = useCallback(
     async (compactToken: string) => {
       const trimmed = compactToken.trim()
       if (!trimmed) {
@@ -321,7 +399,7 @@ export function App() {
         toast.error('Invalid token format', { description: 'OwlID tokens start with "OID1:"' })
         return
       }
-      if (!legacyChallenge) {
+      if (!manualChallenge) {
         toast.error('No challenge -- start a new verification')
         return
       }
@@ -329,10 +407,10 @@ export function App() {
       setStep('verifying')
       setStatusMessage('Verifying token...')
       try {
-        const verifyResult = await verifyToken(trimmed, legacyChallenge)
+        const verifyResult = await verifyToken(trimmed, manualChallenge)
         setResult(verifyResult)
         setStep('result')
-        addToHistory(trimmed, legacyChallenge, verifyResult)
+        addToHistory(trimmed, manualChallenge, verifyResult)
 
         if (verifyResult.valid) {
           toast.success('Token verified successfully')
@@ -348,10 +426,10 @@ export function App() {
         setStep('result')
         toast.error('Verification error', { description: message })
       } finally {
-        setLegacyChallenge(null)
+        setManualChallenge(null)
       }
     },
-    [legacyChallenge],
+    [manualChallenge],
   )
 
   // -----------------------------------------------------------------------
@@ -377,8 +455,9 @@ export function App() {
     setResult(null)
     setStep('idle')
     setEngagement(null)
-    setLegacyChallenge(null)
+    setManualChallenge(null)
     setStatusMessage('')
+    setErrorMessage('')
     closeWs()
   }, [closeWs])
 
@@ -394,188 +473,230 @@ export function App() {
 
   return (
     <div className="min-h-dvh flex flex-col">
-      {/* Header */}
-      <header className="border-b border-white/10 px-4 py-3">
+      <header className="border-b px-4 py-3">
         <div className="max-w-lg mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Shield className="w-6 h-6 text-blue-400" />
             <h1 className="text-lg font-semibold">OwlID Verifier</h1>
           </div>
-          <div className="flex items-center gap-2">
+          <Badge variant={serviceOnline ? 'default' : 'secondary'} className="gap-1.5">
             {serviceOnline === null ? (
-              <Loader2 className="w-4 h-4 animate-spin text-zinc-500" />
+              <Loader2 className="w-3 h-3 animate-spin" />
             ) : serviceOnline ? (
-              <Wifi className="w-4 h-4 text-green-400" />
+              <Wifi className="w-3 h-3" />
             ) : (
-              <WifiOff className="w-4 h-4 text-red-400" />
+              <WifiOff className="w-3 h-3" />
             )}
-            <span className="text-xs text-zinc-500">
-              {serviceOnline === null ? 'Connecting...' : serviceOnline ? 'Online' : 'Offline'}
-            </span>
-          </div>
+            {serviceOnline === null ? 'Connecting...' : serviceOnline ? 'Online' : 'Offline'}
+          </Badge>
         </div>
       </header>
 
-      {/* Main */}
-      <main className="flex-1 px-4 py-6">
-        <div className="max-w-lg mx-auto space-y-6">
-          {/* Result */}
+      <main className="flex-1 px-4 py-6 flex flex-col items-center justify-center">
+        <div className="w-full max-w-lg space-y-6">
           {step === 'result' && result && (
             <VerificationResult result={result} onReset={handleReset} />
           )}
 
-          {/* Idle: main actions */}
           {step === 'idle' && !result && (
-            <div className="space-y-4">
-              <div className="text-center space-y-2 py-4">
-                <Shield className="w-12 h-12 mx-auto text-zinc-600" />
-                <h2 className="text-xl font-semibold">Verify a Credential</h2>
-                <p className="text-sm text-zinc-400">
-                  Scan the holder's QR code to start a verification session
-                </p>
-              </div>
+            <Card>
+              <CardContent className="space-y-4 py-6">
+                <div className="text-center space-y-2 py-2">
+                  <Shield className="w-12 h-12 mx-auto text-muted-foreground" />
+                  <h2 className="text-xl font-semibold">Verify a Credential</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Scan the holder's QR code to start a verification session
+                  </p>
+                </div>
 
-              {/* Primary: scan presentation QR */}
-              <button
-                onClick={() => setStep('scanning')}
-                disabled={!serviceOnline}
-                className="w-full flex items-center justify-center gap-3 p-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <ScanLine className="w-5 h-5" />
-                Scan Credential
-              </button>
+                <Button
+                  className="w-full"
+                  size="lg"
+                  onClick={() => setStep('scanning')}
+                  disabled={!serviceOnline}
+                >
+                  <ScanLine className="w-4 h-4" />
+                  Scan Credential
+                </Button>
 
-              {/* Secondary: legacy challenge-based flow */}
-              <button
-                onClick={startLegacyVerification}
-                disabled={!serviceOnline}
-                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl border border-white/10 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <ClipboardPaste className="w-4 h-4" />
-                Legacy: Challenge + Paste
-              </button>
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={startManualVerification}
+                  disabled={!serviceOnline}
+                >
+                  <ClipboardPaste className="w-4 h-4" />
+                  Manual: Challenge + Paste
+                </Button>
 
-              {!serviceOnline && serviceOnline !== null && (
-                <p className="text-center text-xs text-red-400">Verification service is offline.</p>
-              )}
-            </div>
+                {!serviceOnline && serviceOnline !== null && (
+                  <p className="text-center text-xs text-red-400">
+                    Verification service is offline.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
           )}
 
-          {/* Scanning: QR scanner */}
           {step === 'scanning' && (
             <QrScanner onScan={handleQrScan} onCancel={() => setStep('idle')} />
           )}
 
-          {/* Connecting: loading state */}
           {step === 'connecting' && (
-            <div className="flex flex-col items-center justify-center py-12 space-y-4">
-              <Loader2 className="w-10 h-10 animate-spin text-blue-400" />
-              <p className="text-zinc-400">{statusMessage || 'Connecting...'}</p>
-              <button
-                onClick={handleReset}
-                className="text-sm text-zinc-500 hover:text-zinc-300 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-12 space-y-4">
+                <Loader2 className="w-10 h-10 animate-spin text-blue-400" />
+                <p className="text-muted-foreground">{statusMessage || 'Connecting...'}</p>
+                <Button variant="ghost" size="sm" onClick={handleReset}>
+                  Cancel
+                </Button>
+              </CardContent>
+            </Card>
           )}
 
-          {/* Selecting: pick predicates */}
           {step === 'selecting' && (
             <PredicateSelector onSubmit={handleSendRequest} onCancel={handleCancelSelecting} />
           )}
 
-          {/* Waiting: holder approval */}
           {step === 'waiting' && (
-            <div className="flex flex-col items-center justify-center py-12 space-y-4">
-              <Loader2 className="w-10 h-10 animate-spin text-blue-400" />
-              <p className="text-zinc-400">{statusMessage || 'Waiting for holder approval...'}</p>
-              <p className="text-xs text-zinc-600">
-                The holder is reviewing your request on their device
-              </p>
-              <button
-                onClick={handleReset}
-                className="text-sm text-zinc-500 hover:text-zinc-300 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-12 space-y-4">
+                <Loader2 className="w-10 h-10 animate-spin text-blue-400" />
+                <p className="text-muted-foreground">
+                  {statusMessage || 'Waiting for holder approval...'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  The holder is reviewing your request on their device
+                </p>
+                <Button variant="ghost" size="sm" onClick={handleReset}>
+                  Cancel
+                </Button>
+              </CardContent>
+            </Card>
           )}
 
-          {/* Verifying: server check */}
           {step === 'verifying' && (
-            <div className="flex flex-col items-center justify-center py-12 space-y-4">
-              <Loader2 className="w-10 h-10 animate-spin text-blue-400" />
-              <p className="text-zinc-400">{statusMessage || 'Verifying proof...'}</p>
-            </div>
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-12 space-y-4">
+                <Loader2 className="w-10 h-10 animate-spin text-blue-400" />
+                <p className="text-muted-foreground">{statusMessage || 'Verifying proof...'}</p>
+              </CardContent>
+            </Card>
           )}
 
-          {/* ============================================================= */}
-          {/* Legacy flow steps                                              */}
-          {/* ============================================================= */}
-
-          {step === 'legacy-challenge' && legacyChallenge && (
-            <div className="space-y-4">
-              <div className="text-center space-y-2">
-                <h3 className="font-semibold">Legacy: Challenge-Based Verification</h3>
-                <p className="text-sm text-zinc-400">
-                  Show this challenge to the holder, then scan or paste their token.
-                </p>
-              </div>
-
-              <div className="p-3 rounded-lg bg-zinc-900 border border-white/10">
-                <p className="text-xs text-zinc-500 mb-1">Challenge (5 min expiry)</p>
-                <p className="text-xs font-mono text-zinc-400 break-all select-all">
-                  {legacyChallenge}
-                </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={() => setStep('legacy-scan')}
-                  className="flex flex-col items-center gap-3 p-4 rounded-xl border border-white/10 bg-zinc-900 hover:bg-zinc-800 hover:border-blue-500/30 transition-all"
-                >
-                  <ScanLine className="w-6 h-6 text-blue-400" />
-                  <span className="text-sm font-medium">Scan QR</span>
-                </button>
-                <button
-                  onClick={() => setStep('legacy-paste')}
-                  className="flex flex-col items-center gap-3 p-4 rounded-xl border border-white/10 bg-zinc-900 hover:bg-zinc-800 hover:border-blue-500/30 transition-all"
-                >
-                  <ClipboardPaste className="w-6 h-6 text-blue-400" />
-                  <span className="text-sm font-medium">Paste Token</span>
-                </button>
-              </div>
-
-              <button
-                onClick={handleReset}
-                className="w-full text-center text-sm text-zinc-500 hover:text-zinc-300 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
+          {step === 'error' && (
+            <Card className="border-red-500/30 bg-red-500/5">
+              <CardContent className="flex flex-col items-center justify-center py-12 space-y-4 text-center">
+                <div className="w-14 h-14 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center">
+                  <WifiOff className="w-7 h-7 text-red-400" />
+                </div>
+                <div className="space-y-1 max-w-sm">
+                  <h2 className="text-lg font-semibold">Verification interrupted</h2>
+                  <p className="text-sm text-muted-foreground">
+                    {errorMessage || 'The session ended before completing.'}
+                  </p>
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <Button variant="outline" onClick={handleReset}>
+                    Back to Home
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      handleReset()
+                      setStep('scanning')
+                    }}
+                  >
+                    Scan Again
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
           )}
 
-          {step === 'legacy-scan' && (
-            <QrScanner onScan={handleLegacyVerify} onCancel={() => setStep('legacy-challenge')} />
+          {step === 'manual-challenge' && manualChallenge && (
+            <Card>
+              <CardContent className="space-y-4 py-6">
+                <div className="text-center space-y-2">
+                  <h3 className="font-semibold">Manual: Challenge-Based Verification</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Have the holder scan this QR (or copy the text) to sign the challenge. Then scan
+                    or paste their token.
+                  </p>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl flex justify-center">
+                  <QRCodeSVG value={manualChallenge} size={220} />
+                </div>
+
+                <div className="space-y-2 rounded-md border bg-muted/40 p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">Challenge (5 min expiry)</p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-auto px-2 py-1"
+                      onClick={() => {
+                        navigator.clipboard
+                          .writeText(manualChallenge)
+                          .then(() => toast.success('Challenge copied'))
+                          .catch(() => toast.error('Copy failed'))
+                      }}
+                      aria-label="Copy challenge"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      Copy
+                    </Button>
+                  </div>
+                  <p className="text-xs font-mono text-muted-foreground break-all select-all">
+                    {manualChallenge}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <Button
+                    variant="outline"
+                    className="h-auto flex-col gap-2 py-4"
+                    onClick={() => setStep('manual-scan')}
+                  >
+                    <ScanLine className="w-6 h-6 text-blue-400" />
+                    <span className="text-sm font-medium">Scan Token</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="h-auto flex-col gap-2 py-4"
+                    onClick={() => setStep('manual-paste')}
+                  >
+                    <ClipboardPaste className="w-6 h-6 text-blue-400" />
+                    <span className="text-sm font-medium">Paste Token</span>
+                  </Button>
+                </div>
+
+                <Button variant="ghost" className="w-full" onClick={handleReset}>
+                  Cancel
+                </Button>
+              </CardContent>
+            </Card>
           )}
 
-          {step === 'legacy-paste' && (
+          {step === 'manual-scan' && (
+            <QrScanner onScan={handleManualVerify} onCancel={() => setStep('manual-challenge')} />
+          )}
+
+          {step === 'manual-paste' && (
             <PasteInput
-              onSubmit={handleLegacyVerify}
-              onCancel={() => setStep('legacy-challenge')}
+              onSubmit={handleManualVerify}
+              onCancel={() => setStep('manual-challenge')}
             />
           )}
 
-          {/* History */}
           {history.length > 0 && step === 'idle' && !result && (
             <VerificationHistory history={history} onClear={() => setHistory([])} />
           )}
         </div>
       </main>
 
-      <footer className="border-t border-white/10 px-4 py-3">
-        <p className="text-center text-xs text-zinc-600">
+      <footer className="border-t px-4 py-3">
+        <p className="text-center text-xs text-muted-foreground">
           OwlID Verifier - Privacy-preserving credential verification
         </p>
       </footer>

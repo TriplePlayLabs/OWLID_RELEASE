@@ -19,8 +19,9 @@ const config = loadConfig()
 
 // API key auth middleware for /api/* routes
 app.use('/api/*', async (c, next) => {
-  const apiKey = c.req.header('X-API-Key')
-  if (!apiKey || apiKey !== config.apiKey) {
+  const auth = c.req.header('Authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  if (!token || token !== config.apiKey) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
   await next()

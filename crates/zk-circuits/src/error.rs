@@ -13,6 +13,12 @@ pub enum ZkError {
     #[error("Invalid circuit input: {0}")]
     InvalidInput(String),
 
+    /// Witness does not satisfy the predicate.
+    /// MUST NOT carry the witness value or any value derived from it — this
+    /// error crosses the FFI/network boundary and would defeat zero-knowledge.
+    #[error("predicate not satisfied")]
+    PreconditionFailed,
+
     #[error("Setup failed: {0}")]
     SetupFailed(String),
 

@@ -1,68 +1,25 @@
 /**
- * API Client configuration.
+ * API client surface used by the holder app.
  *
- * Imports generated API classes from SDK subpath exports to avoid
- * circular dependency with the native WASM module in the main barrel.
+ * Routes through the public verifier + issuer client packages. Admin/operator
+ * endpoints (manage-issuers, manage-revocations, GDPR erasure, API key mgmt)
+ * are deliberately NOT bundled here — those live in `@owlid/admin-client`
+ * and only the admin dashboard imports them.
  */
 
-import {
-  Configuration as IssuerConfiguration,
-  SessionsApi,
-  CredentialsApi,
-  InfoApi,
-  ProvidersApi,
-  InternalApi,
-  UtilitiesApi,
-} from '@owlid/sdk/api/issuer'
+import { getIssuerUrl, getVerificationUrl } from '@owlid/sdk'
+import { getCredentialsApi, getInfoApi, getProvidersApi, getSessionsApi } from '@owlid/sdk/issuer'
+import { getRegistryApi, getVerificationApi } from '@owlid/sdk/verifier'
 
-import {
-  Configuration as VerificationConfiguration,
-  VerificationApi,
-  IssuersApi,
-  RevocationsApi,
-  MonitoringApi,
-  GdprApi,
-  AdminApi,
-} from '@owlid/sdk/api/verification'
+// API getters resolve URLs/keys via the shared SDK config; no extra wiring.
+export const sessionsApi = getSessionsApi()
+export const credentialsApi = getCredentialsApi()
+export const infoApi = getInfoApi()
+export const providersApi = getProvidersApi()
+export const verificationApi = getVerificationApi()
+// Predicate + circuit-data registry lives on the verification service.
+export const registryApi = getRegistryApi()
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-const ISSUER_URL = import.meta.env.VITE_ISSUER_URL || 'http://localhost:8001'
-const VERIFICATION_URL = import.meta.env.VITE_VERIFICATION_URL || 'http://localhost:8000'
-const API_KEY = import.meta.env.VITE_API_KEY || ''
-
-const issuerConfig = new IssuerConfiguration({ basePath: ISSUER_URL })
-const verificationConfig = new VerificationConfiguration({
-  basePath: VERIFICATION_URL,
-  headers: API_KEY ? { 'X-API-Key': API_KEY } : undefined,
-})
-
-// ---------------------------------------------------------------------------
-// Issuer Service clients
-// ---------------------------------------------------------------------------
-
-export const sessionsApi = new SessionsApi(issuerConfig)
-export const credentialsApi = new CredentialsApi(issuerConfig)
-export const infoApi = new InfoApi(issuerConfig)
-export const providersApi = new ProvidersApi(issuerConfig)
-export const internalApi = new InternalApi(issuerConfig)
-export const utilitiesApi = new UtilitiesApi(issuerConfig)
-
-// ---------------------------------------------------------------------------
-// Verification Service clients
-// ---------------------------------------------------------------------------
-
-export const verificationApi = new VerificationApi(verificationConfig)
-export const issuersApi = new IssuersApi(verificationConfig)
-export const revocationsApi = new RevocationsApi(verificationConfig)
-export const monitoringApi = new MonitoringApi(verificationConfig)
-export const gdprApi = new GdprApi(verificationConfig)
-export const adminApi = new AdminApi(verificationConfig)
-
-// ---------------------------------------------------------------------------
-// URLs for WebSocket connections
-// ---------------------------------------------------------------------------
-
-export { ISSUER_URL, VERIFICATION_URL }
+// Convenience exports for code that constructs URLs (e.g. WebSocket open).
+export const ISSUER_URL = getIssuerUrl()
+export const VERIFICATION_URL = getVerificationUrl()

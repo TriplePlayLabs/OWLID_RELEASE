@@ -139,6 +139,38 @@ impl IdpDatabase {
         Ok(())
     }
 
+    /// Atomically claim the issuance slot for a session.
+    ///
+    /// Returns `Ok(())` only when the session is `Verified` and its
+    /// `credential_issued` flag flipped from `false` to `true` inside the
+    /// same write lock. Returns `Err(InvalidSessionState)` for any other
+    /// state, which the handler must treat as a refusal to sign — without
+    /// this, two concurrent `POST /sessions/{id}/issue` requests both pass
+    /// the gate and `Document::issue` mints distinct salts → distinct
+    /// `root_hash` values, so the unique constraint never collapses the
+    /// duplicate.
+    pub async fn try_claim_issuance(&self, id: Uuid) -> Result<()> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions
+            .get_mut(&id)
+            .ok_or_else(|| IdpError::SessionNotFound(id.to_string()))?;
+
+        if session.status != SessionStatus::Verified {
+            return Err(IdpError::InvalidSessionState {
+                expected: "verified".to_string(),
+                actual: format!("{:?}", session.status),
+            });
+        }
+        if session.credential_issued {
+            return Err(IdpError::InvalidSessionState {
+                expected: "credential_issued=false".to_string(),
+                actual: "credential_issued=true".to_string(),
+            });
+        }
+        session.credential_issued = true;
+        Ok(())
+    }
+
     /// Get sessions by flow type (for polling tasks)
     pub async fn get_sessions_by_flow_type(&self, flow_type: ProviderFlowType) -> Vec<VerificationSession> {
         let sessions = self.sessions.read().await;

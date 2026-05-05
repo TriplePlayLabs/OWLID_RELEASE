@@ -3,12 +3,14 @@
     "target": "ESNext",
     "strict": true,
     "moduleResolution": "node",
-    "module": "CommonJS",
+    "module": "ESNext",
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "types": []
   },
-  "include": ["."],
-  "exclude": ["node_modules", "bench", "__test__"]
+  "include": ["index.d.ts", "index.js"],
+  "exclude": ["node_modules", "bench", "benchmark", "__test__", "wasi-worker.mjs"]
 }

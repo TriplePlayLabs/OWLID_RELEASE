@@ -10,8 +10,46 @@ use owl_proof_system::{
     Document as OwlDocument,
     PredicateOp as OwlPredicateOp, PredicateRequest as OwlPredicateRequest,
     PreparedToken as OwlPreparedToken, ProofDocument as OwlProofDocument,
-    ProofRequest as OwlProofRequest, RevocationRegistry, Token as OwlToken,
+    ProofRequest as OwlProofRequest, ProofSystemError, RevocationRegistry, Token as OwlToken,
+    evaluate_predicate,
 };
+
+/// Sentinel prefix for structured errors crossing the FFI.
+///
+/// Privacy contract: any error originating from a proof/predicate operation
+/// MUST be passed through `proof_err` so that the JS side receives only a
+/// well-typed code (and the predicate's attribute name when relevant) — never
+/// a Rust message string built from witness data.
+const OWL_ERR_PREFIX: &str = "OWLERR:";
+
+fn proof_err(e: ProofSystemError) -> Error {
+    let json = match e {
+        ProofSystemError::PredicateNotSatisfied { attribute, predicate_id } => {
+            serde_json::json!({
+                "code": "PREDICATE_NOT_SATISFIED",
+                "attribute": attribute,
+                "predicateId": predicate_id,
+            })
+        }
+        ProofSystemError::MissingAttribute(attribute) => {
+            serde_json::json!({
+                "code": "MISSING_ATTRIBUTE",
+                "attribute": attribute,
+            })
+        }
+        ProofSystemError::TokenExpired => serde_json::json!({"code": "TOKEN_EXPIRED"}),
+        ProofSystemError::TokenNotActive => serde_json::json!({"code": "TOKEN_NOT_ACTIVE"}),
+        ProofSystemError::ChallengeMismatch => serde_json::json!({"code": "CHALLENGE_MISMATCH"}),
+        ProofSystemError::CredentialRevoked(_) => serde_json::json!({"code": "CREDENTIAL_REVOKED"}),
+        ProofSystemError::UntrustedIssuer(_) => serde_json::json!({"code": "UNTRUSTED_ISSUER"}),
+        // Schema/serialization/signature/webauthn/invalid-proof: bucket as a
+        // generic failure. Keeping inner messages out of the FFI guarantees
+        // no holder data is leaked even when a future code path adds a leaky
+        // format!() somewhere upstream.
+        _ => serde_json::json!({"code": "PROOF_FAILED"}),
+    };
+    Error::from_reason(format!("{}{}", OWL_ERR_PREFIX, json))
+}
 
 // ============================================================================
 // CRYPTO — KeyPair
@@ -274,7 +312,7 @@ impl Credential {
     ) -> Result<Token> {
         let owl_req = convert_proof_request(&request)?;
         let token = OwlToken::generate(&mut self.inner, &owl_req, &keypair.inner, ttl_seconds)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(proof_err)?;
         Ok(Token { inner: token })
     }
 
@@ -295,9 +333,44 @@ impl Credential {
         ttl_seconds: i64,
     ) -> Result<PreparedToken> {
         let owl_req = convert_proof_request(&request)?;
-        let prepared = OwlToken::prepare(&mut self.inner, &owl_req, ttl_seconds)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let prepared =
+            OwlToken::prepare(&mut self.inner, &owl_req, ttl_seconds).map_err(proof_err)?;
         Ok(PreparedToken { inner: prepared })
+    }
+
+    /// Evaluate each requested predicate against this credential's plaintext
+    /// values, without producing a ZK proof. Drives consent UI: shows the
+    /// holder which requirements they meet before they approve a presentation.
+    ///
+    /// Pure-local evaluation — no proof, no network, no value disclosed.
+    ///
+    /// @param request - The same `ProofRequest` you would pass to `prepare()`.
+    /// @returns JSON array `[{ attribute, op, satisfied }]`, one entry per
+    /// predicate in request order.
+    /// @throws Only on malformed inputs (bad date format, unknown dataset).
+    /// Predicate-not-satisfied is reported as `satisfied: false`, not an
+    /// error.
+    #[napi]
+    pub fn evaluate_predicates(&self, request: ProofRequest) -> Result<String> {
+        let owl_req = convert_proof_request(&request)?;
+        let mut out = Vec::with_capacity(owl_req.predicates.len());
+        for pred in &owl_req.predicates {
+            let attr_value = self
+                .inner
+                .get_attribute(&pred.attribute)
+                .ok_or_else(|| proof_err(ProofSystemError::MissingAttribute(pred.attribute.clone())))?
+                .clone();
+            let satisfied = evaluate_predicate(pred, &attr_value).map_err(proof_err)?;
+            out.push(serde_json::json!({
+                "attribute": pred.attribute,
+                "op": match pred.op {
+                    OwlPredicateOp::GreaterOrEqual => "GreaterOrEqual",
+                    OwlPredicateOp::InSet => "InSet",
+                },
+                "satisfied": satisfied,
+            }));
+        }
+        serde_json::to_string(&out).map_err(|e| Error::from_reason(e.to_string()))
     }
 
     /// Get the Merkle root hash of this credential's attributes.
@@ -527,7 +600,8 @@ impl Token {
             }
         }
 
-        self.inner.verify(&issuers, &challenge, &registry)
+        self.inner
+            .verify(&issuers, &challenge, &registry, &[])
             .map_err(|e| Error::from_reason(e.to_string()))?;
 
         serde_json::to_string(self.inner.subjects())
@@ -666,6 +740,54 @@ impl PreparedToken {
         let inner: OwlPreparedToken = serde_json::from_str(&json)
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(PreparedToken { inner })
+    }
+}
+
+// ============================================================================
+// PROVING KEY LIFECYCLE (WASM only)
+// ============================================================================
+//
+// On native targets the proving keys are baked into the binary
+// (`prover-keys-embedded`) — `setProvingKeyBytes` is a no-op and
+// `provingKeysRequired()` is false. On WASM the keys are not embedded
+// (`prover-keys-external`); the JS SDK fetches them lazily and hands
+// them in via `setProvingKeyBytes(circuit, bytes)` before the first
+// proof. `provingKeysRequired()` lets the SDK skip its loader on
+// native runs.
+
+/// True when the running build expects proving keys to be supplied at
+/// runtime via `setProvingKeyBytes`. Browser/WASM builds return true;
+/// native NAPI builds return false (keys embedded).
+#[napi(js_name = "provingKeysRequired")]
+pub fn proving_keys_required() -> bool {
+    cfg!(target_arch = "wasm32")
+}
+
+/// Hand a serialized Groth16 proving key to the underlying lib. On
+/// native builds keys are embedded so this is a no-op (kept for a
+/// single TS surface). On WASM builds the SDK MUST call this once per
+/// circuit before generating a proof of that type.
+///
+/// `circuit` is one of `"age_range"`, `"kyc_status"`, `"nationality"`.
+/// `bytes` is the `ark-serialize` compressed proving key produced by
+/// the keygen binary, fetched at runtime by the JS SDK.
+#[napi(js_name = "setProvingKeyBytes")]
+pub fn set_proving_key_bytes(circuit: String, bytes: Buffer) -> napi::Result<()> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let t = match circuit.as_str() {
+            "age_range" => owl_zk_circuits::ZkProofType::AgeRange,
+            "kyc_status" => owl_zk_circuits::ZkProofType::KycStatus,
+            "nationality" => owl_zk_circuits::ZkProofType::Nationality,
+            other => return Err(Error::from_reason(format!("Unknown circuit: {}", other))),
+        };
+        owl_zk_circuits::set_proving_key_bytes(&t, bytes.as_ref())
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (circuit, bytes); // keys already embedded — nothing to do
+        Ok(())
     }
 }
 

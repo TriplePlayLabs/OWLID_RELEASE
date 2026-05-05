@@ -118,7 +118,7 @@ Requires an API key with `admin` or `manage_issuers` permission.
 ```bash
 curl -X POST http://localhost:8000/trusted-issuers \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: dev_key_12345678901234567890123456789012" \
+  -H "Authorization: Bearer owlid_sk_test_dev0000000000000000000000000000000000000000" \
   -d '{"public_key":"<hex-encoded-ed25519-pubkey>","name":"My Issuer","description":"Optional"}'
 ```
 
@@ -126,7 +126,7 @@ curl -X POST http://localhost:8000/trusted-issuers \
 
 ```bash
 curl http://localhost:8000/trusted-issuers \
-  -H "X-API-Key: dev_key_12345678901234567890123456789012"
+  -H "Authorization: Bearer owlid_sk_test_dev0000000000000000000000000000000000000000"
 ```
 
 **Deactivate an issuer** (do not delete -- preserve audit trail):
@@ -141,39 +141,41 @@ UPDATE trusted_issuers SET is_active = false WHERE public_key = '<key>';
 
 Seeded automatically from `002_seed.sql`:
 
-- **Key:** `dev_key_12345678901234567890123456789012`
+- **Key:** `owlid_sk_test_dev0000000000000000000000000000000000000000`
+- **Format:** `owlid_{pk|sk}_{live|test}_<base62>` — `pk` = publishable (browser-safe, `verify` only); `sk` = secret (any permission)
 - **Permissions:** verify, manage_issuers, manage_revocations, admin
 - **Warning:** Never use this key in production.
 
 ### Creating New Keys
 
-Generate a key, compute its SHA-256 hash, and insert:
+Use the admin dashboard at `:4000` or the admin HTTP API. The service generates the prefixed key (`owlid_sk_live_…` etc.), stores its SHA-256 hash, and returns the full key once. Direct SQL inserts skip the prefix/preview logic and break the dashboard.
 
 ```bash
-NEW_KEY=$(openssl rand -hex 32)
-KEY_HASH=$(echo -n "$NEW_KEY" | sha256sum | awk '{print $1}')
-echo "API Key: $NEW_KEY"
-```
+# Log in to the verification service as an admin user (sets owlid_admin_token cookie)
+curl -X POST https://verify.example.com/admin/login \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d '{"username":"admin","password":"<admin-password>"}'
 
-```sql
-INSERT INTO api_keys (key_hash, name, permissions, created_by, expires_at)
-VALUES (
-  '<KEY_HASH>',
-  'Production Verifier',
-  '["verify"]'::jsonb,
-  'ops-team',
-  NOW() + INTERVAL '1 year'
-);
+# Mint a new key
+curl -X POST https://verify.example.com/admin/api-keys \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"name":"Prod Verifier","keyType":"sk","environment":"live","permissions":["verify"]}'
+# Response includes the full key once. Copy it now — only the SHA-256 hash is stored server-side.
 ```
 
 ### Permission Model
 
-| Permission           | Grants                                     |
-| -------------------- | ------------------------------------------ |
-| `verify`             | Submit verification requests               |
-| `manage_issuers`     | Add/deactivate trusted issuers             |
-| `manage_revocations` | Revoke, suspend, reactivate credentials    |
-| `admin`              | All of the above + GDPR erasure + key mgmt |
+| Permission           | Grants                                  |
+| -------------------- | --------------------------------------- |
+| `verify`             | Submit verification requests            |
+| `manage_issuers`     | Add/deactivate trusted issuers          |
+| `manage_revocations` | Revoke, suspend, reactivate credentials |
+| `gdpr`               | GDPR erasure                            |
+| `admin`              | Trusted-issuer + revocation mutation    |
+
+Default admin login creds (dev only): `admin` / `admin` from the seeded `admin_users` row. **Change immediately for any non-localhost deployment.**
 
 ### Deactivating a Key
 
@@ -190,7 +192,7 @@ All endpoints require an API key with `manage_revocations` or `admin` permission
 ```bash
 curl -X POST http://localhost:8000/revocations/revoke \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: <key>" \
+  -H "Authorization: Bearer <key>" \
   -d '{"credential_id":"<id>","issuer_public_key":"<key>","reason":"Compromised"}'
 ```
 
@@ -199,7 +201,7 @@ curl -X POST http://localhost:8000/revocations/revoke \
 ```bash
 curl -X POST http://localhost:8000/revocations/suspend \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: <key>" \
+  -H "Authorization: Bearer <key>" \
   -d '{"credential_id":"<id>","issuer_public_key":"<key>","reason":"Under review"}'
 ```
 
@@ -208,7 +210,7 @@ curl -X POST http://localhost:8000/revocations/suspend \
 ```bash
 curl -X POST http://localhost:8000/revocations/reactivate \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: <key>" \
+  -H "Authorization: Bearer <key>" \
   -d '{"credential_id":"<id>"}'
 ```
 
@@ -217,7 +219,7 @@ curl -X POST http://localhost:8000/revocations/reactivate \
 ```bash
 curl -X POST http://localhost:8000/revocations/check \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: <key>" \
+  -H "Authorization: Bearer <key>" \
   -d '{"credential_id":"<id>"}'
 ```
 
@@ -235,7 +237,7 @@ Publishes events when credentials are revoked, suspended, or reactivated.
 
 ```bash
 curl -X DELETE http://localhost:8000/admin/gdpr-erasure/<owner_public_key> \
-  -H "X-API-Key: <admin-key>"
+  -H "Authorization: Bearer <admin-key>"
 ```
 
 **What happens:**

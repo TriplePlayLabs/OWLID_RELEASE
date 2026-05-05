@@ -1,30 +1,80 @@
 /**
- * @owlid/sdk
+ * @owlid/sdk — TypeScript SDK for the OwlID platform.
  *
- * Complete OwlID SDK with WebAuthn, cryptography, and native bindings.
- * Can be used with or without React.
+ * Public surface:
+ *   - `OwlVerifier` — server-side client for verifying tokens
+ *   - `OwlIssuer`   — server-side client for issuing credentials
+ *   - Token primitives (`Credential`, `Token`, `KeyPair`) — holder-side crypto
+ *   - WebAuthn helpers, encoding, storage, presentation protocol
  */
 
 // =============================================================================
-// Re-export from Native SDK (Rust/WASM cryptographic primitives)
+// Ergonomic platform clients (preferred surface)
 // =============================================================================
 export {
-  // Classes
-  Document,
-  KeyPair,
-  PreparedToken,
-  Credential,
-  PublicKey,
-  Signature,
-  Token,
-  // Functions
-  blake3,
-  sha256,
-  // Types
-  type ProofRequest,
-  type PredicateRequest,
-  type WebAuthnSignatureData,
-} from '@owlid/native-sdk'
+  OwlVerifier,
+  type OwlVerifierOptions,
+  type VerificationResult,
+  type Challenge,
+  type IssuerInfo as VerifiedIssuerInfo,
+  type RevocationEvent,
+  type PresentationSession,
+  type PresentationRequestOptions,
+} from './verifier.js'
+
+export {
+  OwlIssuer,
+  type OwlIssuerOptions,
+  type Claims,
+  type Holder,
+  type HolderAlgorithm,
+  type IssuanceSession,
+  type SessionStart,
+  type FormField,
+  type IssuedClaims,
+  type IssuedCredential,
+  type ProviderInfo,
+} from './issuer.js'
+
+export {
+  respondToPresentation,
+  signToken,
+  signTokenWithPasskey,
+  type HolderSigner,
+  type PresentationConsentRequest,
+  type RespondOptions,
+  type SignTokenOptions,
+  type SignTokenWithPasskeyOptions,
+} from './holder.js'
+
+// =============================================================================
+// Configuration (advanced — most apps use OwlVerifier / OwlIssuer instead)
+// =============================================================================
+export {
+  type RuntimeConfig,
+  configure,
+  getConfig,
+  getVerificationUrl,
+  getIssuerUrl,
+  getApiKey,
+  apiKeyHeaders,
+  getWsBaseUrl,
+  toWsUrl,
+  resolveWsUrl,
+} from './config.js'
+
+// =============================================================================
+// Native SDK (Rust/WASM cryptographic primitives)
+// =============================================================================
+// Type-only re-exports so consumers can reference proof shapes without
+// pulling the WASM payload. Runtime classes and hash helpers live behind
+// the explicit `@owlid/sdk/native` subpath:
+//
+//     import { Token, blake3 } from '@owlid/sdk/native'
+//
+// Importing the subpath is what loads the WASM module. See the bundler
+// integration guide for the Vite / Webpack setup it expects.
+export type { ProofRequest, PredicateRequest, WebAuthnSignatureData } from '@owlid/native-sdk'
 
 // =============================================================================
 // Encoding utilities
@@ -42,20 +92,16 @@ export {
 // WebAuthn core
 // =============================================================================
 export {
-  // Types
   type WebAuthnSignatureResult,
   type WebAuthnRegistrationResult,
   type WebAuthnRegistrationOptions,
   type WebAuthnAuthenticationOptions,
-  // CBOR/COSE parsing
   extractPublicKeyFromAttestation,
   coseKeyToP256Hex,
   parseCoseKey,
-  // WebAuthn operations
   registerCredential,
   signChallenge,
   authenticate,
-  // Utilities
   isWebAuthnSupported,
   isPlatformAuthenticatorAvailable,
 } from './webauthn.js'
@@ -64,18 +110,14 @@ export {
 // Storage
 // =============================================================================
 export {
-  // Types
   type StoredWebAuthnCredential,
   type StoredCredentialData,
   type Credential as StoredCredential,
   type VerifiedClaims,
   type IdentityData,
   type StorageAdapter,
-  // Constants
   STORAGE_KEYS,
-  // Adapters
   browserStorageAdapter,
-  // Storage manager
   CredentialStorageManager,
   storage,
 } from './storage.js'
@@ -83,28 +125,22 @@ export {
 // =============================================================================
 // Token types
 // =============================================================================
-export {
-  // Types
-  type TokenResult,
-  type PreparedTokenResult,
-} from './tokens.js'
+export { type TokenResult, type PreparedTokenResult } from './tokens.js'
 
 // =============================================================================
 // Proof storage (IndexedDB)
 // =============================================================================
-export {
-  // Types
-  type StoredProof,
-  // Storage manager
-  ProofStorageManager,
-  proofStorage,
-} from './proof-storage.js'
+export { type StoredProof, ProofStorageManager, proofStorage } from './proof-storage.js'
+
+// =============================================================================
+// Reference data (kept in sync with the platform's issuance normalisation)
+// =============================================================================
+export { EU_ALPHA2 } from './eu-countries.js'
 
 // =============================================================================
 // Presentation Protocol (ISO 18013-5 style)
 // =============================================================================
 export {
-  // Types
   type SessionEngagement,
   type PresentationRequest,
   type PresentationResponse,
@@ -112,9 +148,9 @@ export {
   type WsMessage,
   type WsMessageType,
   type WsError,
-  // Constants
+  type PredicateNotSatisfiedPayload,
+  type ProofFailedPayload,
   PRESENTATION_PREDICATES,
-  // Functions
   encodeSessionEngagement,
   decodeSessionEngagement,
   isPresentationEngagement,
@@ -122,94 +158,11 @@ export {
 } from './presentation.js'
 
 // =============================================================================
-// Generated API Clients (from OpenAPI specs)
+// Proof error parsing (typed errors crossing the native SDK FFI)
 // =============================================================================
 export {
-  // Verification Service classes
-  VerificationApi,
-  IssuersApi,
-  RevocationsApi,
-  MonitoringApi,
-  GdprApi,
-  AdminApi,
-  VerificationConfiguration,
-  // Issuer Service classes
-  SessionsApi,
-  CredentialsApi,
-  InfoApi,
-  ProvidersApi,
-  OidcApi,
-  CallbacksApi,
-  InternalApi,
-  UtilitiesApi,
-  IssuerConfiguration,
-  // Verification types
-  type VerifyRequest,
-  type VerifyResponse,
-  type AddTrustedIssuerRequest,
-  type AddTrustedIssuerResponse,
-  type TrustedIssuerInfo,
-  type RevokeCredentialRequest,
-  type ReactivateCredentialRequest,
-  type CheckRevocationRequest,
-  type CheckRevocationResponse,
-  type ErasureReceipt,
-  type LoginRequest,
-  type LoginResponse,
-  type CreateApiKeyRequest,
-  type CreateApiKeyResponse,
-  type ApiKeyInfo,
-  // Issuer types
-  type CreateSessionRequest,
-  type CreateSessionResponse,
-  type SessionResponse,
-  type IssueCredentialRequest,
-  type IssueCredentialResponse,
-  type CompleteVerificationResponse,
-  type VerificationWarningResponse,
-  type IssuerInfoResponse,
-  type OidcProviderInfo,
-  type OidcLoginResponse,
-  type OidcCallbackResponse,
-  type OidcCallbackQuery,
-  type FlowState,
-  type SessionStatus,
-  type VerificationLevel,
-  type VerifiedIdentityClaims,
-  type IdentitySubmissionForm,
-  type ProviderFlowType,
-  type VerificationStart,
-  type FormConfig,
-  type FormField,
-  type FormFieldType,
-  type ProviderInfo,
-  type ProviderInfoExtended,
-  type CallbackResponse,
-  type PollResponse,
-  type KeyPairResponse,
-} from './generated/index.js'
-
-// =============================================================================
-// API Client Singletons
-// =============================================================================
-export {
-  // Verification service
-  getVerificationApi,
-  getIssuersApi,
-  getRevocationsApi,
-  getMonitoringApi,
-  getGdprApi,
-  getAdminApi,
-  // Issuer service
-  getSessionsApi,
-  getCredentialsApi,
-  getInfoApi,
-  getProvidersApi,
-  getOidcApi,
-  getCallbacksApi,
-  getInternalApi,
-  getUtilitiesApi,
-  // Utilities
-  resetApiClients,
-  type ApiClientOptions,
-} from './api-client.js'
+  type ProofErrorCode,
+  type ProofError,
+  parseProofError,
+  isPredicateNotSatisfied,
+} from './proof-errors.js'

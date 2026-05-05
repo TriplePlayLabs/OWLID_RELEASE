@@ -224,6 +224,12 @@ services:
         VITE_ISSUER_URL: ${VITE_ISSUER_URL:-https://owlid-issuer.sashoush.dev}
         VITE_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
     container_name: owlid-app
+    environment:
+      # Runtime injection into window.__OWLID_CONFIG__ via runtime-config.sh.
+      # No api key — the holder app does not call authenticated endpoints
+      # directly; it talks to the issuer's session-bearer flow.
+      OWLID_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+      OWLID_ISSUER_URL: ${VITE_ISSUER_URL:-https://owlid-issuer.sashoush.dev}
     ports:
       - '5000:80'
     networks:
@@ -236,8 +242,11 @@ services:
       dockerfile: Dockerfile.verifier
       args:
         VITE_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
-        VITE_API_KEY: ${API_KEY_DEV:-}
     container_name: owlid-verifier
+    environment:
+      # API key MUST be supplied at runtime; never baked into the bundle.
+      OWLID_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+      OWLID_API_KEY: ${OWLID_VERIFIER_API_KEY:?OWLID_VERIFIER_API_KEY must be set in .env for the verifier-app}
     ports:
       - '5001:80'
     networks:
@@ -252,8 +261,11 @@ services:
         VITE_API_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
         VITE_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
         VITE_ISSUER_URL: ${VITE_ISSUER_URL:-https://owlid-issuer.sashoush.dev}
-        VITE_API_KEY: ${API_KEY_DEV:-}
     container_name: owlid-admin
+    environment:
+      # Admin uses bearer JWT after /admin/login; no api-key required at runtime.
+      OWLID_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+      OWLID_ISSUER_URL: ${VITE_ISSUER_URL:-https://owlid-issuer.sashoush.dev}
     ports:
       - '4000:80'
     networks:

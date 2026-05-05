@@ -873,7 +873,7 @@ async fn test_t007_multisig_verification() {
     let registry = owl_proof_system::RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
     assert!(
-        token.verify(&trusted, "multisig_test", &registry).is_ok(),
+        token.verify(&trusted, "multisig_test", &registry, &[]).is_ok(),
         "T-007: Multisig token should verify"
     );
 }
@@ -956,7 +956,7 @@ async fn test_t022_ring_signature_anonymity() {
     let registry = owl_proof_system::RevocationRegistry::new();
     let trusted = vec![issuer.public_key()];
     assert!(
-        token.verify(&trusted, "ring_sig_test", &registry).is_ok(),
+        token.verify(&trusted, "ring_sig_test", &registry, &[]).is_ok(),
         "T-022: Ring signature token should verify"
     );
 }
@@ -1254,7 +1254,7 @@ async fn test_t016_zk_nationality_predicate() {
     let mut attrs = BTreeMap::new();
     attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
     attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("nationality".to_string(), json!("Dutch"));
+    attrs.insert("nationality".to_string(), json!("NL"));
     attrs.insert("firstName".to_string(), json!("Test"));
 
     let doc = Document::new(attrs).unwrap();
@@ -1265,7 +1265,7 @@ async fn test_t016_zk_nationality_predicate() {
         predicates: vec![PredicateRequest {
             attribute: "nationality".to_string(),
             op: PredicateOp::InSet,
-            value: json!(["Dutch", "German", "French", "Belgian", "Italian", "Spanish"]),
+            value: json!("eu"),
         }],
         trusted_issuers: vec![issuer.public_key().to_hex()],
         challenge: challenge.clone(),
@@ -1343,7 +1343,7 @@ async fn test_t016_multiple_predicates() {
     attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
     attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
     attrs.insert("dateOfBirth".to_string(), json!("1990-01-01"));
-    attrs.insert("nationality".to_string(), json!("Dutch"));
+    attrs.insert("nationality".to_string(), json!("NL"));
     attrs.insert("verificationLevel".to_string(), json!(3));
 
     let doc = Document::new(attrs).unwrap();

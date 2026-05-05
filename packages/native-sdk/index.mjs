@@ -11,5 +11,7 @@ export const Signature = nativeBinding.Signature
 export const Token = nativeBinding.Token
 export const blake3 = nativeBinding.blake3
 export const sha256 = nativeBinding.sha256
+export const provingKeysRequired = nativeBinding.provingKeysRequired
+export const setProvingKeyBytes = nativeBinding.setProvingKeyBytes
 
 export default nativeBinding

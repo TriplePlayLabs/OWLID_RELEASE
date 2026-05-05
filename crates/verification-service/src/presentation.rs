@@ -136,6 +136,28 @@ impl PresentationSessionStore {
         sessions.get(session_id).map(|s| s.nonce.clone())
     }
 
+    /// Consume a presentation-session nonce as a one-shot challenge.
+    ///
+    /// Used by `/verify` to accept tokens whose challenge was the nonce
+    /// from a presentation session (instead of one minted by
+    /// `GET /verify/challenge`). Returns true if a non-expired session
+    /// with this nonce existed; the session is then removed so the same
+    /// nonce can't be replayed.
+    pub async fn consume_nonce(&self, nonce: &str) -> bool {
+        let mut sessions = self.sessions.write().await;
+        let now = Instant::now();
+        let to_remove = sessions
+            .iter()
+            .find(|(_, s)| s.nonce == nonce && s.expires_at > now)
+            .map(|(id, _)| id.clone());
+        if let Some(id) = to_remove {
+            sessions.remove(&id);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Remove expired sessions
     pub async fn cleanup(&self) -> usize {
         let mut sessions = self.sessions.write().await;
@@ -274,10 +296,21 @@ async fn handle_presentation_ws(
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
                             let msg_type = parsed.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
-                            // Validate message type for role
+                            // Validate message type for role.
+                            //
+                            // `predicate_not_satisfied` and `proof_failed`
+                            // are normal terminal outcomes the holder can
+                            // emit instead of `response`. Keeping `error`
+                            // here covers transport-level failures only.
                             let valid = match role.as_str() {
                                 "verifier" => msg_type == "request",
-                                "holder" => msg_type == "response" || msg_type == "consent_denied",
+                                "holder" => {
+                                    msg_type == "response"
+                                        || msg_type == "consent_denied"
+                                        || msg_type == "predicate_not_satisfied"
+                                        || msg_type == "proof_failed"
+                                        || msg_type == "error"
+                                }
                                 _ => false,
                             };
 

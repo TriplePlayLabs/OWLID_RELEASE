@@ -1,22 +1,15 @@
 import { useState } from 'react'
 import { Shield, Loader2, AlertCircle } from 'lucide-react'
-import { useAdminLogin } from '~/hooks/use-admin'
-import { useAuth } from '~/contexts/auth-context'
+import { useAuth } from '~/hooks/use-auth'
 
 export function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const loginMutation = useAdminLogin()
-  const { login } = useAuth()
+  const { loginMutation } = useAuth()
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    try {
-      const result = await loginMutation.mutateAsync({ username, password })
-      login(result.token, result.username)
-    } catch {
-      // error handled by mutation state
-    }
+    loginMutation.mutate({ username, password })
   }
 
   return (
@@ -84,10 +77,6 @@ export function LoginPage() {
             )}
           </button>
         </form>
-
-        <p className="text-xs text-center text-muted-foreground">
-          Default credentials: admin / admin
-        </p>
       </div>
     </div>
   )

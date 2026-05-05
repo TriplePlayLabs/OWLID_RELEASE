@@ -14,11 +14,13 @@
     "dev": "bun run --filter '*' dev",
     "dev:app": "bun run --filter @owlid/app dev",
     "dev:admin": "bun run --filter @owlid/admin dev",
+    "dev:docs": "bun run --filter @owlid/docs-site dev",
     "build": "bun run --filter '*' build",
     "build:app": "bun run --filter @owlid/app build",
     "build:sdk": "bun run --filter @owlid/sdk build",
     "build:native-sdk": "bun run --filter @owlid/native-sdk build",
     "build:admin": "bun run --filter @owlid/admin build",
+    "build:docs": "bun run --filter @owlid/docs-site build",
     "test": "bun run --filter '*' test",
     "test:sdk": "bun run --filter @owlid/sdk test",
     "check": "bun run --filter '*' check",
@@ -34,12 +36,13 @@
   },
   "devDependencies": {
     "@taplo/cli": "^0.7.0",
-    "@types/bun": "^1.3.8",
+    "@types/bun": "^1.3.13",
     "binaryen": "^125.0.0",
+    "commander": "^14.0.3",
     "husky": "^9.1.7",
-    "lint-staged": "^16.2.7",
-    "oxlint": "^1.42.0",
-    "prettier": "^3.8.1",
+    "lint-staged": "^16.4.0",
+    "oxlint": "^1.63.0",
+    "prettier": "^3.8.3",
     "typescript": "^5.9.3"
   },
   "lint-staged": {
@@ -63,7 +66,7 @@
     "tabWidth": 2,
     "useTabs": false
   },
-  "packageManager": "bun@1.3.8",
+  "packageManager": "bun@1.3.13",
   "overrides": {
     "@midnight-ntwrk/compact-js": "2.5.0"
   }

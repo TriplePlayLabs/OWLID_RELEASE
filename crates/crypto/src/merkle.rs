@@ -251,70 +251,7 @@ impl MerkleProof {
         }
 
         // Step 2: Reconstruct the Merkle root from the proof
-        use std::collections::HashMap;
-
-        // Start with the disclosed leaf hashes at their original positions
-        let mut current_level: HashMap<usize, [u8; 32]> = HashMap::new();
-        for leaf in &self.proof_leaves {
-            current_level.insert(leaf.position, leaf.hash);
-        }
-
-        // Add sibling hashes to the appropriate levels
-        let mut sibling_map: HashMap<usize, Vec<&SiblingHash>> = HashMap::new();
-        for sibling in &self.sibling_hashes {
-            sibling_map.entry(sibling.level).or_insert_with(Vec::new).push(sibling);
-        }
-
-        // Reconstruct level by level
-        let mut level = 0;
-        while current_level.len() > 1 || sibling_map.contains_key(&level) {
-            let mut next_level: HashMap<usize, [u8; 32]> = HashMap::new();
-
-            // Get siblings for this level
-            let siblings_at_level = sibling_map.get(&level).cloned().unwrap_or_default();
-
-            // Merge current level nodes with siblings
-            let mut all_nodes: HashMap<usize, [u8; 32]> = current_level.clone();
-            for sibling in &siblings_at_level {
-                all_nodes.insert(sibling.position, sibling.hash);
-            }
-
-            // Find the max position to know how many nodes we have
-            let max_pos = all_nodes.keys().max().cloned().unwrap_or(0);
-
-            // Combine pairs into next level
-            for i in (0..=max_pos).step_by(2) {
-                if let Some(left_hash) = all_nodes.get(&i) {
-                    if let Some(right_hash) = all_nodes.get(&(i + 1)) {
-                        // Both nodes present, hash the pair
-                        let combined = hash_pair(left_hash, right_hash);
-                        next_level.insert(i / 2, combined);
-                    } else {
-                        // Odd node, promote to next level
-                        next_level.insert(i / 2, *left_hash);
-                    }
-                } else if let Some(right_hash) = all_nodes.get(&(i + 1)) {
-                    // Only right node (shouldn't happen in valid tree, but handle it)
-                    next_level.insert(i / 2, *right_hash);
-                }
-            }
-
-            current_level = next_level;
-            level += 1;
-
-            // Safety check to prevent infinite loops
-            if level > 100 {
-                return false;
-            }
-        }
-
-        // Step 3: Compare reconstructed root with claimed root
-        if current_level.len() != 1 {
-            return false;
-        }
-
-        let reconstructed_root = current_level.values().next().unwrap();
-        reconstructed_root == &self.root_hash
+        self.reconstruct_root_matches()
     }
 
     /// Verify proof with both disclosed attributes (re-hash values) and
@@ -353,8 +290,19 @@ impl MerkleProof {
             }
         }
 
-        // Step 2: Reconstruct the Merkle root (same as verify_with_salt)
+        // Step 2: Reconstruct the Merkle root from the proof
+        self.reconstruct_root_matches()
+    }
+
+    /// Climb the partial tree built from disclosed/committed leaf hashes plus
+    /// sibling hashes until we land on a single hash at position 0, then
+    /// compare it to the claimed root.
+    ///
+    /// Used by both `verify_with_salt` and `verify_with_commitments` after
+    /// they've validated the leaf hashes.
+    fn reconstruct_root_matches(&self) -> bool {
         use std::collections::HashMap;
+
         let mut current_level: HashMap<usize, [u8; 32]> = HashMap::new();
         for leaf in &self.proof_leaves {
             current_level.insert(leaf.position, leaf.hash);
@@ -365,8 +313,18 @@ impl MerkleProof {
             sibling_map.entry(sibling.level).or_default().push(sibling);
         }
 
-        let mut level = 0;
-        while current_level.len() > 1 || sibling_map.contains_key(&level) {
+        // Continue while either: more than one node at this level, more
+        // siblings to absorb above, or our single node hasn't yet propagated
+        // up to position 0 (the root). The earlier loop only checked the
+        // first two conditions and exited prematurely when disclosed leaves
+        // collapsed to a single hash at a non-root position several levels
+        // below the actual root, returning that intermediate hash as if it
+        // were the root.
+        let mut level = 0usize;
+        while current_level.len() > 1
+            || sibling_map.contains_key(&level)
+            || (current_level.len() == 1 && !current_level.contains_key(&0))
+        {
             let mut next_level: HashMap<usize, [u8; 32]> = HashMap::new();
             let siblings_at_level = sibling_map.get(&level).cloned().unwrap_or_default();
             let mut all_nodes: HashMap<usize, [u8; 32]> = current_level.clone();
@@ -395,8 +353,10 @@ impl MerkleProof {
         if current_level.len() != 1 {
             return false;
         }
-        let reconstructed_root = current_level.values().next().unwrap();
-        reconstructed_root == &self.root_hash
+        let Some(reconstructed) = current_level.get(&0) else {
+            return false;
+        };
+        reconstructed == &self.root_hash
     }
 
     pub fn root_hash(&self) -> &[u8; 32] {

@@ -15,9 +15,9 @@ import { Loader2, CheckCircle, XCircle, AlertCircle, ShieldCheck } from 'lucide-
 import { toast } from 'sonner'
 import { useIdpVerification } from '../../hooks/use-idp-verification'
 import { useCompleteVerificationAfterCallback } from '../../hooks/use-idp-api'
-import { useIdentityContext } from '../../contexts/identity-context'
-import { Card, CardContent } from '~/components/ui/card'
-import { Button } from '~/components/ui/button'
+import { useIdentity } from '../../hooks/use-identity'
+import { Card, CardContent } from '@owlid/ui/components/ui/card'
+import { Button } from '@owlid/ui/components/ui/button'
 import Owl from '~/components/Owl'
 
 const INITIAL_POLL_INTERVAL = 2000 // Start with 2 seconds
@@ -61,7 +61,7 @@ function CallbackPage() {
   const { status, claims, error, flowType, resumeSession, checkStatus, providerStatus, warnings } =
     useIdpVerification()
   const completeVerification = useCompleteVerificationAfterCallback()
-  const { setIdentityData, completeIdentityCreation } = useIdentityContext()
+  const { setIdentityData, completeIdentityCreation } = useIdentity()
   const [isResuming, setIsResuming] = useState(false)
   const [isIssuingCredential, setIsIssuingCredential] = useState(false)
   const pollCountRef = useRef(0)
@@ -69,12 +69,19 @@ function CallbackPage() {
   const currentDelayRef = useRef(INITIAL_POLL_INTERVAL)
   const consecutiveErrorsRef = useRef(0)
 
-  // Store session ID in ref to survive URL cleanup from use-idp-verification
+  // Store session ID + bearer token in refs so they survive URL cleanup and
+  // sessionStorage drains by use-idp-verification's auto-resume effect.
   const sessionRef = useRef<string>(sessionFromUrl || '')
   if (sessionFromUrl && !sessionRef.current) {
     sessionRef.current = sessionFromUrl
   }
   const session = sessionRef.current || sessionFromUrl
+
+  const sessionTokenRef = useRef<string>('')
+  if (!sessionTokenRef.current) {
+    sessionTokenRef.current = sessionStorage.getItem('owl_pending_session_token') ?? ''
+  }
+  const sessionToken = sessionTokenRef.current
 
   // Clean up polling on unmount
   useEffect(() => {
@@ -91,12 +98,12 @@ function CallbackPage() {
       return
     }
 
-    // Resume session if we have a session ID
-    if (session && !isResuming && status === 'idle') {
+    // Resume session if we have a session ID + token from the redirect
+    if (session && sessionToken && !isResuming && status === 'idle') {
       setIsResuming(true)
-      resumeSession(session)
+      resumeSession(session, sessionToken)
     }
-  }, [session, errorParam, isResuming, status, resumeSession])
+  }, [session, sessionToken, errorParam, isResuming, status, resumeSession])
 
   // For webhook_async providers, poll with exponential backoff
   // (webhook might not have been processed yet)

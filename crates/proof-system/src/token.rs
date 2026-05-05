@@ -30,11 +30,11 @@ pub struct PredicateRequest {
     pub value: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PredicateOp {
     /// e.g., age >= 18, kycLevel >= 2
     GreaterOrEqual,
-    /// e.g., nationality in ["NL", "DE", "FR"]
+    /// e.g., nationality in dataset "eu"
     InSet,
 }
 
@@ -142,6 +142,11 @@ pub struct TokenPayload {
     /// Binds ZK proofs to the issuer-signed credential.
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub committed_attributes: BTreeMap<String, String>,
+    /// Predicate ids this credential is permitted to prove. Surfaced from
+    /// `ProofDocument` so `Token::verify` can reject proofs whose predicate
+    /// id is not on the issuer-signed allowlist.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_predicates: Vec<String>,
 }
 
 fn default_threshold() -> u32 {
@@ -384,6 +389,7 @@ impl Token {
             signer_threshold: 1,
             zk_proofs,
             committed_attributes,
+            available_predicates: proof_doc.available_predicates().to_vec(),
         })
     }
 
@@ -432,12 +438,20 @@ impl Token {
         })
     }
 
-    /// Verify the token with all security checks including revocation
+    /// Verify the token with all security checks including revocation.
+    ///
+    /// `expected_origins` is the verifier's allowlist for the WebAuthn
+    /// `clientDataJSON.origin` field (the host serving the SPA — e.g.
+    /// `https://owlid-app.sashoush.dev`). When non-empty, WebAuthn
+    /// owner-signature verification fails closed if the signed origin is
+    /// not on the list. Pass `&[]` only in tests / dev environments where
+    /// origin-binding is not yet wired.
     pub fn verify(
         &self,
         trusted_issuers: &[PublicKey],
         challenge: &str,
         revocation_checker: &dyn RevocationChecker,
+        expected_origins: &[String],
     ) -> Result<(), ProofSystemError> {
         // 1. Verify challenge matches
         if self.payload.challenge != challenge {
@@ -505,8 +519,14 @@ impl Token {
             ));
         }
 
-        // 7. Verify document signature (issuer signed the root hash)
-        issuer_key.verify(self.payload.root_hash.as_bytes(), &self.payload.signature)?;
+        // 7. Verify document signature. The issuer signs canonical bytes
+        //    that pin both the root hash and the available_predicates
+        //    allowlist, so the allowlist cannot be widened post-issuance.
+        let signing_input = crate::document::issuer_signing_input(
+            &self.payload.root_hash,
+            &self.payload.available_predicates,
+        );
+        issuer_key.verify(&signing_input, &self.payload.signature)?;
 
         // 8. Verify proof of inclusion
         if let Some(proof) = &self.payload.proof_of_inclusion {
@@ -590,10 +610,19 @@ impl Token {
                                 client_data_json.clone(),
                                 signature.clone(),
                             );
-                            if webauthn_sig
-                                .verify_payload_bound(&webauthn_pubkey, payload_json.as_bytes())
-                                .is_ok()
-                            {
+                            let result = if expected_origins.is_empty() {
+                                webauthn_sig.verify_payload_bound(
+                                    &webauthn_pubkey,
+                                    payload_json.as_bytes(),
+                                )
+                            } else {
+                                webauthn_sig.verify_payload_bound_with_origin(
+                                    &webauthn_pubkey,
+                                    payload_json.as_bytes(),
+                                    expected_origins,
+                                )
+                            };
+                            if result.is_ok() {
                                 verified_key_indices.insert(idx);
                                 break;
                             }
@@ -665,11 +694,41 @@ impl Token {
             )));
         }
 
-        // 10. Verify ZK proofs if present (T-016)
+        // 10. Verify ZK proofs if present (T-016): each proof must claim a
+        // registered predicate and pin to its canonical public input.
         if !self.payload.zk_proofs.is_empty() {
-            crate::zk::verify_all_zk_proofs(&self.payload.zk_proofs).map_err(|e| {
-                ProofSystemError::InvalidProof(format!("ZK proof verification failed: {}", e))
-            })?;
+            crate::zk::verify_all_zk_proofs(&self.payload.zk_proofs)?;
+
+            // 10a. Reject proofs whose predicate is not on the credential's
+            // issuer-signed allowlist. If the credential pre-dates the
+            // registry (`available_predicates` empty), the allowlist check
+            // is skipped — Groth16 + pinned-input still apply.
+            if !self.payload.available_predicates.is_empty() {
+                for zk_value in &self.payload.zk_proofs {
+                    let zk_proof = crate::zk::zk_proof_from_value(zk_value).map_err(|e| {
+                        ProofSystemError::InvalidProof(format!(
+                            "ZK proof deserialization failed: {}",
+                            e
+                        ))
+                    })?;
+                    let pred = crate::zk::resolve_proof_predicate(&zk_proof).ok_or_else(|| {
+                        ProofSystemError::InvalidProof(
+                            "ZK proof does not match any registered predicate".to_string(),
+                        )
+                    })?;
+                    if !self
+                        .payload
+                        .available_predicates
+                        .iter()
+                        .any(|id| id == pred.id)
+                    {
+                        return Err(ProofSystemError::InvalidProof(format!(
+                            "Predicate '{}' not on credential's available_predicates",
+                            pred.id
+                        )));
+                    }
+                }
+            }
 
             // 10b. Verify ZK proof attribute bindings
             if let Some(proof) = &self.payload.proof_of_inclusion {
@@ -799,7 +858,7 @@ mod tests {
 
         let registry = RevocationRegistry::new();
         let trusted = vec![issuer.public_key()];
-        assert!(token.verify(&trusted, "random_challenge_12345", &registry).is_ok());
+        assert!(token.verify(&trusted, "random_challenge_12345", &registry, &[]).is_ok());
     }
 
     #[test]
@@ -828,7 +887,7 @@ mod tests {
         let registry = RevocationRegistry::new();
         let trusted = vec![issuer.public_key()];
 
-        assert!(token.verify(&trusted, "wrong_challenge", &registry).is_err());
+        assert!(token.verify(&trusted, "wrong_challenge", &registry, &[]).is_err());
     }
 
     #[test]
@@ -858,7 +917,7 @@ mod tests {
         let registry = RevocationRegistry::new();
 
         let trusted = vec![other_issuer.public_key()];
-        assert!(token.verify(&trusted, "challenge123", &registry).is_err());
+        assert!(token.verify(&trusted, "challenge123", &registry, &[]).is_err());
     }
 
     #[test]
@@ -888,7 +947,7 @@ mod tests {
         let trusted = vec![issuer.public_key()];
         let registry = RevocationRegistry::new();
 
-        assert!(token.verify(&trusted, "challenge_with_revocation", &registry).is_ok());
+        assert!(token.verify(&trusted, "challenge_with_revocation", &registry, &[]).is_ok());
 
         registry.revoke(
             root_hash.clone(),
@@ -896,7 +955,7 @@ mod tests {
             Some("Test revocation".to_string()),
         );
 
-        let result = token.verify(&trusted, "challenge_with_revocation", &registry);
+        let result = token.verify(&trusted, "challenge_with_revocation", &registry, &[]);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -904,6 +963,84 @@ mod tests {
         ));
 
         registry.reactivate(root_hash, issuer.public_key().to_hex());
-        assert!(token.verify(&trusted, "challenge_with_revocation", &registry).is_ok());
+        assert!(token.verify(&trusted, "challenge_with_revocation", &registry, &[]).is_ok());
+    }
+
+    #[test]
+    fn test_token_rejects_predicate_not_on_credential_allowlist() {
+        use crate::revocation::RevocationRegistry;
+
+        let issuer = KeyPair::generate();
+        let owner = KeyPair::generate();
+
+        let mut attrs = BTreeMap::new();
+        attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
+        attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
+        // DOB old enough for 65+ to actually generate (proof gen would
+        // otherwise fail before the allowlist check runs).
+        attrs.insert("dateOfBirth".to_string(), json!("1950-01-01"));
+
+        // Issue a credential that ONLY allows the 18+ predicate, not 65+.
+        let doc = Document::new(attrs)
+            .unwrap()
+            .with_available_predicates(vec!["age:>=18".to_string()]);
+        let mut proof_doc = doc.issue(&issuer);
+
+        let request = ProofRequest {
+            disclose: vec![],
+            predicates: vec![PredicateRequest {
+                attribute: "dateOfBirth".to_string(),
+                op: PredicateOp::GreaterOrEqual,
+                value: json!(65),
+            }],
+            trusted_issuers: vec![issuer.public_key().to_hex()],
+            challenge: "allowlist-test".to_string(),
+        };
+
+        let token = Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
+
+        let registry = RevocationRegistry::new();
+        let trusted = vec![issuer.public_key()];
+        let result = token.verify(&trusted, "allowlist-test", &registry, &[]);
+        assert!(result.is_err(), "65+ proof should be rejected when only 18+ is on allowlist");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("age:>=65"), "error should mention rejected predicate id: {}", err);
+    }
+
+    #[test]
+    fn test_token_accepts_predicate_on_credential_allowlist() {
+        use crate::revocation::RevocationRegistry;
+
+        let issuer = KeyPair::generate();
+        let owner = KeyPair::generate();
+
+        let mut attrs = BTreeMap::new();
+        attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
+        attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
+        attrs.insert("dateOfBirth".to_string(), json!("1990-01-01"));
+
+        let doc = Document::new(attrs)
+            .unwrap()
+            .with_available_predicates(vec!["age:>=18".to_string(), "age:>=21".to_string()]);
+        let mut proof_doc = doc.issue(&issuer);
+
+        let request = ProofRequest {
+            disclose: vec![],
+            predicates: vec![PredicateRequest {
+                attribute: "dateOfBirth".to_string(),
+                op: PredicateOp::GreaterOrEqual,
+                value: json!(21),
+            }],
+            trusted_issuers: vec![issuer.public_key().to_hex()],
+            challenge: "allowlist-ok".to_string(),
+        };
+
+        let token = Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
+
+        let registry = RevocationRegistry::new();
+        let trusted = vec![issuer.public_key()];
+        token
+            .verify(&trusted, "allowlist-ok", &registry, &[])
+            .expect("21+ proof should pass when 21+ is on the allowlist");
     }
 }

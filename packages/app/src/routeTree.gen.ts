@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IdentityRouteRouteImport } from './routes/_identity/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as IdentityRegisterRouteImport } from './routes/_identity/register'
+import { Route as IdentityRecentProofsRouteImport } from './routes/_identity/recent-proofs'
 import { Route as IdentityPassportRouteImport } from './routes/_identity/passport'
 import { Route as IdentityLoginRouteImport } from './routes/_identity/login'
 import { Route as IdentityLockedRouteImport } from './routes/_identity/locked'
@@ -30,6 +31,11 @@ const IndexRoute = IndexRouteImport.update({
 const IdentityRegisterRoute = IdentityRegisterRouteImport.update({
   id: '/register',
   path: '/register',
+  getParentRoute: () => IdentityRouteRoute,
+} as any)
+const IdentityRecentProofsRoute = IdentityRecentProofsRouteImport.update({
+  id: '/recent-proofs',
+  path: '/recent-proofs',
   getParentRoute: () => IdentityRouteRoute,
 } as any)
 const IdentityPassportRoute = IdentityPassportRouteImport.update({
@@ -65,6 +71,7 @@ export interface FileRoutesByFullPath {
   '/locked': typeof IdentityLockedRoute
   '/login': typeof IdentityLoginRoute
   '/passport': typeof IdentityPassportRoute
+  '/recent-proofs': typeof IdentityRecentProofsRoute
   '/register': typeof IdentityRegisterRoute
 }
 export interface FileRoutesByTo {
@@ -74,6 +81,7 @@ export interface FileRoutesByTo {
   '/locked': typeof IdentityLockedRoute
   '/login': typeof IdentityLoginRoute
   '/passport': typeof IdentityPassportRoute
+  '/recent-proofs': typeof IdentityRecentProofsRoute
   '/register': typeof IdentityRegisterRoute
 }
 export interface FileRoutesById {
@@ -85,6 +93,7 @@ export interface FileRoutesById {
   '/_identity/locked': typeof IdentityLockedRoute
   '/_identity/login': typeof IdentityLoginRoute
   '/_identity/passport': typeof IdentityPassportRoute
+  '/_identity/recent-proofs': typeof IdentityRecentProofsRoute
   '/_identity/register': typeof IdentityRegisterRoute
 }
 export interface FileRouteTypes {
@@ -96,6 +105,7 @@ export interface FileRouteTypes {
     | '/locked'
     | '/login'
     | '/passport'
+    | '/recent-proofs'
     | '/register'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -105,6 +115,7 @@ export interface FileRouteTypes {
     | '/locked'
     | '/login'
     | '/passport'
+    | '/recent-proofs'
     | '/register'
   id:
     | '__root__'
@@ -115,6 +126,7 @@ export interface FileRouteTypes {
     | '/_identity/locked'
     | '/_identity/login'
     | '/_identity/passport'
+    | '/_identity/recent-proofs'
     | '/_identity/register'
   fileRoutesById: FileRoutesById
 }
@@ -144,6 +156,13 @@ declare module '@tanstack/react-router' {
       path: '/register'
       fullPath: '/register'
       preLoaderRoute: typeof IdentityRegisterRouteImport
+      parentRoute: typeof IdentityRouteRoute
+    }
+    '/_identity/recent-proofs': {
+      id: '/_identity/recent-proofs'
+      path: '/recent-proofs'
+      fullPath: '/recent-proofs'
+      preLoaderRoute: typeof IdentityRecentProofsRouteImport
       parentRoute: typeof IdentityRouteRoute
     }
     '/_identity/passport': {
@@ -190,6 +209,7 @@ interface IdentityRouteRouteChildren {
   IdentityLockedRoute: typeof IdentityLockedRoute
   IdentityLoginRoute: typeof IdentityLoginRoute
   IdentityPassportRoute: typeof IdentityPassportRoute
+  IdentityRecentProofsRoute: typeof IdentityRecentProofsRoute
   IdentityRegisterRoute: typeof IdentityRegisterRoute
 }
 
@@ -199,6 +219,7 @@ const IdentityRouteRouteChildren: IdentityRouteRouteChildren = {
   IdentityLockedRoute: IdentityLockedRoute,
   IdentityLoginRoute: IdentityLoginRoute,
   IdentityPassportRoute: IdentityPassportRoute,
+  IdentityRecentProofsRoute: IdentityRecentProofsRoute,
   IdentityRegisterRoute: IdentityRegisterRoute,
 }
 

@@ -97,8 +97,8 @@ impl MidnightSidecar {
         let mut headers = reqwest::header::HeaderMap::new();
         if let Some(ref api_key) = config.api_key {
             headers.insert(
-                "X-API-Key",
-                reqwest::header::HeaderValue::from_str(api_key)
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}"))
                     .expect("Invalid API key header value"),
             );
         }

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Types of ZK proofs supported
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ZkProofType {
     /// Prove age >= threshold
     AgeRange,

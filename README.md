@@ -1,587 +1,233 @@
 # OwlID
 
-**Privacy-Preserving Identity Verification and Credential System**
+**Privacy-preserving digital identity on Midnight** — verifiable credentials, Merkle-tree selective disclosure, zero-knowledge predicates, and WebAuthn/passkey authentication.
 
-A production-ready identity system featuring selective disclosure, cryptographic verification, WebAuthn/passkeys, and real identity provider integrations. Built with Rust (backend) and TypeScript (SDK + frontend).
-
----
-
-## Features
-
-| Feature                  | Description                                                          |
-| ------------------------ | -------------------------------------------------------------------- |
-| **Selective Disclosure** | Share only chosen attributes using Merkle tree proofs                |
-| **WebAuthn / Passkeys**  | Hardware-backed P-256 signatures (Face ID, Touch ID, Windows Hello)  |
-| **Offline Verification** | Verify tokens without contacting the issuer                          |
-| **Identity Providers**   | Mock providers included; architecture supports DigiD, BankID, Onfido |
-| **Revocation System**    | Revoke, suspend, and reactivate credentials                          |
-| **Cross-Platform SDK**   | Native bindings for 14 platforms + WASM for browsers                 |
-| **GDPR Compliant**       | Hashed PII storage, audit trails, automatic data expiry              |
+OwlID lets a holder prove facts about themselves (age, nationality, KYC status) to any verifier without disclosing the underlying document. Issuers sign Merkle-rooted credentials; holders generate selective-disclosure tokens locally; verifiers check signatures, predicates, expiry, and revocation against a public REST API.
 
 ---
 
-## Architecture
+## What's in the box
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Frontend App  │────▶│ Issuer Service  │────▶│  Verification   │
-│   (port 5000)   │     │   (port 8001)   │     │    Service      │
-└────────┬────────┘     └────────┬────────┘     │   (port 8000)   │
-         │                       │              └────────┬────────┘
-         ▼                       ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   SDK + WASM    │     │   Issuer DB     │     │ Verification DB │
-│  (native-sdk)   │     │  (port 5433)    │     │   (port 5432)   │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-```
+| Layer                    | Component                                 | Status    |
+| ------------------------ | ----------------------------------------- | --------- |
+| Cryptographic core       | `crates/crypto`, `crates/proof-system`    | stable    |
+| ZK predicates            | `crates/zk-circuits`                      | stable    |
+| Verification API (8000)  | `crates/verification-service`             | stable    |
+| Issuer API (8001)        | `crates/issuer-service`                   | stable    |
+| Midnight bridge (3000)   | `packages/midnight-sidecar`               | stable    |
+| TypeScript SDK           | `packages/sdk`                            | stable    |
+| Native bindings + WASM   | `packages/native-sdk`                     | stable    |
+| Generated API clients    | `packages/{verifier,issuer,admin}-client` | generated |
+| Holder app (5000)        | `packages/app`                            | stable    |
+| Verifier demo app (5001) | `packages/verifier-app`                   | stable    |
+| Admin dashboard (4000)   | `packages/admin`                          | stable    |
+| Compact contracts        | `packages/compact-contracts`              | testnet   |
 
-**Services:**
-
-- **Verification Service** (8000): Token verification, trusted issuers registry, revocation management
-- **Issuer Service** (8001): Identity verification via IdPs, credential issuance
-
----
-
-## How Selective Disclosure Works
-
-```
-                         ┌──────────────────────┐
-                         │     Root Hash        │  ← Signed by issuer
-                         └──────────┬───────────┘
-                    ┌───────────────┴───────────────┐
-              ┌─────┴─────┐                   ┌─────┴─────┐
-              │   Hash    │                   │   Hash    │
-              └─────┬─────┘                   └─────┬─────┘
-           ┌───────┴───────┐               ┌───────┴───────┐
-      ┌────┴────┐     ┌────┴────┐     ┌────┴────┐     ┌────┴────┐
-      │firstName│     │lastName │     │ isOver18│     │nationalId│
-      │  "Jan"  │     │"de Vries"│    │  true   │     │"1234..." │
-      └─────────┘     └─────────┘     └─────────┘     └─────────┘
-           ↓               ↓               ↓               ↓
-       DISCLOSED       DISCLOSED       DISCLOSED        HIDDEN
-```
-
-When creating a token, the holder chooses which attributes to reveal. Hidden attributes are replaced with their hashes. The verifier can cryptographically prove the disclosed attributes belong to the signed root.
+The "generated" packages (`@owlid/verifier-client`, `@owlid/issuer-client`, `@owlid/admin-client`) are produced by `just generate-api-client` from the live OpenAPI specs of the Rust services. Don't hand-edit the `apis/`, `models/`, or `runtime.ts` directories under those packages.
 
 ---
 
-## Project Structure
+## How selective disclosure works
 
+```mermaid
+flowchart TB
+    root["Root hash<br/>(signed by issuer · Ed25519)"]
+    h_fl["H(firstName ⊕ lastName)"]
+    h_in["H(isOver18 ⊕ nationalId)"]
+    fn["firstName: Jan"]:::show
+    ln["lastName: de Vries"]:::show
+    over["isOver18: true"]:::show
+    nid["nationalId: 1234…"]:::hide
+
+    root --> h_fl
+    root --> h_in
+    h_fl --> fn
+    h_fl --> ln
+    h_in --> over
+    h_in --> nid
+
+    classDef show fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef hide fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-dasharray:4 2
 ```
-owlid/
-├── crates/                         # Rust workspace
-│   ├── crypto/                     # Cryptographic primitives
-│   │   ├── signature.rs            # Ed25519 signing/verification
-│   │   ├── hash.rs                 # SHA-256, BLAKE3 hashing
-│   │   ├── merkle.rs               # Merkle tree implementation
-│   │   └── webauthn.rs             # WebAuthn/passkey support
-│   ├── proof-system/               # Documents, tokens, Merkle proofs
-│   │   ├── document.rs             # ProofDocument structure
-│   │   ├── token.rs                # Token with selective disclosure
-│   │   └── revocation.rs           # Revocation management
-│   ├── verification-service/       # Verification REST API
-│   │   ├── src/api.rs              # HTTP endpoints
-│   │   ├── src/db/                 # Database repositories
-│   │   └── migrations/             # PostgreSQL schema
-│   └── issuer-service/             # Issuer REST API
-│       ├── src/provider/           # Identity provider integrations
-│       ├── src/db/                 # Database layer
-│       └── migrations/             # PostgreSQL schema
-├── packages/                       # TypeScript/JavaScript
-│   ├── app/                        # Web UI (TanStack Start + React)
-│   ├── sdk/                        # TypeScript SDK
-│   │   ├── src/webauthn.ts         # WebAuthn helpers
-│   │   ├── src/tokens.ts           # Token handling
-│   │   └── src/storage.ts          # Credential storage
-│   ├── native-sdk/                 # Rust/WASM native bindings
-│   │   ├── src/lib.rs              # NAPI-RS bindings
-│   │   └── npm/                    # Platform-specific packages
-│   └── kitchen-sink/               # Component showcase & testing
-├── docker-compose.yml              # PostgreSQL databases
-├── justfile                        # Task automation
-└── Cargo.toml                      # Rust workspace config
-```
+
+The holder picks which leaves to disclose. Hidden leaves are replaced with their hashes plus a Merkle path. The verifier reconstructs the root, checks the issuer signature, validates the holder's WebAuthn signature against a fresh challenge, and consults the revocation registry. Predicates (e.g. `age >= 18`, `nationality in {NL,DE}`) are proved with ZK circuits — the underlying value never leaves the holder.
+
+For the full architecture see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
-## Quick Start
+## Quick start
 
 ### Prerequisites
 
-- **Rust** 1.75+ ([rustup.rs](https://rustup.rs/))
-- **Bun** ([bun.sh](https://bun.sh/))
-- **Docker** ([docker.com](https://docs.docker.com/get-docker/))
-- **Just** ([github.com/casey/just](https://github.com/casey/just))
-
-### Installation
+| Tool   | Version | Install                         |
+| ------ | ------- | ------------------------------- |
+| Rust   | 1.75+   | https://rustup.rs               |
+| Bun    | 1.0+    | https://bun.sh                  |
+| Docker | 24+     | https://docs.docker.com/engine/ |
+| just   | any     | `cargo install just`            |
 
 ```bash
-git clone <repo-url>
-cd owlid
-
-# Install dependencies
-just setup
+just check-tools   # verify the toolchain
 ```
 
-### Running
+### Run
 
 ```bash
-# Start everything WITHOUT Midnight (databases + backend + frontend)
-just dev
+git clone <repo-url> && cd OwlID
+cp .env.example .env
+just setup         # bun install + cargo fetch + native-sdk build
+just dev           # backends + holder app
+```
 
-# Start everything WITH Midnight (devnet + sidecar + DBs + backend + frontend)
+Live URLs:
+
+| Service           | URL                               |
+| ----------------- | --------------------------------- |
+| Holder app        | http://localhost:5000             |
+| Verifier demo     | http://localhost:5001             |
+| Admin dashboard   | http://localhost:4000             |
+| Verification API  | http://localhost:8000             |
+| Issuer API        | http://localhost:8001             |
+| Verification docs | http://localhost:8000/swagger-ui/ |
+| Issuer docs       | http://localhost:8001/swagger-ui/ |
+
+For a full local end-to-end run with Midnight devnet (node + indexer + proof server + sidecar):
+
+```bash
 just dev-e2e
 ```
 
-`just dev` starts:
-
-- **Frontend**: http://localhost:5000
-- **Verification Service**: http://localhost:8000
-- **Issuer Service**: http://localhost:8001
-
-`just dev-e2e` additionally starts:
-
-- **Midnight node**: ws://localhost:9944
-- **Indexer GraphQL**: http://localhost:8088/api/v3/graphql
-- **Proof server**: http://localhost:6300
-- **Sidecar**: http://localhost:3000 (Midnight bridge for Rust services)
-
-Image versions (mirroring [`midnightntwrk/midnight-local-dev`](https://github.com/midnightntwrk/midnight-local-dev/blob/main/standalone.yml)):
-`midnight-node:0.22.3`, `indexer-standalone:4.0.1`, `proof-server:8.0.3`.
-
-To run only the Midnight stack: `just midnight-up` (then `just midnight-status` to verify).
+Detailed setup, contract deploy, and Midnight versions in [`docs/E2E-SETUP.md`](docs/E2E-SETUP.md).
 
 ---
 
-## API Reference
+## Customer integrations
 
-### Verification Service (`:8000`)
+### Verifier (server-side)
 
-**Public endpoints:**
-
-| Endpoint            | Method | Description              |
-| ------------------- | ------ | ------------------------ |
-| `/health`           | GET    | Health check             |
-| `/generate-keypair` | GET    | Generate Ed25519 keypair |
-
-**Protected endpoints** (require `X-API-Key` header):
-
-| Endpoint                  | Method | Description              |
-| ------------------------- | ------ | ------------------------ |
-| `/verify`                 | POST   | Verify a token           |
-| `/metrics`                | GET    | Verification metrics     |
-| `/trusted-issuers`        | GET    | List trusted issuers     |
-| `/trusted-issuers`        | POST   | Add trusted issuer       |
-| `/revocations/revoke`     | POST   | Revoke credential        |
-| `/revocations/suspend`    | POST   | Suspend credential       |
-| `/revocations/reactivate` | POST   | Reactivate credential    |
-| `/revocations/check`      | POST   | Check revocation status  |
-| `/revocations/list`       | GET    | List revoked credentials |
-
-**Example: Verify a token**
+Install the SDK + verifier client and call `POST /verify` with a token:
 
 ```bash
-curl -X POST http://localhost:8000/verify \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: dev_key_12345678901234567890123456789012" \
-  -d '{
-    "token": { ... },
-    "challenge": "random-challenge-string"
-  }'
-```
-
-### Issuer Service (`:8001`)
-
-**Public endpoints:**
-
-| Endpoint       | Method | Description             |
-| -------------- | ------ | ----------------------- |
-| `/health`      | GET    | Health check            |
-| `/issuer-info` | GET    | Get issuer public key   |
-| `/providers`   | GET    | List identity providers |
-| `/keypair`     | POST   | Generate keypair        |
-
-**Session endpoints:**
-
-| Endpoint                     | Method | Description                  |
-| ---------------------------- | ------ | ---------------------------- |
-| `/sessions`                  | POST   | Create verification session  |
-| `/sessions/{id}`             | GET    | Get session status           |
-| `/sessions/{id}/submit`      | POST   | Submit identity (form-based) |
-| `/sessions/{id}/claims`      | GET    | Get verified claims          |
-| `/sessions/{id}/issue`       | POST   | Issue credential             |
-| `/sessions/{id}/auto-verify` | POST   | Auto-verify with sample data |
-
-**Callback endpoints:**
-
-| Endpoint                        | Method | Description                    |
-| ------------------------------- | ------ | ------------------------------ |
-| `/callbacks/saml`               | POST   | SAML assertion callback        |
-| `/callbacks/webhook/{provider}` | POST   | Webhook from external provider |
-
-**Example: Create session and issue credential**
-
-```bash
-# 1. Create verification session
-curl -X POST http://localhost:8001/sessions \
-  -H "Content-Type: application/json" \
-  -d '{"providerId": "mock-digid"}'
-
-# 2. Auto-verify with sample data (for testing)
-curl -X POST http://localhost:8001/sessions/{session_id}/auto-verify
-
-# 3. Issue credential
-curl -X POST http://localhost:8001/sessions/{session_id}/issue \
-  -H "Content-Type: application/json" \
-  -d '{"ownerPublicKey": "04abc123..."}'
-```
-
----
-
-## Identity Providers
-
-Currently, OwlID includes **mock providers** for development and testing. The architecture supports real identity providers through defined flow types.
-
-### Available Providers
-
-| Provider        | Type      | Description                   |
-| --------------- | --------- | ----------------------------- |
-| **mock-digid**  | FormBased | Simulates Dutch DigiD flow    |
-| **mock-bankid** | FormBased | Simulates Swedish BankID flow |
-
-### Supported Flow Types (for future integrations)
-
-| Flow Type        | Example Use Case | Description                                               |
-| ---------------- | ---------------- | --------------------------------------------------------- |
-| **SamlRedirect** | DigiD, eIDAS     | Redirect → IdP authentication → SAML assertion callback   |
-| **QrPolling**    | BankID           | QR code displayed → user scans → service polls for result |
-| **WebhookAsync** | Onfido, Jumio    | Redirect to KYC → verification → webhook callback         |
-| **FormBased**    | Mock providers   | Direct form submission (testing only)                     |
-
----
-
-## SDK Usage
-
-### Installation
-
-```bash
-# TypeScript SDK
 bun add @owlid/sdk
-
-# Native SDK (auto-selects platform)
-bun add @owlid/native-sdk
 ```
 
-### WebAuthn Registration
-
 ```typescript
-import { registerCredential, coseKeyToP256Hex } from '@owlid/sdk'
+import { configure } from '@owlid/sdk'
+import { getVerificationApi, getPresentationApi } from '@owlid/sdk/verifier'
 
-// Register a new passkey
-const credential = await registerCredential({
-  rpName: 'OwlID',
-  rpId: 'localhost',
-  userName: 'user@example.com',
-  userVerification: 'required',
+configure({
+  verificationUrl: 'https://verify.example.com',
+  apiKey: process.env.OWLID_API_KEY,
 })
 
-// Convert COSE key to P-256 hex for credential issuance
-const ownerPublicKey = coseKeyToP256Hex(credential.publicKey)
-```
-
-### Token Creation (Two-Phase)
-
-```typescript
-import { prepareTokenForWebAuthn, finalizeTokenWithWebAuthn, signChallenge } from '@owlid/sdk'
-import * as sdk from '@owlid/native-sdk'
-
-// Phase 1: Prepare token
-const { preparedTokenJson, webauthnChallenge } = prepareTokenForWebAuthn(
-  sdk,
-  credentialJson,
-  ['firstName', 'lastName', 'isOver18'], // Disclosed attributes
-  verifierChallenge,
-  3600, // TTL in seconds
-)
-
-// Phase 2: Sign with WebAuthn (triggers biometric prompt)
-const signature = await signChallenge(credentialId, webauthnChallenge)
-
-// Phase 3: Finalize token
-const { tokenJson } = finalizeTokenWithWebAuthn(
-  sdk,
-  preparedTokenJson,
-  signature,
-  credentialPublicKey,
-)
-```
-
-### Storage API
-
-```typescript
-import { CredentialStorageManager, browserStorageAdapter } from '@owlid/sdk'
-
-// Create storage manager (uses localStorage by default)
-const storage = new CredentialStorageManager(browserStorageAdapter)
-
-// Save WebAuthn credential
-await storage.saveWebAuthnCredential({
-  credentialId: credential.credentialId,
-  publicKey: credential.publicKey,
-  counter: 0,
-  transports: ['internal'],
+// Direct token verification
+const verify = getVerificationApi()
+const result = await verify.verifyToken({
+  verifyRequest: { token, challenge },
 })
 
-// Check for stored credential
-if (await storage.hasStoredCredential()) {
-  const data = await storage.loadCredentialData()
-}
+// Or open a QR / WebSocket presentation session.
+// Verifier creates an empty session, renders the QR; the
+// proof request itself is negotiated over the WebSocket channel.
+const presentation = getPresentationApi()
+const session = await presentation.createSession()
+// session.sessionId, session.wsUrl, session.nonce
 ```
 
-### Platform Support (Native SDK)
+### Issuer-side integration
 
-| Platform | Architecture                       |
-| -------- | ---------------------------------- |
-| Windows  | x64, arm64, i686                   |
-| macOS    | x64 (Intel), arm64 (Apple Silicon) |
-| Linux    | x64, arm64, armv7, musl variants   |
-| Android  | arm64, arm                         |
-| FreeBSD  | x64                                |
-| WASM     | wasm32-wasi                        |
+```typescript
+import { configure } from '@owlid/sdk'
+import { getSessionsApi, getCredentialsApi } from '@owlid/sdk/issuer'
+
+configure({ issuerUrl: 'https://issuer.example.com' })
+
+const sessions = getSessionsApi()
+const session = await sessions.createSession({
+  createSessionRequest: { providerId: 'didit' },
+})
+// then redirect / poll / submit per the provider's flow
+```
+
+### Holder (browser)
+
+The browser SDK runs WebAuthn registration, signs tokens, manages credential storage, and speaks the OwlID presentation protocol over WebSocket. See [`packages/sdk/README.md`](packages/sdk/README.md) for the full surface.
 
 ---
 
-## WebAuthn / Passkeys
+## Documentation map
 
-OwlID uses WebAuthn for hardware-backed credential signing. The private key never leaves the secure enclave.
+| Document                                               | When to read                                                       |
+| ------------------------------------------------------ | ------------------------------------------------------------------ |
+| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)   | Build, run, write your first token                                 |
+| [`docs/integration/`](docs/integration/)               | Integration guides — verifier, issuer, holder app                  |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)         | C4-style architecture, design rationale, data model                |
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)             | Production compose, env vars, Midnight versions                    |
+| [`docs/RUNBOOK.md`](docs/RUNBOOK.md)                   | Operations: revoking, rotating keys, GDPR erasure, troubleshooting |
+| [`docs/E2E-SETUP.md`](docs/E2E-SETUP.md)               | Full local stack with Midnight devnet                              |
+| [`docs/E2E_SCENARIOS.md`](docs/E2E_SCENARIOS.md)       | End-to-end use cases (age check, KYC, etc.)                        |
+| [`docs/COMPACT.md`](docs/COMPACT.md)                   | Midnight Compact language reference                                |
+| [`SERVICES.md`](SERVICES.md)                           | Local-development URL cheatsheet                                   |
+| [`deploy/gcp/README.md`](deploy/gcp/README.md)         | GCP deploy: Terraform infra, Cloud Build, Cloud Run                |
+| [`deploy/gcp/RUNBOOK.md`](deploy/gcp/RUNBOOK.md)       | GCP deploy: step-by-step playbooks for every change scenario       |
+| [`deploy/gcp/SECRETS.md`](deploy/gcp/SECRETS.md)       | GCP deploy: secret storage, rotation, audit                        |
+| [`deploy/gcp/ENV-WIRING.md`](deploy/gcp/ENV-WIRING.md) | GCP deploy: every env var, source, consumer                        |
 
-### Features
+API references:
 
-| Feature                     | Implementation                       |
-| --------------------------- | ------------------------------------ |
-| **Algorithm**               | ECDSA P-256 (secp256r1) with SHA-256 |
-| **Platform authenticators** | Face ID, Touch ID, Windows Hello     |
-| **Security keys**           | USB, NFC, Bluetooth (FIDO2)          |
-| **Replay protection**       | Signature counter validation         |
-| **Challenge binding**       | Challenge hashed with token payload  |
-
-### Flow
-
-```
-┌──────────┐    ┌──────────────┐    ┌─────────────────┐
-│  Browser │───▶│   WebAuthn   │───▶│ Secure Enclave  │
-│          │    │     API      │    │ (Face ID, etc.) │
-└──────────┘    └──────────────┘    └─────────────────┘
-     │                 │                     │
-     │ 1. Challenge    │                     │
-     │ ─────────────▶  │                     │
-     │                 │ 2. Biometric prompt │
-     │                 │ ──────────────────▶ │
-     │                 │                     │
-     │                 │ 3. P-256 signature  │
-     │ 4. Signature    │ ◀────────────────── │
-     │ ◀──────────────                       │
-```
-
-### Database Schema
-
-**webauthn_credentials** (server-side storage):
-
-- `credential_id`: Base64-encoded credential ID
-- `public_key`: Base64-encoded COSE public key
-- `counter`: Signature counter for replay protection
-- `transports`: Supported transports (usb, nfc, ble, internal)
-
-**webauthn_challenges** (short-lived):
-
-- `challenge`: Base64-encoded challenge
-- `operation`: 'register' or 'authenticate'
-- `expires_at`: Auto-expires after 5 minutes
-
----
-
-## Environment Variables
-
-Copy `.env.example` to `.env`:
-
-```bash
-# Verification Service
-VERIFICATION_DATABASE_URL=postgres://owl:owl_dev@localhost:5432/verification
-SERVER_HOST=0.0.0.0
-SERVER_PORT=8000
-
-# Issuer Service
-ISSUER_DATABASE_URL=postgres://owl:owl_dev@localhost:5433/issuer
-ISSUER_HOST=0.0.0.0
-ISSUER_PORT=8001
-
-# Frontend
-VITE_ISSUER_URL=http://localhost:8001
-VITE_VERIFICATION_URL=http://localhost:8000
-
-# Dev API Key
-API_KEY_DEV=dev_key_12345678901234567890123456789012
-
-# Logging
-RUST_LOG=info,owl_verification_service=debug,owl_issuer_service=debug
-```
-
----
-
-## Database Commands
-
-```bash
-just db-start         # Start PostgreSQL containers
-just db-stop          # Stop databases
-just db-reset         # Reset databases (wipes data)
-just db-tables        # Show tables in both DBs
-just db-verification  # PostgreSQL CLI for verification DB
-just db-issuer        # PostgreSQL CLI for issuer DB
-```
-
-### Schema Overview
-
-**Verification Service** (`localhost:5432`):
-
-- `api_keys` - API authentication (hashed keys)
-- `trusted_issuers` - Registry of trusted credential issuers
-- `revocations` - Credential revocation status
-- `verification_logs` - Audit trail (hashed data, 90-day expiry)
-- `verification_metrics` - Aggregated metrics
-- `audit_events` - Compliance audit trail
-
-**Issuer Service** (`localhost:5433`):
-
-- `issued_credentials` - Credential registry
-- `owl_users` - User registry (hashed PII)
-- `webauthn_credentials` - Passkey storage
-- `webauthn_challenges` - Short-lived challenges
-- `auth_sessions` - User sessions
-
----
-
-## How It Works
-
-### 1. Identity Verification
-
-```
-User ──▶ Issuer Service ──▶ Identity Provider (mock-digid, mock-bankid)
-                │
-                ▼
-         Verified Claims
-```
-
-### 2. Credential Issuance
-
-```
-Verified Claims ──▶ Merkle Tree ──▶ Signed ProofDocument
-                           │
-     ┌─────────────────────┼─────────────────────┐
-     │                     │                     │
-  firstName            lastName              isOver18
-   "Jan"              "de Vries"               true
-```
-
-### 3. Token Creation
-
-```
-ProofDocument + Selected Attributes ──▶ Token
-                                          │
-                    ┌─────────────────────┼─────────────────────┐
-                    │                     │                     │
-                firstName: "Jan"     lastName: "de Vries"   isOver18: true
-                                     nationalId: [hash]
-```
-
-### 4. Verification
-
-```
-Token + Challenge ──▶ Verification Service
-                           │
-                           ├── Check issuer signature
-                           ├── Verify Merkle proofs
-                           ├── Check challenge binding
-                           ├── Check revocation status
-                           │
-                           ▼
-                      Valid / Invalid
-```
-
----
-
-## Security Features
-
-| Feature                 | Description                                        |
-| ----------------------- | -------------------------------------------------- |
-| **Ed25519 signatures**  | Issuer signs credential root hash                  |
-| **P-256 WebAuthn**      | Owner signs tokens with hardware-backed key        |
-| **SHA-256 hashing**     | Merkle tree and challenge binding                  |
-| **Merkle proofs**       | Selective disclosure without revealing hidden data |
-| **Counter validation**  | Replay protection for WebAuthn signatures          |
-| **Challenge binding**   | Tokens bound to verifier-provided challenge        |
-| **Revocation registry** | Real-time credential status checking               |
-| **GDPR compliance**     | Hashed PII, audit trails, automatic expiry         |
-| **Rate limiting**       | API abuse prevention                               |
-| **API key auth**        | Protected endpoints require authentication         |
+- Verification HTTP API: see [`crates/verification-service/README.md`](crates/verification-service/README.md) or `http://localhost:8000/swagger-ui/`
+- Issuer HTTP API: see [`crates/issuer-service/README.md`](crates/issuer-service/README.md) or `http://localhost:8001/swagger-ui/`
+- TypeScript SDK: [`packages/sdk/README.md`](packages/sdk/README.md)
+- Native bindings: [`packages/native-sdk/README.md`](packages/native-sdk/README.md)
+- Admin dashboard: [`packages/admin/README.md`](packages/admin/README.md)
 
 ---
 
 ## Development
 
-### Commands
-
 ```bash
-just dev             # Start all services
-just dev-backend     # Backend only
-just dev-app         # Frontend only
-just build           # Build everything
-just test            # Run all tests
-just fmt             # Format code
-just lint            # Run linters
-just check           # Format + lint + test
+just dev             # all services
+just dev-backend     # rust services + sidecar
+just dev-app         # holder app only
+just build           # full build
+just test            # rust + ts tests
+just check           # fmt + lint + test
+just generate-api-client  # regenerate verifier/issuer/admin clients from OpenAPI
+just generate-zk-keys     # regenerate Groth16 PK/VK artifacts (after circuit edits)
 ```
 
-### Building Native SDK
+**Groth16 keys.** ZK predicates use Groth16 over BLS12-381. Proving keys (~150–350 KB each) and verifying keys (~40 KB each) are produced by `just generate-zk-keys` and committed under `crates/zk-circuits/artifacts/` — they are loaded via `include_bytes!` at compile time, never regenerated at runtime. The verifier service serves PKs at `GET /zk-keys/<circuit>.pk.bin` so wallet WASM builds (which don't bundle the keys) can fetch them on demand and cache in IndexedDB. The committed keys come from a deterministic-seed dev setup; production deployment must replace them with output from a Phase-2 MPC ceremony — see [`crates/zk-circuits/CEREMONY.md`](crates/zk-circuits/CEREMONY.md).
 
-```bash
-just build-sdk
-```
+Always use `bun`, never `npm`. Format Rust with `just fmt`, lint with `just lint`. Pre-commit hooks (`husky` + `lint-staged`) run oxlint + prettier + taplo on staged files.
 
-This builds:
-
-1. Native bindings for current platform
-2. WASM build for browsers
-3. TypeScript SDK
-
-### Running Tests
-
-```bash
-just test-rust       # Rust tests only
-just test-ts         # TypeScript tests only
-just test            # All tests
-```
-
----
-
-## Contributing
-
-1. **Fork** the repository
-2. **Create** a feature branch: `git checkout -b feature/my-feature`
-3. **Make** changes and ensure tests pass
-4. **Run** `just check` (format + lint + test)
-5. **Commit** with conventional commits: `feat:`, `fix:`, `docs:`, etc.
-6. **Open** a pull request
-
-### Commit Message Format
+## Repository layout
 
 ```
-<type>(<scope>): <description>
-
-[optional body]
-
-[optional footer]
+.
+├── crates/                       # Rust workspace
+│   ├── crypto/                   # Ed25519, P-256, BLAKE3, SHA-256, Merkle, WebAuthn
+│   ├── proof-system/             # Document, Credential, Token, revocation
+│   ├── zk-circuits/              # Predicate proofs
+│   ├── verification-service/     # Verifier HTTP API + admin
+│   └── issuer-service/           # Issuance HTTP API
+├── packages/
+│   ├── sdk/                      # @owlid/sdk — customer-facing TS SDK
+│   ├── native-sdk/               # @owlid/native-sdk — NAPI + WASM bindings
+│   ├── verifier-client/          # generated OpenAPI client (verification)
+│   ├── issuer-client/            # generated OpenAPI client (issuer)
+│   ├── admin-client/             # generated OpenAPI client (admin, private)
+│   ├── app/                      # holder app (Vite + React + TanStack)
+│   ├── verifier-app/             # verifier demo
+│   ├── admin/                    # admin dashboard (TanStack Start)
+│   ├── midnight-sidecar/         # Bun + Hono bridge to Midnight
+│   └── compact-contracts/        # Compact source for Midnight contracts
+├── docs/                         # current docs (+ archive/)
+├── docker-compose*.yml           # local + prod compose stacks
+├── justfile                      # task runner
+└── monitoring/                   # Prometheus + Grafana configs
 ```
 
-Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
+## License
 
----
+MIT — see [`LICENSE`](LICENSE).

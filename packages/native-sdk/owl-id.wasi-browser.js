@@ -61,4 +61,6 @@ export const PublicKey = __napiModule.exports.PublicKey
 export const Signature = __napiModule.exports.Signature
 export const Token = __napiModule.exports.Token
 export const blake3 = __napiModule.exports.blake3
+export const provingKeysRequired = __napiModule.exports.provingKeysRequired
+export const setProvingKeyBytes = __napiModule.exports.setProvingKeyBytes
 export const sha256 = __napiModule.exports.sha256

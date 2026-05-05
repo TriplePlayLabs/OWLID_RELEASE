@@ -1,283 +1,128 @@
-Welcome to your new TanStack app!
+# @owlid/admin
 
-# Getting Started
+Operator dashboard for OwlID — manage trusted issuers, mint API keys, monitor verifications, revoke credentials, run GDPR erasure.
 
-To run this application:
+Internal tool. Not published to npm. Built with TanStack Start + React 19 + `@owlid/ui` (shadcn primitives).
+
+```bash
+bun run dev:admin     # → http://localhost:4000
+```
+
+## Routes
+
+| Route          | Purpose                                                                           |
+| -------------- | --------------------------------------------------------------------------------- |
+| `/` (index)    | Dashboard — service health (verification + issuer) and aggregate metrics          |
+| `/issuers`     | Trusted issuer registry — list, add, deactivate                                   |
+| `/api-keys`    | API key CRUD — create prefixed keys (`owlid_{pk\|sk}_{live\|test}_…`), deactivate |
+| `/revocations` | Revoke / suspend / reactivate credentials, check status                           |
+| `/verify`      | Manual token verification form                                                    |
+| `/sessions`    | Look up issuer sessions by id                                                     |
+| `/providers`   | Read-only view of identity + OIDC providers                                       |
+| `/logs`        | Live event stream (WebSocket revocation feed + health polling)                    |
+| `/settings`    | Service endpoints, GDPR erasure tool                                              |
+
+## Authentication
+
+- Login via `POST /admin/login` on the verification service. Server sets `owlid_admin_token` HTTP-only cookie.
+- The SPA never sees the JWT in JS. Bootstrap uses `useQuery(['admin','me'])` calling `getAdminAuthApi().me()` — that query's cache _is_ the auth state.
+- Logout clears the cookie + invalidates all `['admin']` queries.
+
+```ts
+// Default dev creds (change for any non-localhost deployment)
+username: admin
+password: admin
+```
+
+Default seed lives in `crates/verification-service/migrations/004_admin_users.sql`.
+
+## State management
+
+- Every server-derived value lives in `useQuery` / `useMutation` (TanStack Query). No `useState + useEffect` for fetch, no `localStorage` for tokens.
+- WebSocket lifecycle (`/logs`) is the only place using `useState + useEffect` — manages the subscription, not the data.
+- Auth is a single `useQuery` whose cache state determines the routed view (`AuthGate` in `src/routes/__root.tsx`).
+
+## Generated API client usage
+
+`src/lib/api.ts` is a thin facade over the three generated clients:
+
+```ts
+// admin operations (verification + issuer admin surface)
+import {
+  getAdminApi,
+  getAdminAuthApi,
+  getAdminIssuersApi,
+  getAdminRevocationsApi,
+  getGdprApi,
+  getMetricsApi,
+} from '@owlid/admin-client'
+
+// public surfaces, re-exported through the SDK
+import {
+  getIssuersApi,
+  getMonitoringApi,
+  getRevocationsApi,
+  getVerificationApi,
+} from '@owlid/sdk/verifier'
+import { getInfoApi, getOidcApi, getProvidersApi, getSessionsApi } from '@owlid/sdk/issuer'
+```
+
+No hand-rolled HTTP. If a route is missing on the generated client, add the route + `#[utoipa::path]` annotation in the Rust service, restart, run `just generate-api-client`.
+
+## Hooks
+
+| Hook                 | Wraps                                                           |
+| -------------------- | --------------------------------------------------------------- |
+| `useAuth()`          | `me`, `login`, `logout` — cookie-backed                         |
+| `useAdmin*()`        | API key CRUD                                                    |
+| `useVerification*()` | Health, trusted issuers, revocations, manual verify             |
+| `useIssuer*()`       | Issuer info, OIDC providers, identity providers, session lookup |
+
+`use-mobile.ts` is a viewport hook (no API calls).
+
+## Development
 
 ```bash
 bun install
-bun --bun run start
+bun run dev:admin               # vite dev on :4000
+
+# Backend dependencies (separate terminal)
+just dev-backend                # verification + issuer + sidecar
+
+# Type check
+bun run --filter @owlid/admin check
+
+# Tests
+bun run --filter @owlid/admin test
 ```
 
-# Building For Production
+The dev server allows `*.trycloudflare.com` and `*.sashoush.dev` for tunnel testing — see `vite.config.ts`. SSR is enabled via `@tanstack/react-start`; native SDK modules are excluded from the SSR bundle (browser-only).
 
-To build this application for production:
+## Building
 
 ```bash
-bun --bun run build
+bun run build:admin
 ```
 
-## Testing
+Outputs to `.output/`. The production container is built from `Dockerfile.admin` at the repo root, which runs the build inside the workspace and serves the output via nginx (`docker/nginx-spa.conf`).
 
-This project uses [Vitest](https://vitest.dev/) for testing. You can run the tests with:
+## Configuration
 
-```bash
-bun --bun run test
-```
+Public-facing URLs are baked at build time via Vite env:
 
-## Styling
+- `VITE_VERIFICATION_URL` — verification service base URL
+- `VITE_ISSUER_URL` — issuer service base URL
 
-This project uses [Tailwind CSS](https://tailwindcss.com/) for styling.
+Runtime overrides via `window.__OWLID_CONFIG__` (set by `docker/runtime-config.sh` before nginx start). See [`packages/sdk/README.md#configuration-precedence`](../sdk/README.md#configuration-precedence) for the resolution order.
 
-## Routing
+The admin client always sends `credentials: 'include'` so the `owlid_admin_token` cookie is attached on cross-origin XHR. The verification service's CORS layer must explicitly allow the admin origin (`CORS_ALLOWED_ORIGINS`) — wildcard origins are incompatible with credentialed requests.
 
-This project uses [TanStack Router](https://tanstack.com/router). The initial setup is a file based router. Which means that the routes are managed as files in `src/routes`.
+## Adding a new admin route
 
-### Adding A Route
+1. Add the Rust handler with `#[utoipa::path(... tag = "admin-…")]` (admin tag → `@owlid/admin-client`).
+2. Restart the verification service so `/api-docs/openapi.json` reflects the new route.
+3. `just generate-api-client` — regenerates `apis/`, `models/`, `runtime.ts` for all three client packages.
+4. Add a `useQuery` / `useMutation` hook under `src/hooks/` calling the generated method.
+5. Add a route file under `src/routes/`. TanStack Router picks it up via filesystem routing.
 
-To add a new route to your application just add another a new file in the `./src/routes` directory.
-
-TanStack will automatically generate the content of the route file for you.
-
-Now that you have two routes you can use a `Link` component to navigate between them.
-
-### Adding Links
-
-To use SPA (Single Page Application) navigation you will need to import the `Link` component from `@tanstack/react-router`.
-
-```tsx
-import { Link } from '@tanstack/react-router'
-```
-
-Then anywhere in your JSX you can use it like so:
-
-```tsx
-<Link to="/about">About</Link>
-```
-
-This will create a link that will navigate to the `/about` route.
-
-More information on the `Link` component can be found in the [Link documentation](https://tanstack.com/router/v1/docs/framework/react/api/router/linkComponent).
-
-### Using A Layout
-
-In the File Based Routing setup the layout is located in `src/routes/__root.tsx`. Anything you add to the root route will appear in all the routes. The route content will appear in the JSX where you use the `<Outlet />` component.
-
-Here is an example layout that includes a header:
-
-```tsx
-import { Outlet, createRootRoute } from '@tanstack/react-router'
-import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
-
-import { Link } from '@tanstack/react-router'
-
-export const Route = createRootRoute({
-  component: () => (
-    <>
-      <header>
-        <nav>
-          <Link to="/">Home</Link>
-          <Link to="/about">About</Link>
-        </nav>
-      </header>
-      <Outlet />
-      <TanStackRouterDevtools />
-    </>
-  ),
-})
-```
-
-The `<TanStackRouterDevtools />` component is not required so you can remove it if you don't want it in your layout.
-
-More information on layouts can be found in the [Layouts documentation](https://tanstack.com/router/latest/docs/framework/react/guide/routing-concepts#layouts).
-
-## Data Fetching
-
-There are multiple ways to fetch data in your application. You can use TanStack Query to fetch data from a server. But you can also use the `loader` functionality built into TanStack Router to load the data for a route before it's rendered.
-
-For example:
-
-```tsx
-const peopleRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/people',
-  loader: async () => {
-    const response = await fetch('https://swapi.dev/api/people')
-    return response.json() as Promise<{
-      results: {
-        name: string
-      }[]
-    }>
-  },
-  component: () => {
-    const data = peopleRoute.useLoaderData()
-    return (
-      <ul>
-        {data.results.map((person) => (
-          <li key={person.name}>{person.name}</li>
-        ))}
-      </ul>
-    )
-  },
-})
-```
-
-Loaders simplify your data fetching logic dramatically. Check out more information in the [Loader documentation](https://tanstack.com/router/latest/docs/framework/react/guide/data-loading#loader-parameters).
-
-### React-Query
-
-React-Query is an excellent addition or alternative to route loading and integrating it into you application is a breeze.
-
-First add your dependencies:
-
-```bash
-bun install @tanstack/react-query @tanstack/react-query-devtools
-```
-
-Next we'll need to create a query client and provider. We recommend putting those in `main.tsx`.
-
-```tsx
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-
-// ...
-
-const queryClient = new QueryClient()
-
-// ...
-
-if (!rootElement.innerHTML) {
-  const root = ReactDOM.createRoot(rootElement)
-
-  root.render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>,
-  )
-}
-```
-
-You can also add TanStack Query Devtools to the root route (optional).
-
-```tsx
-import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
-
-const rootRoute = createRootRoute({
-  component: () => (
-    <>
-      <Outlet />
-      <ReactQueryDevtools buttonPosition="top-right" />
-      <TanStackRouterDevtools />
-    </>
-  ),
-})
-```
-
-Now you can use `useQuery` to fetch your data.
-
-```tsx
-import { useQuery } from '@tanstack/react-query'
-
-import './App.css'
-
-function App() {
-  const { data } = useQuery({
-    queryKey: ['people'],
-    queryFn: () =>
-      fetch('https://swapi.dev/api/people')
-        .then((res) => res.json())
-        .then((data) => data.results as { name: string }[]),
-    initialData: [],
-  })
-
-  return (
-    <div>
-      <ul>
-        {data.map((person) => (
-          <li key={person.name}>{person.name}</li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-export default App
-```
-
-You can find out everything you need to know on how to use React-Query in the [React-Query documentation](https://tanstack.com/query/latest/docs/framework/react/overview).
-
-## State Management
-
-Another common requirement for React applications is state management. There are many options for state management in React. TanStack Store provides a great starting point for your project.
-
-First you need to add TanStack Store as a dependency:
-
-```bash
-bun install @tanstack/store
-```
-
-Now let's create a simple counter in the `src/App.tsx` file as a demonstration.
-
-```tsx
-import { useStore } from '@tanstack/react-store'
-import { Store } from '@tanstack/store'
-import './App.css'
-
-const countStore = new Store(0)
-
-function App() {
-  const count = useStore(countStore)
-  return (
-    <div>
-      <button onClick={() => countStore.setState((n) => n + 1)}>Increment - {count}</button>
-    </div>
-  )
-}
-
-export default App
-```
-
-One of the many nice features of TanStack Store is the ability to derive state from other state. That derived state will update when the base state updates.
-
-Let's check this out by doubling the count using derived state.
-
-```tsx
-import { useStore } from '@tanstack/react-store'
-import { Store, Derived } from '@tanstack/store'
-import './App.css'
-
-const countStore = new Store(0)
-
-const doubledStore = new Derived({
-  fn: () => countStore.state * 2,
-  deps: [countStore],
-})
-doubledStore.mount()
-
-function App() {
-  const count = useStore(countStore)
-  const doubledCount = useStore(doubledStore)
-
-  return (
-    <div>
-      <button onClick={() => countStore.setState((n) => n + 1)}>Increment - {count}</button>
-      <div>Doubled - {doubledCount}</div>
-    </div>
-  )
-}
-
-export default App
-```
-
-We use the `Derived` class to create a new store that is derived from another store. The `Derived` class has a `mount` method that will start the derived store updating.
-
-Once we've created the derived store we can use it in the `App` component just like we would any other store using the `useStore` hook.
-
-You can find out everything you need to know on how to use TanStack Store in the [TanStack Store documentation](https://tanstack.com/store/latest).
-
-# Demo files
-
-Files prefixed with `demo` can be safely deleted. They are there to provide a starting point for you to play around with the features you've installed.
-
-# Learn More
-
-You can learn more about all of the offerings from TanStack in the [TanStack documentation](https://tanstack.com).
+Never hand-edit `packages/admin-client/src/{apis,models}/*` or `runtime.ts` — they are regenerated.

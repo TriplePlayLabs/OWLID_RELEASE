@@ -2,13 +2,20 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { ScrollText, RefreshCw, Wifi, WifiOff } from 'lucide-react'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
-import { Button } from '~/components/ui/button'
-import { Badge } from '~/components/ui/badge'
-import { Switch } from '~/components/ui/switch'
-import { Label } from '~/components/ui/label'
-import { ScrollArea } from '~/components/ui/scroll-area'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@owlid/ui/components/ui/card'
+import { Button } from '@owlid/ui/components/ui/button'
+import { Badge } from '@owlid/ui/components/ui/badge'
+import { Switch } from '@owlid/ui/components/ui/switch'
+import { Label } from '@owlid/ui/components/ui/label'
+import { ScrollArea } from '@owlid/ui/components/ui/scroll-area'
 import { getMonitoringApi } from '~/lib/api'
+import { getWsBaseUrl } from '@owlid/config'
 
 export const Route = createFileRoute('/logs')({
   component: LogsPage,
@@ -41,8 +48,7 @@ function LogsPage() {
   }, [])
 
   useEffect(() => {
-    const verificationUrl = import.meta.env.VITE_VERIFICATION_URL || 'http://localhost:8000'
-    const wsUrl = verificationUrl.replace(/^http/, 'ws') + '/ws/revocations'
+    const wsUrl = `${getWsBaseUrl()}/ws/revocations`
 
     try {
       const ws = new WebSocket(wsUrl)

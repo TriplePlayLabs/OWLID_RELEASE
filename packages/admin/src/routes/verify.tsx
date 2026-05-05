@@ -3,14 +3,20 @@ import { useState } from 'react'
 import { ScanSearch, CheckCircle2, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
-import { Button } from '~/components/ui/button'
-import { Textarea } from '~/components/ui/textarea'
-import { Input } from '~/components/ui/input'
-import { Label } from '~/components/ui/label'
-import { Badge } from '~/components/ui/badge'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@owlid/ui/components/ui/card'
+import { Button } from '@owlid/ui/components/ui/button'
+import { Textarea } from '@owlid/ui/components/ui/textarea'
+import { Input } from '@owlid/ui/components/ui/input'
+import { Label } from '@owlid/ui/components/ui/label'
+import { Badge } from '@owlid/ui/components/ui/badge'
 import { useVerifyToken } from '~/hooks/use-verification'
-import type { VerifyResponse } from '@owlid/sdk'
+import type { VerifyResponse } from '@owlid/verifier-client'
 
 export const Route = createFileRoute('/verify')({
   component: VerifyPage,
@@ -19,7 +25,7 @@ export const Route = createFileRoute('/verify')({
 function VerifyPage() {
   const verify = useVerifyToken()
   const [tokenStr, setTokenStr] = useState('')
-  const [challenge, setChallenge] = useState(crypto.randomUUID())
+  const [challenge, setChallenge] = useState<string>(crypto.randomUUID())
 
   function handleVerify() {
     if (!tokenStr.trim()) {

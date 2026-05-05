@@ -3,9 +3,8 @@ import { useEffect } from 'react'
 import { Fingerprint, Key, Shield, Loader2, CheckCircle, AlertCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { StepCard } from '~/components/identity/StepCard'
-import { IdentityHeader } from '~/components/identity/IdentityHeader'
 import { ProviderSelector } from '~/components/identity/ProviderSelector'
-import { useIdentityContext } from '~/contexts/identity-context'
+import { useIdentity } from '~/hooks/use-identity'
 import { useVerifyAndIssueWithWebAuthn, RedirectingToProviderError } from '~/hooks/use-idp-api'
 import { storage, type StoredCredentialData } from '@owlid/sdk'
 
@@ -15,15 +14,8 @@ export const Route = createFileRoute('/_identity/create-identity')({
 
 function CreateIdentityPage() {
   const navigate = useNavigate()
-  const {
-    isLoggedIn,
-    isIdentityCreated,
-    identityData,
-    username,
-    setIdentityData,
-    completeIdentityCreation,
-    resetDemo,
-  } = useIdentityContext()
+  const { isIdentityCreated, identityData, username, setIdentityData, completeIdentityCreation } =
+    useIdentity()
 
   // Use WebAuthn-enabled verification - handles all flow types
   const verifyAndIssue = useVerifyAndIssueWithWebAuthn()
@@ -39,8 +31,9 @@ function CreateIdentityPage() {
     checkCredential()
   }, [isIdentityCreated, navigate])
 
-  // Redirect if not logged in
-  if (!isLoggedIn && !identityData) {
+  // Redirect to login if the user has not unlocked / created identity yet.
+  // `identityData` is populated only after a successful unlock or callback.
+  if (!identityData) {
     navigate({ to: '/login' })
     return null
   }
@@ -105,17 +98,9 @@ function CreateIdentityPage() {
     navigate({ to: '/passport' })
   }
 
-  const handleReset = () => {
-    if (confirm('This will clear your local identity and reset. Continue?')) {
-      resetDemo()
-    }
-  }
-
   return (
-    <>
-      <IdentityHeader onReset={handleReset} />
-
-      <div className="space-y-4 w-full max-w-md mx-auto">
+    <div className="my-auto w-full max-w-md mx-auto px-4 py-8">
+      <div className="space-y-4">
         {/* Step 1: Complete */}
         <StepCard
           isActive={false}
@@ -207,6 +192,6 @@ function CreateIdentityPage() {
           </div>
         </StepCard>
       </div>
-    </>
+    </div>
   )
 }

@@ -1,0 +1,30 @@
+{
+  "name": "@owlid/docs-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OwlID marketing site and developer documentation (rspress).",
+  "scripts": {
+    "sync-content": "bun scripts/sync-content.ts",
+    "predev": "bun run sync-content",
+    "prebuild": "bun run sync-content",
+    "dev": "rspress dev --port 4001",
+    "build": "rspress build",
+    "preview": "rspress preview",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@rspress/core": "^2.0.10",
+    "mermaid": "^11.0.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "unist-util-visit": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/mdast": "^4.0.4",
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.9.3"
+  }
+}

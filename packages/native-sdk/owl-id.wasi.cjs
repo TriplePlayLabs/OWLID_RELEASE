@@ -124,4 +124,6 @@ module.exports.PublicKey = __napiModule.exports.PublicKey
 module.exports.Signature = __napiModule.exports.Signature
 module.exports.Token = __napiModule.exports.Token
 module.exports.blake3 = __napiModule.exports.blake3
+module.exports.provingKeysRequired = __napiModule.exports.provingKeysRequired
+module.exports.setProvingKeyBytes = __napiModule.exports.setProvingKeyBytes
 module.exports.sha256 = __napiModule.exports.sha256

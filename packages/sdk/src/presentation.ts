@@ -76,14 +76,56 @@ export interface PresentationResponse {
 // WebSocket Message Envelope
 // ---------------------------------------------------------------------------
 
-export type WsMessageType = 'session_ready' | 'request' | 'response' | 'consent_denied' | 'error'
+export type WsMessageType =
+  | 'session_ready'
+  | 'request'
+  | 'response'
+  | 'consent_denied'
+  /**
+   * Holder-only. The holder evaluated the predicate against their credential
+   * and the value does NOT satisfy it (e.g. age below threshold). This is a
+   * normal terminal outcome of the protocol, NOT an error: the verifier
+   * surfaces it as `valid: false`. Payload carries only the attribute name
+   * the verifier already asked about — never any value derived from the
+   * holder's credential.
+   */
+  | 'predicate_not_satisfied'
+  /**
+   * Holder-only. Proof generation failed for a reason other than the holder
+   * not meeting the predicate (proving system / serialization / unexpected).
+   * Payload is intentionally opaque so a malicious holder cannot smuggle
+   * private data through the verifier's UI.
+   */
+  | 'proof_failed'
+  /** Transport-level errors only — see `WsError`. */
+  | 'error'
 
 export interface WsMessage {
   type: WsMessageType
-  payload: PresentationRequest | PresentationResponse | WsError | null
+  payload:
+    | PresentationRequest
+    | PresentationResponse
+    | PredicateNotSatisfiedPayload
+    | ProofFailedPayload
+    | WsError
+    | null
+}
+
+export interface PredicateNotSatisfiedPayload {
+  /** Credential field the failing predicate targeted (e.g. `dateOfBirth`). */
+  attribute: string
+  /** Optional registry id for the predicate (e.g. `age:>=21`). */
+  predicateId?: string
+}
+
+export interface ProofFailedPayload {
+  /** Stable opaque code; never includes free-form holder-supplied text. */
+  code: 'proof_failed'
 }
 
 export interface WsError {
+  /** Transport / session-level errors only. Predicate outcomes use their
+   * own message types above so verifiers don't render them as errors. */
   code: 'timeout' | 'denied' | 'invalid_session' | 'transport_error' | 'invalid_message'
   message: string
 }
@@ -92,13 +134,22 @@ export interface WsError {
 // Available predicates (shared between holder consent screen and verifier selector)
 // ---------------------------------------------------------------------------
 
+/**
+ * Static fallback list of predicates. Apps SHOULD fetch the live list from
+ * `GET /predicates` on the issuer service (see `@owlid/issuer-client`'s
+ * `InfoApi.listPredicates`) so the UI tracks the registry as new predicates
+ * land. This constant exists for offline tools and tests; ids match the
+ * canonical predicate registry exposed by the issuer service.
+ */
 export const PRESENTATION_PREDICATES: PresentationPredicate[] = [
-  { id: 'isOver18', label: 'Age 18 or older' },
-  { id: 'isOver21', label: 'Age 21 or older' },
-  { id: 'isOver65', label: 'Age 65 or older' },
-  { id: 'isEuCitizen', label: 'EU Citizenship' },
-  { id: 'isResident', label: 'Residency' },
-  { id: 'verificationLevel', label: 'Identity verification level' },
+  { id: 'age:>=18', label: 'Age 18 or older' },
+  { id: 'age:>=21', label: 'Age 21 or older' },
+  { id: 'age:>=65', label: 'Age 65 or older' },
+  { id: 'nationality:eu', label: 'EU citizenship' },
+  { id: 'residency:verified', label: 'Verified resident' },
+  { id: 'kyc:>=basic', label: 'KYC level: basic or higher' },
+  { id: 'kyc:>=substantial', label: 'KYC level: substantial or higher' },
+  { id: 'kyc:>=high', label: 'KYC level: high' },
 ]
 
 // ---------------------------------------------------------------------------

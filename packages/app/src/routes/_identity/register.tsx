@@ -1,12 +1,11 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Fingerprint, ChevronRight, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { Button } from '~/components/ui/button'
-import { Input } from '~/components/ui/input'
+import { Button } from '@owlid/ui/components/ui/button'
+import { Input } from '@owlid/ui/components/ui/input'
 import { StepCard } from '~/components/identity/StepCard'
-import { IdentityHeader } from '~/components/identity/IdentityHeader'
-import { useIdentityContext } from '~/contexts/identity-context'
+import { useIdentity } from '~/hooks/use-identity'
 import { useWebAuthn } from '~/hooks/use-webauthn'
 import { storage, type StoredWebAuthnCredential } from '@owlid/sdk'
 
@@ -16,15 +15,9 @@ export const Route = createFileRoute('/_identity/register')({
 
 function RegisterPage() {
   const navigate = useNavigate()
-  const {
-    username,
-    setUsername,
-    isRegistered,
-    isLoading,
-    setIsLoading,
-    completeRegistration,
-    resetDemo,
-  } = useIdentityContext()
+  const { isRegistered, completeRegistration } = useIdentity()
+  const [username, setUsername] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
 
   const { register } = useWebAuthn()
 
@@ -94,17 +87,9 @@ function RegisterPage() {
     }
   }
 
-  const handleReset = () => {
-    if (confirm('This will clear your local identity and reset. Continue?')) {
-      resetDemo()
-    }
-  }
-
   return (
-    <>
-      <IdentityHeader onReset={handleReset} />
-
-      <div className="space-y-4 w-full max-w-md mx-auto">
+    <div className="my-auto w-full max-w-md mx-auto px-4 py-8">
+      <div className="space-y-4">
         <StepCard
           isActive={true}
           isCompleted={isRegistered}
@@ -167,6 +152,6 @@ function RegisterPage() {
           description="Connect a provider to create your digital ID."
         />
       </div>
-    </>
+    </div>
   )
 }

@@ -8,30 +8,39 @@
 
 import { useState, useCallback, useMemo, useEffect } from 'react'
 import {
+  circuitsForPredicates,
   Credential,
+  ensureProvingKeysFor,
   PreparedToken,
   Token as NativeToken,
+} from '@owlid/sdk/native'
+import {
   type ProofRequest,
   type WebAuthnSignatureData,
   type VerifiedClaims,
   proofStorage,
   type StoredProof,
+  storage,
 } from '@owlid/sdk'
 import type { GeneratedProof } from '~/types/proof'
 import { getAvailableProofs, getProofPredicates } from '~/utils/proof-utils'
-import { storage } from '@owlid/sdk'
+import { usePredicates } from './use-predicates'
 import { useWebAuthn } from './use-webauthn'
 
 /**
  * Prepare a token with ZK predicates for WebAuthn signing (Phase 1)
  */
-function prepareTokenForWebAuthn(
+async function prepareTokenForWebAuthn(
   credentialJson: string,
   predicates: ProofRequest['predicates'],
   disclose: string[],
   challenge: string,
   ttlSeconds: number = 3600,
 ) {
+  // No-op on native, IDB-cached fetch on WASM. Only loads circuits the
+  // request actually needs.
+  await ensureProvingKeysFor(circuitsForPredicates(predicates))
+
   const proofDoc = Credential.fromJson(credentialJson)
 
   const proofRequest: ProofRequest = {
@@ -116,17 +125,27 @@ export function useProofs() {
   const [isProofModalOpen, setIsProofModalOpen] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [verifiedClaims, setVerifiedClaims] = useState<VerifiedClaims | null>(null)
+  const [credentialAllowlist, setCredentialAllowlist] = useState<string[]>([])
 
   // WebAuthn hook for hardware-backed signing
   const { signForToken } = useWebAuthn()
+  const { data: registry } = usePredicates()
 
-  // Load verified claims from storage (backend is source of truth)
+  // Load verified claims + credential's available_predicates allowlist
   useEffect(() => {
     storage.getStoredClaims().then(setVerifiedClaims)
+    storage.loadCredentialData().then((cd) => {
+      const credAttrs = (cd?.credential as { availablePredicates?: string[] } | undefined)
+        ?.availablePredicates
+      setCredentialAllowlist(credAttrs ?? [])
+    })
   }, [])
 
-  // All proof values come directly from backend - no frontend computation
-  const availableProofs = useMemo(() => getAvailableProofs(verifiedClaims), [verifiedClaims])
+  // Filtered by registry × claim shape × issuer-signed allowlist.
+  const availableProofs = useMemo(
+    () => getAvailableProofs(verifiedClaims, registry, credentialAllowlist),
+    [verifiedClaims, registry, credentialAllowlist],
+  )
 
   // Load persisted proofs from IndexedDB on mount
   useEffect(() => {
@@ -202,10 +221,10 @@ export function useProofs() {
         const credentialJson = JSON.stringify(credentialData.credential)
 
         for (const proof of selected) {
-          const predicates = getProofPredicates(proof.id)
+          const predicates = getProofPredicates(proof.id, registry)
 
           // Phase 1: Prepare token with ZK predicates
-          const prepared = prepareTokenForWebAuthn(
+          const prepared = await prepareTokenForWebAuthn(
             credentialJson,
             predicates,
             [], // No attributes disclosed — ZK proof handles everything
@@ -258,7 +277,7 @@ export function useProofs() {
         closeProofModal()
       }
     },
-    [availableProofs, selectedProofs, signForToken, isGenerating],
+    [availableProofs, selectedProofs, signForToken, isGenerating, registry],
   )
 
   const closeProofModal = useCallback(() => {

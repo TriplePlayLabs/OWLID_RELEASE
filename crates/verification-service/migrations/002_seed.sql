@@ -1,16 +1,22 @@
 -- Seed data for development and testing
 -- This file should NOT be run in production
 
--- Create a default API key for development
--- Key: dev_key_12345678901234567890123456789012
--- Hash: SHA256 of the above key
-INSERT INTO api_keys (key_hash, name, description, permissions, created_by)
+-- Default dev API key. Format: `owlid_sk_test_dev0000…0000`. Test env so
+-- it cannot be confused with a live key. Replace before exposing the
+-- service to anything outside localhost.
+INSERT INTO api_keys (
+    key_hash, name, description, permissions, created_by,
+    key_type, environment, key_preview
+)
 VALUES (
-    '2a64efd40ea1ddbfd7c096bbc1977d149d7408f1796283eb968507d8b85b28a2', -- SHA256 of 'dev_key_12345678901234567890123456789012'
+    'f0b838a75d5ad3403095fac59e01581f365cb39ccddaed08b7c15b51e26c8c9c', -- SHA256 of 'owlid_sk_test_dev0000000000000000000000000000000000000000'
     'Development Key',
     'Default API key for local development',
-    '["verify", "manage_issuers", "manage_revocations", "admin"]'::jsonb,
-    'system'
+    '["verify", "manage_issuers", "manage_revocations", "admin", "gdpr"]'::jsonb,
+    'system',
+    'sk',
+    'test',
+    'owlid_sk_test_de…0000'
 )
 ON CONFLICT (key_hash) DO NOTHING;
 
