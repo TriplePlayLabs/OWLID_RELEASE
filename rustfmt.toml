@@ -1,0 +1,38 @@
+# Rust formatting configuration
+# Using only stable features for compatibility
+
+# Edition
+edition = "2024"
+
+# Line width
+max_width = 100
+
+# Indentation
+hard_tabs  = false
+tab_spaces = 4
+
+# Newline style
+newline_style = "Unix"
+
+# Use small heuristics for better formatting decisions
+use_small_heuristics = "Default"
+
+# Import and module organization
+reorder_imports = true
+reorder_modules = true
+
+# Remove nested parentheses when not needed
+remove_nested_parens = true
+
+# Function parameters
+fn_params_layout = "Tall"
+
+# Merge derives into a single line when possible
+merge_derives = true
+
+# Use shorthand syntax
+use_field_init_shorthand = true
+use_try_shorthand        = true
+
+# Force explicit ABI in extern declarations
+force_explicit_abi = true

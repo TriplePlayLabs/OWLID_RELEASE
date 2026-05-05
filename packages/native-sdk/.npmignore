@@ -1,0 +1,36 @@
+# Source files
+src/
+Cargo.toml
+Cargo.lock
+build.rs
+rustfmt.toml
+*.rs
+
+# Development
+target/
+.cargo/
+node_modules/
+__test__/
+benchmark/
+.prettierignore
+.gitignore
+.gitattributes
+tsconfig.json
+bun.lock
+*.tgz
+
+# Docs
+*.md
+!README.md
+
+# Editor
+.vscode/
+.idea/
+
+# Debug files
+*.debug.wasm
+
+# Yarn/npm
+.yarn/
+.yarnrc.yml
+.npmrc

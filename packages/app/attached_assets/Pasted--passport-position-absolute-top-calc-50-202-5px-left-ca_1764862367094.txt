@@ -1,0 +1,100 @@
+.passport {
+  position: absolute;
+  top: calc(50% - 202.5px);
+  left: calc(50% - 140px);
+  width: 280px;
+  height: 405px;
+  background: #010101;
+  border-left: 15px solid #000000;
+  border-radius: 0 20px 20px 0;
+  box-shadow: 5px 5px 15px 0px rgba(0, 0, 0, 0.35);
+}
+.passport .passport__title,
+.passport .passport__country {
+  text-align: center;
+  text-transform: uppercase;
+}
+.passport .passport__title {
+  font: 300 25px/1 Arial;
+  padding: 50px 0 60px;
+}
+.passport .passport__country {
+  font: 300 20px/1.2 Arial;
+}
+.passport .passport__globe {
+  overflow: hidden;
+  position: relative;
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 35px;
+  border: 2px solid #fff;
+  border-radius: 100%;
+}
+.passport .passport__globe:before, .passport .passport__globe:after {
+  position: absolute;
+  height: 100%;
+  content: "";
+}
+.passport .passport__globe:before {
+  top: 0;
+  left: calc(50% - 1px);
+  width: 2px;
+  background: #fff;
+}
+.passport .passport__globe:after {
+  top: -2px;
+  left: calc(50% - 22px);
+  width: 40px;
+  border: 2px solid #fff;
+  border-radius: 100%;
+}
+.passport .passport__globe .globe__center {
+  position: absolute;
+  top: calc(50% - 1px);
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: #fff;
+}
+.passport .passport__globe .globe__center:before, .passport .passport__globe .globe__center:after {
+  display: block;
+  width: 100%;
+  height: 100%;
+  content: "";
+  background: #fff;
+}
+.passport .passport__globe .globe__center:before {
+  margin: -20px 0 0;
+}
+.passport .passport__globe .globe__center:after {
+  margin: 40px 0 0;
+}
+.passport .passport__camera {
+  position: absolute;
+  left: 50%;
+  bottom: 30px;
+  width: 35px;
+  height: 20px;
+  margin: 0 0 0 -17.5px;
+  background: #fff;
+}
+.passport .passport__camera:before, .passport .passport__camera:after {
+  position: absolute;
+  display: block;
+  content: "";
+}
+.passport .passport__camera:before {
+  top: 8.5px;
+  width: 100%;
+  height: 3px;
+  background: #010101;
+}
+.passport .passport__camera:after {
+  top: calc(50% - 8px);
+  left: calc(50% - 8px);
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border: 3px solid #010101;
+  border-radius: 100%;
+}

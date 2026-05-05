@@ -1,0 +1,65 @@
+Below is a straight mapping from current text → suggested text, tuned to the “young to old, human, non-jargony” tone of voice we defined.
+
+Top of page
+Location	Current	Suggested	Comment
+Tagline 1	Secure, passwordless identity verification.	Secure identity verification without passwords.	Same meaning, simpler rhythm.
+Tagline 2	Cryptographically prove who you are.	Prove it is really you using your device.	Removes “cryptographically”, keeps benefit.
+Step 1. Register Passkey
+Location	Current	Suggested	Comment
+Card title	Register Passkey	Set up your passkey	“Register” feels technical.
+Card subtitle	Create a secure credential bound to this device.	Set up a secure key on this device for sign in.	No “credential”, no “bound”.
+Field label	USERNAME	Username	Sentence case reads friendlier.
+Placeholder	enter_alias	Enter a username	No underscore, clearer instruction.
+Button	Create Passkey	Set up passkey	Fits the step wording.
+
+Microcopy you could add under the subtitle:
+
+“You will link this device once. After that you can sign in with your face, fingerprint or device PIN.”
+
+Step 2. Authenticate
+Location	Current	Suggested	Comment
+Card title	Authenticate	Sign in with your device	User language.
+Card subtitle	Login using your biometric authenticator.	Sign in using your face, fingerprint or device PIN.	Concrete, mentions what actually happens.
+Button	Authenticate with Passkey	Sign in with passkey	Short, consistent.
+Step 3. Create Owl Identity
+Card state before attributes are shown
+Location	Current	Suggested	Comment
+Card title	Create Owl Identity	Create your Owl ID	More personal, matches product name.
+Card subtitle	Connect an Identity Provider to mint your digital ID.	Connect a provider to create your digital ID.	Removes “Identity Provider” and “mint”.
+Button	Connect Identity Provider	Connect provider or Connect my provider	Shorter, less jargon.
+Card state with attributes visible
+Location	Current	Suggested	Comment
+Section title	Create Owl Identity	Create your Owl ID	Keep consistent.
+Subtitle	Connect an Identity Provider to mint your digital ID.	These details come from your provider. Check them before you create your ID.	Explains what the user is seeing.
+Attributes header	Verified Attributes (Midnight Bank)	Verified details from Midnight Bank	Plain language.
+Button	Sign & Create Identity	Approve and create ID	“Sign” is WebAuthn jargon here, “approve” is easier.
+
+You might add a short line above the button:
+
+“Use your device to approve if everything looks correct.”
+
+Passport view
+Location	Current	Suggested	Comment
+Top hint text	Click passport to close	Tap the passport to close	Works for mouse and touch.
+Bottom button (first time)	Create Proof	Choose what to prove	This opens the proof selection, not yet creating.
+“Create Derived Proofs” modal
+Location	Current	Suggested	Comment
+Modal title	Create Derived Proofs	Choose what you want to prove	Removes “derived”, very human.
+Subtitle	Select the proofs you want to generate. These prove attributes without revealing the underlying data.	Select what you want to prove. We only share the result, not your full details.	Same idea, simpler language.
+Individual proof cards
+Current title	Current subtitle line 1	Current description	Suggested title	Suggested subtitle line 1	Suggested description
+Age Verification	Older than 18	Proves the holder is at least 18 years old without revealing exact birth date.	Age check	Over 18	Shows you are at least 18 without sharing your full date of birth.
+Legal Age (21+)	Older than 21	Proves the holder meets the 21+ age requirement for restricted activities.	21+ age check	Over 21	Shows you meet the 21+ requirement without sharing your full date of birth.
+Nationality Check	US Citizen/Resident	Confirms residency status without exposing full identity details.	Citizenship check	US citizen or resident	Confirms you are a US citizen or resident without sharing your full identity details.
+Credit Standing	Prime Credit (700+)	Verifies excellent credit standing without revealing exact score.	Credit check	Good credit (700+)	Shows you have strong credit without sharing your exact score.
+
+Buttons at the bottom:
+
+Current	Suggested
+Cancel	Cancel
+Create Proofs	Create proofs
+Passport view with proofs selected
+Location	Current	Suggested	Comment
+Section label	YOUR PROOFS	Your proofs or What you can prove	Friendlier, sentence case.
+Proof chips	Older than 18 etc	Over 18, Over 21, US citizen or resident, Good credit (700+)	Match wording from modal.
+Bottom button	Create Proof	Share proof or Create new proof depending on behaviour	If this sends a proof somewhere, “Share proof” is clearer.

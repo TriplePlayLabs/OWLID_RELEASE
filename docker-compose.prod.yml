@@ -1,0 +1,324 @@
+###############################################################################
+# OwlID Production Stack
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up --build -d
+#
+# Services:
+#   - Databases:    postgres-verification (5432), postgres-issuer (5433)
+#   - Backend:      verification-service (8000), issuer-service (8001)
+#   - Blockchain:   midnight-node (9944), midnight-indexer (8088), proof-server (6300)
+#   - Bridge:       midnight-sidecar (3000)
+#   - Frontend:     app (5000), verifier-app (5001), admin (4000)
+#   - Monitoring:   prometheus (9090), grafana (3001)
+#   - Tunnel:       cloudflared (owlid-*.sashoush.dev)
+###############################################################################
+
+# --- Databases ---------------------------------------------------------------
+
+services:
+  postgres-verification:
+    image: postgres:17-alpine
+    container_name: owlid-postgres-verification
+    environment:
+      POSTGRES_USER: owl
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-owl_prod_secret}
+      POSTGRES_DB: verification
+    volumes:
+      - verification_db:/var/lib/postgresql/data
+      - ./crates/verification-service/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U owl -d verification']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  postgres-issuer:
+    image: postgres:17-alpine
+    container_name: owlid-postgres-issuer
+    environment:
+      POSTGRES_USER: owl
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-owl_prod_secret}
+      POSTGRES_DB: issuer
+    volumes:
+      - issuer_db:/var/lib/postgresql/data
+      - ./crates/issuer-service/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U owl -d issuer']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  # --- Midnight Blockchain -----------------------------------------------------
+
+  midnight-node:
+    image: midnightntwrk/midnight-node:0.22.3
+    container_name: owlid-midnight-node
+    command: >
+      --dev --rpc-external --rpc-cors=all --rpc-port=9944
+      --unsafe-rpc-external
+    environment:
+      CFG_PRESET: dev
+      SIDECHAIN_BLOCK_BENEFICIARY: '04bcf7ad3be7a5c790460be82a713af570f22e0f801f6659ab8e84a52be6969e'
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:9944/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  midnight-indexer:
+    image: midnightntwrk/indexer-standalone:4.0.1
+    container_name: owlid-midnight-indexer
+    environment:
+      RUST_LOG: 'indexer=info,chain_indexer=info,indexer_api=info,wallet_indexer=info,indexer_common=info,fastrace_opentelemetry=off,info'
+      APP__APPLICATION__NETWORK_ID: 'undeployed'
+      APP__INFRA__NODE__URL: 'ws://midnight-node:9944'
+      APP__INFRA__STORAGE__PASSWORD: 'indexer'
+      APP__INFRA__PUB_SUB__PASSWORD: 'indexer'
+      APP__INFRA__LEDGER_STATE_STORAGE__PASSWORD: 'indexer'
+      APP__INFRA__SECRET: '303132333435363738393031323334353637383930313233343536373839303132'
+    healthcheck:
+      test: ['CMD-SHELL', 'cat /var/run/indexer-standalone/running']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    depends_on:
+      midnight-node:
+        condition: service_healthy
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  proof-server:
+    image: midnightntwrk/proof-server:8.0.3
+    container_name: owlid-proof-server
+    command: ['midnight-proof-server -v']
+    environment:
+      RUST_LOG: info
+      RUST_BACKTRACE: full
+    volumes:
+      - proof_server_srs:/data/midnight
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:6300/version']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  # --- Midnight Sidecar --------------------------------------------------------
+
+  midnight-sidecar:
+    build:
+      context: .
+      dockerfile: Dockerfile.sidecar
+    container_name: owlid-midnight-sidecar
+    environment:
+      MIDNIGHT_SIDECAR_PORT: '3000'
+      MIDNIGHT_SIDECAR_API_KEY: ${MIDNIGHT_SIDECAR_API_KEY}
+      MIDNIGHT_NODE_WS_URL: ws://midnight-node:9944
+      MIDNIGHT_INDEXER_URI: http://midnight-indexer:8088/api/v3/graphql
+      MIDNIGHT_INDEXER_WS_URI: ws://midnight-indexer:8088/api/v3/graphql/ws
+      MIDNIGHT_PROOF_SERVER_URI: http://proof-server:6300
+      MIDNIGHT_NETWORK_ID: undeployed
+      MIDNIGHT_WALLET_SEED: ${MIDNIGHT_WALLET_SEED}
+      MIDNIGHT_ISSUER_REGISTRY_ADDRESS: ${MIDNIGHT_ISSUER_REGISTRY_ADDRESS}
+      MIDNIGHT_REVOCATION_REGISTRY_ADDRESS: ${MIDNIGHT_REVOCATION_REGISTRY_ADDRESS}
+      MIDNIGHT_IDENTITY_REGISTRY_ADDRESS: ${MIDNIGHT_IDENTITY_REGISTRY_ADDRESS}
+      MIDNIGHT_OWNER_SECRET_KEY: ${MIDNIGHT_OWNER_SECRET_KEY}
+    depends_on:
+      midnight-node:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  # --- Backend Services --------------------------------------------------------
+
+  verification-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.verification
+    container_name: owlid-verification
+    environment:
+      VERIFICATION_DATABASE_URL: postgres://owl:${DB_PASSWORD:-owl_prod_secret}@postgres-verification:5432/verification
+      SERVER_HOST: '0.0.0.0'
+      SERVER_PORT: '8000'
+      RUST_LOG: ${RUST_LOG:-info}
+      MIDNIGHT_ENABLED: 'true'
+      MIDNIGHT_SIDECAR_URL: http://midnight-sidecar:3000
+      MIDNIGHT_SIDECAR_API_KEY: ${MIDNIGHT_SIDECAR_API_KEY}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-change-me}
+      RATE_LIMIT_ENABLED: 'true'
+      RATE_LIMIT_MAX_REQUESTS: '100'
+      RATE_LIMIT_WINDOW_MINUTES: '1'
+    depends_on:
+      postgres-verification:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:8000/health || exit 1']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  issuer-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.issuer
+    container_name: owlid-issuer
+    environment:
+      ISSUER_DATABASE_URL: postgres://owl:${DB_PASSWORD:-owl_prod_secret}@postgres-issuer:5432/issuer
+      ISSUER_HOST: '0.0.0.0'
+      ISSUER_PORT: '8001'
+      RUST_LOG: ${RUST_LOG:-info}
+      MIDNIGHT_ENABLED: 'true'
+      MIDNIGHT_SIDECAR_URL: http://midnight-sidecar:3000
+      MIDNIGHT_SIDECAR_API_KEY: ${MIDNIGHT_SIDECAR_API_KEY}
+      APP_URL: ${APP_URL:-https://owlid-app.sashoush.dev}
+      DIDIT_API_KEY: ${DIDIT_API_KEY:-}
+      DIDIT_WORKFLOW_ID: ${DIDIT_WORKFLOW_ID:-}
+      DIDIT_WEBHOOK_SECRET: ${DIDIT_WEBHOOK_SECRET:-}
+    depends_on:
+      postgres-issuer:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:8001/health || exit 1']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  # --- Frontend Apps -----------------------------------------------------------
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+      args:
+        VITE_ISSUER_URL: ${VITE_ISSUER_URL:-https://owlid-issuer.sashoush.dev}
+        VITE_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+    container_name: owlid-app
+    ports:
+      - '5000:80'
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  verifier-app:
+    build:
+      context: .
+      dockerfile: Dockerfile.verifier
+      args:
+        VITE_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+        VITE_API_KEY: ${API_KEY_DEV:-}
+    container_name: owlid-verifier
+    ports:
+      - '5001:80'
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.admin
+      args:
+        VITE_API_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+        VITE_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+        VITE_ISSUER_URL: ${VITE_ISSUER_URL:-https://owlid-issuer.sashoush.dev}
+        VITE_API_KEY: ${API_KEY_DEV:-}
+    container_name: owlid-admin
+    ports:
+      - '4000:80'
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  # --- Monitoring --------------------------------------------------------------
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: owlid-prometheus
+    volumes:
+      - ./monitoring/prometheus/prometheus-prod.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: owlid-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-owlid}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_SERVER_HTTP_PORT: '3000'
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - owlid
+    restart: unless-stopped
+
+  # --- Cloudflare Tunnel -------------------------------------------------------
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: owlid-cloudflared
+    command: tunnel run owlid
+    volumes:
+      - ${HOME}/.cloudflared:/etc/cloudflared:ro
+    environment:
+      TUNNEL_CONFIG: /etc/cloudflared/config-docker.yml
+    depends_on:
+      - verification-service
+      - issuer-service
+      - app
+      - verifier-app
+      - admin
+    networks:
+      - owlid
+    restart: unless-stopped
+
+# --- Volumes & Networks ------------------------------------------------------
+
+volumes:
+  verification_db:
+  issuer_db:
+  proof_server_srs:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  owlid:
+    driver: bridge

@@ -1,0 +1,216 @@
+You are an expert WebAuthn and Node.js engineer.  
+Create a complete Proof of Concept that I can run on Replit to prove my identity using WebAuthn (passkeys).
+
+Goal:
+- I want a minimal but realistic full stack demo:
+  - Backend: Node.js + Express
+  - Frontend: plain HTML + JavaScript
+- Users can:
+  1. Register a WebAuthn credential (passkey) for a chosen username.
+  2. Log in using WebAuthn.
+  3. Prove their identity by signing a specific message (or Merkle root string) with WebAuthn, and the server verifies the signature.
+
+Constraints and assumptions:
+- This will run on Replit, served over HTTPS with a random host such as https://something.repl.co.
+- The RP ID must match the effective domain, so derive it from the host:
+  - rpID = hostname without port (for example "something.repl.co").
+  - expectedOrigin = "https://" + rpID.
+- Use in-memory storage only. No database is needed.
+- Private keys must never leave the client. Only store public keys and metadata on the server.
+- Keep the code clear and well commented, so I can read and extend it.
+
+Tech stack and libraries:
+- Node.js (latest available on Replit)
+- Express
+- body-parser or built-in express.json()
+- TypeScript is NOT required. Use plain JavaScript.
+- Use the "@simplewebauthn/server" and "@simplewebauthn/typescript-types" packages to handle WebAuthn logic on the server side, so we do not reimplement validation by hand.
+- On the client side, use the browser WebAuthn APIs:
+  - navigator.credentials.create() for registration
+  - navigator.credentials.get() for authentication and signing
+
+Project structure:
+- index.js           -> main Express server
+- public/
+  - index.html       -> UI
+  - app.js           -> frontend logic (fetch + WebAuthn calls)
+  - style.css        -> basic styling (optional but nice)
+- package.json       -> with all dependencies and start script
+
+Back-end requirements (index.js):
+1. Basic Express setup
+   - Use express.json() for JSON bodies.
+   - Serve static files from ./public.
+   - Detect rpID and expectedOrigin from incoming requests:
+     - On each request, derive host = req.headers.host.split(":")[0].
+     - rpID = host
+     - expectedOrigin = "https://" + host
+
+2. In-memory data structures
+   - Maintain:
+     - users: Map<string, { id: string, username: string, credentials: WebAuthnCredential[] }>
+       - id: a stable user id (for example random base64url or UUID).
+       - username: string.
+       - credentials: array of:
+         - credentialID (Buffer or base64url string)
+         - publicKey
+         - counter
+         - transports (optional)
+   - You can store credentialID as base64url string internally to simplify JSON, but convert back to Buffer where needed.
+
+3. WebAuthn registration (create credential)
+   - Endpoint: POST /webauthn/register/options
+     - Request body: { username: string }
+     - Behavior:
+       - Look up or create a user for this username.
+       - Use @simplewebauthn/server to generateRegistrationOptions:
+         - rpName: "Replit WebAuthn POC"
+         - rpID: derived as above
+         - userID: user.id as Buffer or string
+         - userName: user.username
+         - authenticatorSelection: userVerification: "preferred"
+         - attestationType: "none"
+       - Store the generated options (challenge + username) in a simple in-memory "pendingChallenges" map so you can verify later.
+       - Return the options to the client as JSON.
+   - Endpoint: POST /webauthn/register/verify
+     - Request body: { username: string, attestationResponse: any }
+     - Behavior:
+       - Look up the user and the matching pending registration challenge.
+       - Call verifyRegistrationResponse from @simplewebauthn/server with:
+         - response: attestationResponse
+         - expectedChallenge: challenge from stored options
+         - expectedOrigin: derived as above
+         - expectedRPID: rpID
+       - If verification succeeds:
+         - Extract credential ID, public key, counter, etc.
+         - Add a new credential entry to user.credentials.
+       - Return { verified: true, userId: user.id } on success, or { verified: false } on failure.
+
+4. WebAuthn authentication (login)
+   - Endpoint: POST /webauthn/authenticate/options
+     - Request body: { username: string }
+     - Behavior:
+       - Look up user by username.
+       - If user or credentials do not exist, return an error.
+       - Use generateAuthenticationOptions from @simplewebauthn/server:
+         - allowCredentials: the list of credential IDs for this user.
+         - userVerification: "preferred".
+       - Store challenge + username in a "pendingAuthChallenges" map.
+       - Return options to the client.
+   - Endpoint: POST /webauthn/authenticate/verify
+     - Request body: { username: string, assertionResponse: any }
+     - Behavior:
+       - Look up user and pending auth challenge.
+       - Find the relevant credential by credentialID from assertionResponse.
+       - Call verifyAuthenticationResponse with:
+         - response: assertionResponse
+         - expectedChallenge
+         - expectedOrigin
+         - expectedRPID: rpID
+         - authenticator: current credential info for this user
+       - If verified:
+         - Update the stored counter for that credential from verification result.
+         - Return { verified: true, userId: user.id, username: user.username }.
+
+5. "Prove identity by signing a message" endpoint
+   - Purpose: bind an arbitrary message (for example a Merkle root or "I am user X at time T") to the WebAuthn assertion.
+   - Approach:
+     - We will encode the message into the WebAuthn challenge, so the signature proves that this specific user approved this message.
+   - Endpoint: POST /webauthn/prove/options
+     - Request body: { username: string, message: string }
+     - Behavior:
+       - Look up user and credentials as in authentication.
+       - Compute a challenge that depends on the message, for example:
+         - challenge = random 32 bytes, or
+         - hash = SHA-256(message + random nonce)
+         - For simplicity, you can just use generateAuthenticationOptions and store { challenge, username, message } together in memory.
+       - Use generateAuthenticationOptions with:
+         - allowCredentials: user credentials
+         - challenge: override with your own random bytes (the link to the message is logical: you will store message next to the challenge in memory).
+       - Store { username, message, challenge } in a "pendingProofChallenges" map.
+       - Return options to the client.
+   - Endpoint: POST /webauthn/prove/verify
+     - Request body: { username: string, message: string, assertionResponse: any }
+     - Behavior:
+       - Look up user and the stored entry in pendingProofChallenges for that username and message.
+       - Verify assertion with verifyAuthenticationResponse:
+         - expectedChallenge = stored challenge
+         - expectedOrigin, expectedRPID as before.
+       - If verified:
+         - Return JSON with:
+           - verified: true
+           - userId
+           - username
+           - message
+           - comment: "This user has cryptographically approved this message via WebAuthn"
+       - This demonstrates how the same flow could be used to prove that a user approved a Merkle root or other identity data off-chain.
+
+6. Helper utilities
+   - Implement small helper functions to:
+     - Convert between base64url and Buffer.
+     - Derive rpID and expectedOrigin from the request.
+   - Add plenty of comments in index.js explaining how everything fits together.
+
+Front-end requirements (public/index.html + public/app.js):
+1. index.html
+   - Simple layout with three sections:
+     1. "Register passkey"
+        - Input: username
+        - Button: "Register"
+     2. "Login with passkey"
+        - Input: username
+        - Button: "Login"
+        - Display area for login status.
+     3. "Prove identity by signing a message"
+        - Input: username
+        - Textarea: message to sign (for example "root hash: abc123" or "I am Randy at 2025-12-04").
+        - Button: "Sign message with WebAuthn"
+        - Display area showing the server verification result.
+   - Include app.js at the bottom and a simple style.css if needed.
+
+2. app.js
+   - Implement helper functions for base64url encoding/decoding required by WebAuthn.
+   - For each section:
+     - Register:
+       1. Send POST /webauthn/register/options with { username }.
+       2. Use navigator.credentials.create({ publicKey: optionsFromServer }) to create a credential.
+       3. Serialize the result (ArrayBuffers to base64url strings).
+       4. POST /webauthn/register/verify with { username, attestationResponse }.
+       5. Show the result in the UI.
+     - Login:
+       1. POST /webauthn/authenticate/options with { username }.
+       2. Call navigator.credentials.get({ publicKey: optionsFromServer }).
+       3. Serialize assertion result and POST /webauthn/authenticate/verify.
+       4. Show whether verified = true and display the username / userId.
+     - Prove identity:
+       1. POST /webauthn/prove/options with { username, message }.
+       2. Call navigator.credentials.get({ publicKey: optionsFromServer }).
+       3. Serialize assertion result and POST /webauthn/prove/verify with { username, message, assertionResponse }.
+       4. Display in the UI that the user has successfully proven identity for this message.
+
+   - Make sure to handle errors gracefully:
+     - Catch exceptions from navigator.credentials and from fetch.
+     - Show simple error messages on the page.
+
+3. base64url handling on the frontend:
+   - Implement functions:
+     - bufferToBase64url
+     - base64urlToBuffer
+   - Use them to convert between ArrayBuffer fields (rawId, clientDataJSON, authenticatorData, signature, userHandle) and strings that can be sent via JSON.
+
+Readme / documentation:
+- In comments at the top of index.js and app.js, briefly explain:
+  - How to run the project on Replit.
+  - That users must open the generated HTTPS URL in a browser that supports WebAuthn (for example Chrome or Firefox).
+  - That this is a POC only, suitable for experimentation and learning, not production.
+
+Finally:
+- Once you generate all files, show the full content of:
+  - package.json
+  - index.js
+  - public/index.html
+  - public/app.js
+  - public/style.css
+- Make sure the project can be started with: "node index.js" or "npm start".
+
+Now generate the full project according to these requirements.

@@ -1,0 +1,179 @@
+###############################################################################
+# OwlID Application Services
+#
+# Deployed as a Temps compose project (owlid)
+# Midnight infra is in a separate project (owlid-infra) — accessed via custom domain URLs
+###############################################################################
+
+services:
+  # --- Databases ---------------------------------------------------------------
+
+  postgres-verification:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: owl
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-owl_prod_secret}
+      POSTGRES_DB: verification
+    volumes:
+      - verification_db:/var/lib/postgresql/data
+      - ../../crates/verification-service/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U owl -d verification']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-issuer:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: owl
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-owl_prod_secret}
+      POSTGRES_DB: issuer
+    volumes:
+      - issuer_db:/var/lib/postgresql/data
+      - ../../crates/issuer-service/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U owl -d issuer']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Backend Services --------------------------------------------------------
+
+  verification-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.verification
+    environment:
+      VERIFICATION_DATABASE_URL: postgres://owl:${DB_PASSWORD:-owl_prod_secret}@postgres-verification:5432/verification
+      SERVER_HOST: '0.0.0.0'
+      SERVER_PORT: '8000'
+      RUST_LOG: ${RUST_LOG:-info}
+      MIDNIGHT_ENABLED: 'true'
+      MIDNIGHT_SIDECAR_URL: http://midnight-sidecar:3000
+      MIDNIGHT_SIDECAR_API_KEY: ${MIDNIGHT_SIDECAR_API_KEY}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-change-me}
+      RATE_LIMIT_ENABLED: 'true'
+      RATE_LIMIT_MAX_REQUESTS: '100'
+      RATE_LIMIT_WINDOW_MINUTES: '1'
+    depends_on:
+      postgres-verification:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:8000/health || exit 1']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    expose:
+      - '8000'
+
+  issuer-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.issuer
+    environment:
+      ISSUER_DATABASE_URL: postgres://owl:${DB_PASSWORD:-owl_prod_secret}@postgres-issuer:5432/issuer
+      ISSUER_HOST: '0.0.0.0'
+      ISSUER_PORT: '8001'
+      RUST_LOG: ${RUST_LOG:-info}
+      MIDNIGHT_ENABLED: 'true'
+      MIDNIGHT_SIDECAR_URL: http://midnight-sidecar:3000
+      MIDNIGHT_SIDECAR_API_KEY: ${MIDNIGHT_SIDECAR_API_KEY}
+      APP_URL: ${APP_URL:-https://owlid-app.sashoush.dev}
+      DIDIT_API_KEY: ${DIDIT_API_KEY:-}
+      DIDIT_WORKFLOW_ID: ${DIDIT_WORKFLOW_ID:-}
+      DIDIT_WEBHOOK_SECRET: ${DIDIT_WEBHOOK_SECRET:-}
+    depends_on:
+      postgres-issuer:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:8001/health || exit 1']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    expose:
+      - '8001'
+
+  # --- Midnight Sidecar --------------------------------------------------------
+
+  midnight-sidecar:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.sidecar
+    environment:
+      MIDNIGHT_SIDECAR_PORT: '3000'
+      MIDNIGHT_SIDECAR_API_KEY: ${MIDNIGHT_SIDECAR_API_KEY}
+      # Cross-project: connect to infra via Temps custom domain URLs
+      MIDNIGHT_NODE_WS_URL: ${MIDNIGHT_NODE_WS_URL:-wss://owlid-node.sashoush.dev}
+      MIDNIGHT_INDEXER_URI: ${MIDNIGHT_INDEXER_URI:-https://owlid-indexer.sashoush.dev/api/v3/graphql}
+      MIDNIGHT_INDEXER_WS_URI: ${MIDNIGHT_INDEXER_WS_URI:-wss://owlid-indexer.sashoush.dev/api/v3/graphql/ws}
+      MIDNIGHT_PROOF_SERVER_URI: ${MIDNIGHT_PROOF_SERVER_URI:-https://owlid-proof.sashoush.dev}
+      MIDNIGHT_NETWORK_ID: ${MIDNIGHT_NETWORK_ID:-undeployed}
+      MIDNIGHT_WALLET_SEED: ${MIDNIGHT_WALLET_SEED}
+      MIDNIGHT_ISSUER_REGISTRY_ADDRESS: ${MIDNIGHT_ISSUER_REGISTRY_ADDRESS}
+      MIDNIGHT_REVOCATION_REGISTRY_ADDRESS: ${MIDNIGHT_REVOCATION_REGISTRY_ADDRESS}
+      MIDNIGHT_IDENTITY_REGISTRY_ADDRESS: ${MIDNIGHT_IDENTITY_REGISTRY_ADDRESS}
+      MIDNIGHT_OWNER_SECRET_KEY: ${MIDNIGHT_OWNER_SECRET_KEY}
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    expose:
+      - '3000'
+
+  # --- Frontend Apps -----------------------------------------------------------
+
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.app
+      args:
+        VITE_ISSUER_URL: ${VITE_ISSUER_URL:-https://owlid-issuer.sashoush.dev}
+        VITE_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:80/ || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    expose:
+      - '80'
+
+  verifier-app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.verifier
+      args:
+        VITE_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+        VITE_API_KEY: ${API_KEY_DEV:-}
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:80/ || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    expose:
+      - '80'
+
+  admin:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.admin
+      args:
+        VITE_API_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+        VITE_VERIFICATION_URL: ${VITE_VERIFICATION_URL:-https://owlid-api.sashoush.dev}
+        VITE_ISSUER_URL: ${VITE_ISSUER_URL:-https://owlid-issuer.sashoush.dev}
+        VITE_API_KEY: ${API_KEY_DEV:-}
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:80/ || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    expose:
+      - '80'
+
+volumes:
+  verification_db:
+  issuer_db:

@@ -1,0 +1,190 @@
+// OwlID Revocation Registry - Compact Smart Contract for Midnight
+// Tracks credential revocation status on-chain
+// Replaces contracts/src/RevocationRegistry.sol
+
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
+
+// Credential status (matches Rust enum in crates/proof-system/src/revocation.rs)
+export enum CredentialStatus {
+  ACTIVE,
+  REVOKED,
+  SUSPENDED
+}
+
+// Public on-chain state
+export ledger owner: Either<ZswapCoinPublicKey, ContractAddress>;
+export ledger paused: Boolean;
+
+// Map: credential root hash → status
+export ledger credentialStatuses: Map<Bytes<32>, CredentialStatus>;
+
+// Map: credential root hash → issuer key hash (who issued it)
+export ledger credentialIssuers: Map<Bytes<32>, Bytes<32>>;
+
+// Map: credential root hash → reason string
+export ledger credentialReasons: Map<Bytes<32>, Opaque<"string">>;
+
+// Set of all revoked/suspended credential root hashes (for enumeration)
+export ledger revokedCredentials: Set<Bytes<32>>;
+
+// Counter for total revocation actions (historical, includes reactivations)
+export ledger revocationCount: Counter;
+
+// Initialize the registry with the deployer as owner
+constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>) {
+  owner = disclose(initialOwner);
+}
+
+// Internal: assert caller is the owner
+circuit assertOnlyOwner(): [] {
+  const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+  assert(caller == owner, "Only owner can perform this action");
+}
+
+// Internal: assert contract is not paused
+circuit assertNotPaused(): [] {
+  assert(!paused, "Contract is paused");
+}
+
+// Revoke a credential permanently
+// @param rootHash - The Merkle root hash of the credential
+// @param issuerKeyHash - The persistentHash of the issuer's public key
+// @param reason - Reason for revocation
+export circuit revoke(rootHash: Bytes<32>, issuerKeyHash: Bytes<32>, reason: Opaque<"string">): [] {
+  assertOnlyOwner();
+  assertNotPaused();
+
+  assert(rootHash != pad(32, "") as Bytes<32>, "Invalid zero root hash");
+
+  const dRootHash = disclose(rootHash);
+
+  // Prevent double-revocation
+  if (credentialStatuses.member(dRootHash)) {
+    assert(
+      credentialStatuses.lookup(dRootHash) != CredentialStatus.REVOKED,
+      "Credential already revoked"
+    );
+  }
+
+  credentialStatuses.insert(dRootHash, disclose(CredentialStatus.REVOKED));
+  credentialIssuers.insert(dRootHash, disclose(issuerKeyHash));
+  credentialReasons.insert(dRootHash, disclose(reason));
+
+  if (!revokedCredentials.member(dRootHash)) {
+    revokedCredentials.insert(dRootHash);
+  }
+  revocationCount.increment(1);
+}
+
+// Suspend a credential temporarily
+// @param rootHash - The Merkle root hash of the credential
+// @param issuerKeyHash - The persistentHash of the issuer's public key
+// @param reason - Reason for suspension
+export circuit suspend(rootHash: Bytes<32>, issuerKeyHash: Bytes<32>, reason: Opaque<"string">): [] {
+  assertOnlyOwner();
+  assertNotPaused();
+
+  assert(rootHash != pad(32, "") as Bytes<32>, "Invalid zero root hash");
+
+  const dRootHash = disclose(rootHash);
+
+  // Cannot suspend an already revoked credential (revocation is permanent)
+  if (credentialStatuses.member(dRootHash)) {
+    const current = credentialStatuses.lookup(dRootHash);
+    assert(current != CredentialStatus.REVOKED, "Cannot suspend a revoked credential");
+    assert(current != CredentialStatus.SUSPENDED, "Credential already suspended");
+  }
+
+  credentialStatuses.insert(dRootHash, disclose(CredentialStatus.SUSPENDED));
+  credentialIssuers.insert(dRootHash, disclose(issuerKeyHash));
+  credentialReasons.insert(dRootHash, disclose(reason));
+
+  if (!revokedCredentials.member(dRootHash)) {
+    revokedCredentials.insert(dRootHash);
+  }
+  revocationCount.increment(1);
+}
+
+// Reactivate a suspended credential
+// @param rootHash - The Merkle root hash of the credential
+// @param issuerKeyHash - The persistentHash of the issuer's public key
+export circuit reactivate(rootHash: Bytes<32>, issuerKeyHash: Bytes<32>): [] {
+  assertOnlyOwner();
+  assertNotPaused();
+
+  const dRootHash = disclose(rootHash);
+
+  assert(credentialStatuses.member(dRootHash), "Credential not found");
+  assert(
+    credentialStatuses.lookup(dRootHash) == CredentialStatus.SUSPENDED,
+    "Only suspended credentials can be reactivated"
+  );
+
+  // Verify issuer matches the original
+  assert(
+    credentialIssuers.lookup(dRootHash) == disclose(issuerKeyHash),
+    "Issuer mismatch"
+  );
+
+  credentialStatuses.insert(dRootHash, disclose(CredentialStatus.ACTIVE));
+  credentialReasons.remove(dRootHash);
+  revokedCredentials.remove(dRootHash);
+}
+
+// Check if a credential is revoked or suspended
+// @param rootHash - The Merkle root hash to check
+// @return Whether the credential is revoked or suspended
+export circuit isRevoked(rootHash: Bytes<32>): Boolean {
+  const dRootHash = disclose(rootHash);
+  if (!credentialStatuses.member(dRootHash)) {
+    return false;
+  }
+
+  const status = credentialStatuses.lookup(dRootHash);
+  return status == CredentialStatus.REVOKED || status == CredentialStatus.SUSPENDED;
+}
+
+// Get the status of a credential
+// @param rootHash - The Merkle root hash to check
+// @return The credential's current status
+export circuit getStatus(rootHash: Bytes<32>): CredentialStatus {
+  const dRootHash = disclose(rootHash);
+  if (!credentialStatuses.member(dRootHash)) {
+    return CredentialStatus.ACTIVE;
+  }
+
+  return credentialStatuses.lookup(dRootHash);
+}
+
+// Get the issuer of a revoked/suspended credential
+// @param rootHash - The Merkle root hash to check
+// @return The issuer key hash
+export circuit getIssuer(rootHash: Bytes<32>): Bytes<32> {
+  const dRootHash = disclose(rootHash);
+  assert(credentialIssuers.member(dRootHash), "Credential not found");
+  return credentialIssuers.lookup(dRootHash);
+}
+
+// Pause the contract (admin only)
+export circuit pause(): [] {
+  assertOnlyOwner();
+  assert(!paused, "Already paused");
+  paused = disclose(true);
+}
+
+// Unpause the contract (admin only)
+export circuit unpause(): [] {
+  assertOnlyOwner();
+  assert(paused, "Not paused");
+  paused = disclose(false);
+}
+
+// Transfer ownership
+export circuit transferOwnership(newOwner: Either<ZswapCoinPublicKey, ContractAddress>): [] {
+  assertOnlyOwner();
+  owner = disclose(newOwner);
+}

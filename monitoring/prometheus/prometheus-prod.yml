@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: verification-service
+    metrics_path: /prometheus
+    static_configs:
+      - targets: ['verification-service:8000']
+        labels:
+          service: verification
+
+  - job_name: issuer-service
+    metrics_path: /prometheus
+    static_configs:
+      - targets: ['issuer-service:8001']
+        labels:
+          service: issuer

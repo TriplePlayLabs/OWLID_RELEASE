@@ -1,0 +1,3 @@
+[install]
+# Hoisted layout so transitive deps (like `effect` for wallet-sdk-facade) resolve.
+linker = "hoisted"

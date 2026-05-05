@@ -1,0 +1,66 @@
+[package]
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+name              = "owl-verification-service"
+version.workspace = true
+
+[dependencies]
+# Internal dependencies
+owl-crypto       = { path = "../crypto" }
+owl-proof-system = { path = "../proof-system" }
+
+# Hashing
+sha2.workspace = true
+
+# Web framework
+axum                 = { workspace = true, features = ["ws"] }
+tokio.workspace      = true
+tower.workspace      = true
+tower-http.workspace = true
+
+# Serialization
+hex.workspace        = true
+serde.workspace      = true
+serde_json.workspace = true
+
+# Database
+dotenvy.workspace = true
+sqlx.workspace    = true
+uuid.workspace    = true
+
+# Time
+chrono.workspace = true
+
+# Logging & Observability (T-020)
+tracing.workspace            = true
+tracing-subscriber.workspace = true
+
+# HTTP client (for midnight sidecar)
+reqwest.workspace = true
+
+# Error handling
+anyhow.workspace    = true
+thiserror.workspace = true
+
+# Observability (T-020)
+metrics                     = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# OpenAPI
+utoipa.workspace            = true
+utoipa-axum.workspace       = true
+utoipa-swagger-ui.workspace = true
+
+# Admin auth
+bcrypt         = "0.16"
+jsonwebtoken   = "9"
+rand.workspace = true
+
+[dev-dependencies]
+owl-crypto           = { path = "../crypto" }
+owl-proof-system     = { path = "../proof-system" }
+reqwest              = { workspace = true, features = ["json"] }
+serde_json.workspace = true
+tokio                = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid                 = { workspace = true, features = ["v4"] }

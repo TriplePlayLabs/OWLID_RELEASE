@@ -1,0 +1,61 @@
+{
+  "name": "@owlid/sdk",
+  "version": "1.0.0",
+  "description": "OwlID SDK - Complete identity SDK with WebAuthn, cryptography, and native bindings",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./api/issuer": {
+      "types": "./dist/generated/issuer/index.d.ts",
+      "import": "./dist/generated/issuer/index.js"
+    },
+    "./api/verification": {
+      "types": "./dist/generated/verification/index.d.ts",
+      "import": "./dist/generated/verification/index.js"
+    },
+    "./native": {
+      "types": "./node_modules/@owlid/native-sdk/index.d.ts",
+      "import": "./node_modules/@owlid/native-sdk/index.js",
+      "require": "./node_modules/@owlid/native-sdk/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "check": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@owlid/native-sdk": "workspace:*",
+    "cbor-x": "^1.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/owlid/owlid.git",
+    "directory": "packages/sdk"
+  },
+  "keywords": [
+    "webauthn",
+    "passkey",
+    "identity",
+    "cryptography",
+    "cbor",
+    "cose",
+    "ed25519",
+    "p256"
+  ]
+}

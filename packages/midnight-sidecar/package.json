@@ -1,0 +1,53 @@
+{
+  "name": "@owlid/midnight-sidecar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "deploy": "bun run src/deploy.ts",
+    "fund-accounts": "bun run src/fund-accounts.ts",
+    "compact": "compact compile contracts/issuer_registry.compact managed/issuer_registry && compact compile contracts/revocation_registry.compact managed/revocation_registry && compact compile contracts/identity_registry.compact managed/identity_registry",
+    "compact:skip-zk": "compact compile --skip-zk contracts/issuer_registry.compact managed/issuer_registry && compact compile --skip-zk contracts/revocation_registry.compact managed/revocation_registry && compact compile --skip-zk contracts/identity_registry.compact managed/identity_registry",
+    "compact:clean": "rm -rf managed",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@midnight-ntwrk/compact-js": "2.5.0",
+    "@midnight-ntwrk/compact-runtime": "0.16.0",
+    "@midnight-ntwrk/ledger-v8": "8.0.3",
+    "@midnight-ntwrk/midnight-js-contracts": "4.0.4",
+    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "4.0.4",
+    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "4.0.4",
+    "@midnight-ntwrk/midnight-js-level-private-state-provider": "4.0.4",
+    "@midnight-ntwrk/midnight-js-network-id": "4.0.4",
+    "@midnight-ntwrk/midnight-js-node-zk-config-provider": "4.0.4",
+    "@midnight-ntwrk/midnight-js-types": "4.0.4",
+    "@midnight-ntwrk/wallet-sdk-abstractions": "2.0.0",
+    "@midnight-ntwrk/wallet-sdk-address-format": "3.1.0",
+    "@midnight-ntwrk/wallet-sdk-capabilities": "3.2.0",
+    "@midnight-ntwrk/wallet-sdk-dust-wallet": "3.0.0",
+    "@midnight-ntwrk/wallet-sdk-facade": "3.0.0",
+    "@midnight-ntwrk/wallet-sdk-hd": "3.0.1",
+    "@midnight-ntwrk/wallet-sdk-shielded": "2.1.0",
+    "@midnight-ntwrk/wallet-sdk-unshielded-wallet": "2.1.0",
+    "@noble/hashes": "1.7.1",
+    "@scure/bip39": "2.0.1",
+    "effect": "^3.19.19",
+    "hono": "^4.7.0",
+    "rxjs": "7.8.2",
+    "ws": "8.18.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.8",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "resolutions": {
+    "@midnight-ntwrk/ledger-v8": "8.0.3",
+    "@midnight-ntwrk/midnight-js-network-id": "4.0.4",
+    "@midnight-ntwrk/compact-js": "2.5.0"
+  }
+}

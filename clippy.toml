@@ -1,0 +1,35 @@
+# Clippy configuration
+# Comprehensive linting rules for code quality
+
+# Minimum Supported Rust Version
+msrv = "1.85.0"
+
+# Complexity thresholds
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold   = 7
+too-many-lines-threshold       = 150
+type-complexity-threshold      = 250
+
+# Size thresholds
+array-size-threshold        = 512000
+enum-variant-size-threshold = 200
+large-error-threshold       = 256
+vec-box-size-threshold      = 4096
+
+# Naming thresholds
+enum-variant-name-threshold         = 3
+single-char-binding-names-threshold = 5
+
+# Boolean thresholds
+max-fn-params-bools = 3
+max-struct-bools    = 3
+max-trait-bounds    = 3
+
+# Wildcard imports
+warn-on-all-wildcard-imports = true
+
+# Test allowances
+allow-dbg-in-tests    = true
+allow-expect-in-tests = true
+allow-print-in-tests  = true
+allow-unwrap-in-tests = true

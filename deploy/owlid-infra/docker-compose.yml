@@ -1,0 +1,97 @@
+###############################################################################
+# OwlID Infrastructure — Midnight Blockchain + Monitoring
+#
+# Deployed as a Temps compose project (owlid-infra)
+# Custom domains route to individual services via Temps proxy
+###############################################################################
+
+services:
+  midnight-node:
+    image: midnightntwrk/midnight-node:0.21.0
+    command: >
+      --dev --rpc-external --rpc-cors=all --rpc-port=9944
+      --unsafe-rpc-external
+    environment:
+      CFG_PRESET: dev
+      SIDECHAIN_BLOCK_BENEFICIARY: '04bcf7ad3be7a5c790460be82a713af570f22e0f801f6659ab8e84a52be6969e'
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:9944/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    expose:
+      - '9944'
+
+  midnight-indexer:
+    image: midnightntwrk/indexer-standalone:3.1.0
+    environment:
+      APP__APPLICATION__BLOCK_QUERY_START_FROM: '0'
+      APP__APPLICATION__NODE_ADDRESS: 'ws://midnight-node:9944'
+      APP__APPLICATION__NETWORK_ID: 'undeployed'
+    depends_on:
+      midnight-node:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:8088/api/v3/graphql || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    expose:
+      - '8088'
+
+  proof-server:
+    image: midnightntwrk/proof-server:7.0.0
+    command: ['midnight-proof-server', '-v']
+    environment:
+      RUST_LOG: info
+    volumes:
+      - proof_server_srs:/data/midnight
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:6300/version || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    expose:
+      - '6300'
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    volumes:
+      - ../../monitoring/prometheus/prometheus-temps.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:9090/-/healthy || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    expose:
+      - '9090'
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-owlid}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_SERVER_HTTP_PORT: '3000'
+    volumes:
+      - ../../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/api/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    expose:
+      - '3000'
+
+volumes:
+  proof_server_srs:
+  prometheus_data:
+  grafana_data:

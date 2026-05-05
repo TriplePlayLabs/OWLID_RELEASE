@@ -1,0 +1,65 @@
+[package]
+authors.workspace = true
+description       = "OwlID Issuer Service - Identity verification and credential issuance"
+edition.workspace = true
+license.workspace = true
+name              = "owl-issuer-service"
+version.workspace = true
+
+[[bin]]
+name = "owl-issuer-service"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Workspace dependencies
+anyhow.workspace     = true
+chrono.workspace     = true
+dotenvy.workspace    = true
+hex.workspace        = true
+serde.workspace      = true
+serde_json.workspace = true
+thiserror.workspace  = true
+tokio.workspace      = true
+tracing.workspace    = true
+uuid.workspace       = true
+
+# Async trait support
+async-trait = "0.1"
+
+# Cryptographic libraries for webhook verification
+base64 = "0.22"
+hmac   = "0.12"
+sha2   = "0.10"
+
+# HTTP server
+axum               = { version = "0.8", features = ["macros"] }
+tower-http         = { version = "0.6", features = ["cors", "trace"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP client (for external provider APIs)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Random generation
+rand.workspace = true
+
+# Crypto & Proof System (for direct credential issuance)
+owl-crypto       = { path = "../crypto" }
+owl-proof-system = { path = "../proof-system" }
+
+# OpenAPI
+utoipa.workspace            = true
+utoipa-axum.workspace       = true
+utoipa-swagger-ui.workspace = true
+
+# Database
+sqlx.workspace = true
+
+[dev-dependencies]
+mockall.workspace    = true
+owl-crypto           = { path = "../crypto" }
+serde_json.workspace = true
+tokio                = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid                 = { workspace = true, features = ["v4"] }

@@ -1,0 +1,87 @@
+services:
+  # PostgreSQL 17 - Verification Service DB
+  postgres-verification:
+    image: postgres:17-alpine
+    container_name: owl-postgres-verification
+    environment:
+      POSTGRES_DB: verification
+      POSTGRES_USER: owl
+      POSTGRES_PASSWORD: owl_dev
+    ports:
+      - '5432:5432'
+    volumes:
+      - verification_db:/var/lib/postgresql/data
+      - ./crates/verification-service/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U owl -d verification']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - owl-network
+
+  # PostgreSQL 17 - Issuer Service DB
+  postgres-issuer:
+    image: postgres:17-alpine
+    container_name: owl-postgres-issuer
+    environment:
+      POSTGRES_DB: issuer
+      POSTGRES_USER: owl
+      POSTGRES_PASSWORD: owl_dev
+    ports:
+      - '5433:5432'
+    volumes:
+      - issuer_db:/var/lib/postgresql/data
+      - ./crates/issuer-service/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U owl -d issuer']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - owl-network
+
+  # Verification Service
+  verification-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.verification
+    container_name: owl-verification
+    environment:
+      VERIFICATION_DATABASE_URL: postgres://owl:owl_dev@postgres-verification:5432/verification
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8000
+      RUST_LOG: info,owl_verification_service=debug
+    ports:
+      - '8000:8000'
+    depends_on:
+      postgres-verification:
+        condition: service_healthy
+    networks:
+      - owl-network
+
+  # Issuer Service
+  issuer-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.issuer
+    container_name: owl-issuer
+    environment:
+      ISSUER_DATABASE_URL: postgres://owl:owl_dev@postgres-issuer:5432/issuer
+      ISSUER_HOST: 0.0.0.0
+      ISSUER_PORT: 8001
+      RUST_LOG: info,owl_issuer_service=debug
+    ports:
+      - '8001:8001'
+    depends_on:
+      postgres-issuer:
+        condition: service_healthy
+    networks:
+      - owl-network
+
+volumes:
+  verification_db:
+  issuer_db:
+
+networks:
+  owl-network:

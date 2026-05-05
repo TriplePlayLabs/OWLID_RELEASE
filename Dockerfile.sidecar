@@ -1,0 +1,24 @@
+# Midnight Sidecar (Bun + Hono)
+
+FROM oven/bun:1
+WORKDIR /app
+
+# Copy workspace root for dependency resolution
+COPY package.json bun.lock* ./
+COPY packages/midnight-sidecar/package.json packages/midnight-sidecar/
+
+# Create stub dirs so native-sdk workspace resolution doesn't fail
+COPY packages/native-sdk/package.json packages/native-sdk/
+RUN mkdir -p packages/native-sdk/npm/wasm32-wasi packages/native-sdk/npm/linux-x64-gnu \
+    && printf '{"name":"@owlid/native-sdk-wasm32-wasi","version":"1.0.0","main":"owl-id.wasi.cjs","browser":"owl-id.wasi-browser.js"}\n' > packages/native-sdk/npm/wasm32-wasi/package.json \
+    && printf '{"name":"@owlid/native-sdk-linux-x64-gnu","version":"1.0.0","main":"index.node"}\n' > packages/native-sdk/npm/linux-x64-gnu/package.json
+
+RUN bun install
+
+COPY packages/midnight-sidecar packages/midnight-sidecar
+
+WORKDIR /app/packages/midnight-sidecar
+
+EXPOSE 3000
+
+CMD ["bun", "run", "src/index.ts"]

@@ -1,0 +1,107 @@
+[workspace]
+members = [
+  "crates/crypto",
+  "crates/proof-system",
+  "crates/verification-service",
+  "crates/issuer-service",
+  "crates/zk-circuits",
+  "packages/native-sdk",
+]
+resolver = "2"
+
+[profile.release]
+codegen-units = 1
+lto           = true
+strip         = "symbols"
+
+  [workspace.package]
+  authors = ["OwlID Team"]
+  edition = "2024"
+  license = "MIT OR Apache-2.0"
+  version = "0.1.0"
+
+  [workspace.dependencies]
+  # Crypto dependencies
+  base45        = "3.2"
+  base64        = "0.22"
+  blake3        = "1.5"
+  ciborium      = "0.2"
+  ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+  hex           = { version = "0.4", features = ["serde"] }
+  p256          = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+  rand          = "0.8"
+  sha2          = "0.10"
+
+  # Serialization
+  serde      = { version = "1.0", features = ["derive"] }
+  serde_json = "1.0"
+
+  # Web framework
+  axum       = "0.8"
+  tokio      = { version = "1", features = ["full"] }
+  tower      = "0.5"
+  tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+  # Database
+  sqlx = { version = "0.8", features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+  ] }
+  uuid = { version = "1.0", features = ["v4", "serde"] }
+
+  # Error handling
+  anyhow    = "1.0"
+  thiserror = "2.0"
+
+  # Tracing
+  tracing            = "0.1"
+  tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+  # Time
+  chrono = { version = "0.4", features = ["serde"] }
+
+  # Testing
+  mockall  = "0.14"
+  proptest = "1.5"
+
+  # HTTP client
+  reqwest = { version = "0.13", features = ["json"] }
+
+  # Async
+  async-trait = "0.1"
+
+  # Environment variables
+  dotenvy = "0.15"
+
+  # OpenAPI
+  utoipa            = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
+  utoipa-axum       = "0.2"
+  utoipa-swagger-ui = { version = "9", features = ["axum"] }
+
+  [workspace.lints.rust]
+  missing_debug_implementations = "warn"
+  rust_2024_compatibility       = { level = "warn", priority = -1 }
+  unsafe_code                   = "forbid"
+
+  [workspace.lints.clippy]
+  # Correctness
+  all         = { level = "deny", priority = -1 }
+  correctness = { level = "deny", priority = -1 }
+
+  # Restriction (opt-in strict rules)
+  dbg_macro    = "warn"
+  print_stderr = "warn"
+  print_stdout = "warn"
+  todo         = "warn"
+
+  # Pedantic (useful subset)
+  missing_errors_doc      = "allow"
+  missing_panics_doc      = "allow"
+  module_name_repetitions = "allow"
+  must_use_candidate      = "allow"
+  pedantic                = { level = "warn", priority = -1 }
+  wildcard_imports        = "allow"

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "rules": {
+    "no-unused-vars": "warn",
+    "no-console": "off",
+    "eqeqeq": "error",
+    "no-var": "error",
+    "prefer-const": "error",
+    "no-debugger": "warn"
+  },
+  "ignorePatterns": ["node_modules", "dist", ".output", "target", "*.gen.ts", "*.d.ts"],
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.spec.ts", "__test__/**"],
+      "rules": {
+        "no-console": "off"
+      }
+    }
+  ]
+}
