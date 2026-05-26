@@ -1,3 +1,4 @@
+#![allow(dead_code)] // intentional API surface / serde fields
 use thiserror::Error;
 
 #[derive(Error, Debug)]

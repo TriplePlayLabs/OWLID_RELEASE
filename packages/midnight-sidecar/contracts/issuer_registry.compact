@@ -1,93 +1,62 @@
-// OwlID Issuer Registry - Compact Smart Contract for Midnight
-// Manages trusted credential issuers on-chain
-// Replaces contracts/src/IssuerRegistry.sol
+// OwlID Issuer Registry — Compact contract for Midnight.
+// Manages trusted credential issuers on-chain.
+//
+// Owner / pause / initialization semantics inherited from
+// vendored OpenZeppelin Compact stdlib (see contracts/lib).
 
 pragma language_version >= 0.23;
 
 import CompactStandardLibrary;
+import "./lib/access/Ownable" prefix Ownable_;
+import "./lib/security/Pausable" prefix Pausable_;
+import "./lib/security/Initializable" prefix Initializable_;
 
 export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
 
-// Issuer status
 export enum IssuerStatus {
   INACTIVE,
   ACTIVE,
   DEACTIVATED
 }
 
-// Public on-chain state
-export ledger owner: Either<ZswapCoinPublicKey, ContractAddress>;
-export ledger paused: Boolean;
 export ledger issuerCount: Counter;
-
-// Map: issuer key hash (Bytes<32>) → status
 export ledger issuerStatuses: Map<Bytes<32>, IssuerStatus>;
-
-// Map: issuer key hash → public key (Bytes<32>)
-// NOTE: Raw public keys are stored on-chain for trust verification.
-// This is intentional - the issuer registry is a public directory.
 export ledger issuerKeys: Map<Bytes<32>, Bytes<32>>;
-
-// Map: issuer key hash → name
 export ledger issuerNames: Map<Bytes<32>, Opaque<"string">>;
-
-// Set of all registered issuer key hashes
 export ledger registeredIssuers: Set<Bytes<32>>;
 
-// Initialize the registry with the deployer as owner
 constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>) {
-  owner = disclose(initialOwner);
+  Ownable_initialize(initialOwner);
 }
 
-// Internal: assert caller is the owner
-circuit assertOnlyOwner(): [] {
-  const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
-  assert(caller == owner, "Only owner can perform this action");
-}
-
-// Internal: assert contract is not paused
-circuit assertNotPaused(): [] {
-  assert(!paused, "Contract is paused");
-}
-
-// Register a new trusted issuer
-// @param publicKey - The issuer's Ed25519 public key (32 bytes)
-// @param name - Human-readable name for the issuer
 export circuit registerIssuer(publicKey: Bytes<32>, name: Opaque<"string">): [] {
-  assertOnlyOwner();
-  assertNotPaused();
+  Ownable_assertOnlyOwner();
+  Pausable_assertNotPaused();
 
   assert(publicKey != pad(32, "") as Bytes<32>, "Invalid zero public key");
 
-  // Hash the public key for use as the registry key
   const keyHash = persistentHash<Bytes<32>>(publicKey);
   const dKeyHash = disclose(keyHash);
 
-  // Ensure issuer is not already active
   if (issuerStatuses.member(dKeyHash)) {
     const current = issuerStatuses.lookup(dKeyHash);
     assert(current != IssuerStatus.ACTIVE, "Issuer already active");
-    // Deactivated issuers must use reactivateIssuer instead
     assert(current != IssuerStatus.DEACTIVATED, "Use reactivateIssuer to reactivate");
   }
 
-  // Store issuer data
   issuerStatuses.insert(dKeyHash, disclose(IssuerStatus.ACTIVE));
   issuerKeys.insert(dKeyHash, disclose(publicKey));
   issuerNames.insert(dKeyHash, disclose(name));
 
-  // Track in the set if not already registered
   if (!registeredIssuers.member(dKeyHash)) {
     registeredIssuers.insert(dKeyHash);
     issuerCount.increment(1);
   }
 }
 
-// Deactivate a trusted issuer
-// @param keyHash - The persistentHash of the issuer's public key
 export circuit deactivateIssuer(keyHash: Bytes<32>): [] {
-  assertOnlyOwner();
-  assertNotPaused();
+  Ownable_assertOnlyOwner();
+  Pausable_assertNotPaused();
 
   const dKeyHash = disclose(keyHash);
   assert(issuerStatuses.member(dKeyHash), "Issuer not found");
@@ -96,11 +65,9 @@ export circuit deactivateIssuer(keyHash: Bytes<32>): [] {
   issuerStatuses.insert(dKeyHash, disclose(IssuerStatus.DEACTIVATED));
 }
 
-// Reactivate a deactivated issuer
-// @param keyHash - The persistentHash of the issuer's public key
 export circuit reactivateIssuer(keyHash: Bytes<32>): [] {
-  assertOnlyOwner();
-  assertNotPaused();
+  Ownable_assertOnlyOwner();
+  Pausable_assertNotPaused();
 
   const dKeyHash = disclose(keyHash);
   assert(issuerStatuses.member(dKeyHash), "Issuer not found");
@@ -109,9 +76,6 @@ export circuit reactivateIssuer(keyHash: Bytes<32>): [] {
   issuerStatuses.insert(dKeyHash, disclose(IssuerStatus.ACTIVE));
 }
 
-// Check if an issuer is currently trusted
-// @param publicKey - The issuer's public key (32 bytes)
-// @return Whether the issuer is active/trusted
 export circuit isTrusted(publicKey: Bytes<32>): Boolean {
   const keyHash = persistentHash<Bytes<32>>(publicKey);
   const dKeyHash = disclose(keyHash);
@@ -119,60 +83,49 @@ export circuit isTrusted(publicKey: Bytes<32>): Boolean {
   if (!issuerStatuses.member(dKeyHash)) {
     return false;
   }
-
   return issuerStatuses.lookup(dKeyHash) == IssuerStatus.ACTIVE;
 }
 
-// Check trust by key hash directly
-// @param keyHash - The persistentHash of the issuer's public key
-// @return Whether the issuer is active/trusted
 export circuit isTrustedByHash(keyHash: Bytes<32>): Boolean {
   const dKeyHash = disclose(keyHash);
   if (!issuerStatuses.member(dKeyHash)) {
     return false;
   }
-
   return issuerStatuses.lookup(dKeyHash) == IssuerStatus.ACTIVE;
 }
 
-// Get the status of an issuer
-// @param keyHash - The persistentHash of the issuer's public key
-// @return The issuer's current status
 export circuit getIssuerStatus(keyHash: Bytes<32>): IssuerStatus {
   const dKeyHash = disclose(keyHash);
   if (!issuerStatuses.member(dKeyHash)) {
     return IssuerStatus.INACTIVE;
   }
-
   return issuerStatuses.lookup(dKeyHash);
 }
 
-// Get the public key of a registered issuer
-// @param keyHash - The persistentHash of the issuer's public key
-// @return The issuer's public key
 export circuit getIssuerKey(keyHash: Bytes<32>): Bytes<32> {
   const dKeyHash = disclose(keyHash);
   assert(issuerKeys.member(dKeyHash), "Issuer not found");
   return issuerKeys.lookup(dKeyHash);
 }
 
-// Pause the contract (admin only)
 export circuit pause(): [] {
-  assertOnlyOwner();
-  assert(!paused, "Already paused");
-  paused = disclose(true);
+  Ownable_assertOnlyOwner();
+  Pausable__pause();
 }
 
-// Unpause the contract (admin only)
 export circuit unpause(): [] {
-  assertOnlyOwner();
-  assert(paused, "Not paused");
-  paused = disclose(false);
+  Ownable_assertOnlyOwner();
+  Pausable__unpause();
 }
 
-// Transfer ownership of the registry
-// @param newOwner - The new owner's identity
 export circuit transferOwnership(newOwner: Either<ZswapCoinPublicKey, ContractAddress>): [] {
-  assertOnlyOwner();
-  owner = disclose(newOwner);
+  Ownable_transferOwnership(newOwner);
+}
+
+export circuit owner(): Either<ZswapCoinPublicKey, ContractAddress> {
+  return Ownable_owner();
+}
+
+export circuit isPaused(): Boolean {
+  return Pausable_isPaused();
 }

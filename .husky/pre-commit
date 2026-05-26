@@ -1,1 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 1. Belt-and-suspenders secret scan. Refuses any staged `.env` (other
+#    than `.env.example` / `.env.*.example`), any tfvars (except
+#    *.tfvars.example), and any blob containing a high-entropy
+#    marker that looks like a real OwlID secret.
+staged() { git diff --cached --name-only --diff-filter=ACMR; }
+
+leaked=$(staged | grep -E '^(.*\/)?\.env($|\.[^/]+$)' | grep -vE '\.example$' || true)
+if [ -n "$leaked" ]; then
+  echo "✘ Blocked: refusing to commit env files:" >&2
+  echo "$leaked" | sed 's/^/   /' >&2
+  echo "These should be gitignored — see .gitignore §Environment." >&2
+  exit 1
+fi
+
+leaked_tfvars=$(staged | grep -E '\.tfvars$' || true)
+if [ -n "$leaked_tfvars" ]; then
+  echo "✘ Blocked: refusing to commit tfvars (use *.tfvars.example):" >&2
+  echo "$leaked_tfvars" | sed 's/^/   /' >&2
+  exit 1
+fi
+
+# 2. Content scan — block obvious secret signatures in staged content.
+# Skip files that legitimately MENTION the patterns (this hook itself,
+# secret-management docs/justfile recipes/env templates that reference
+# the variable names symbolically).
+skip_path() {
+  case "$1" in
+    .husky/*) return 0 ;;
+    justfile) return 0 ;;
+    *SECRETS.md|*ENV-WIRING.md) return 0 ;;
+    *.example) return 0 ;;
+  esac
+  return 1
+}
+
+patterns=(
+  'owlid_sk_(live|test)_[A-Za-z0-9]{16,}'              # OwlID API secret key
+  'midnight-wallet-mnemonic.*[a-z]+( [a-z]+){11,23}'   # bare BIP39 mnemonic near label
+  'MIDNIGHT_WALLET_MNEMONIC=[A-Za-z]'                   # env-style mnemonic var with literal letters
+  'MIDNIGHT_WALLET_SEED=[0-9a-f]{64}'                   # devnet/hex seed (placeholder allowed in TF only)
+  '-----BEGIN [A-Z ]*PRIVATE KEY-----'                  # any PEM private key
+)
+for f in $(staged); do
+  skip_path "$f" && continue
+  diff_lines=$(git diff --cached -U0 -- "$f" | grep -E '^\+' || true)
+  [ -z "$diff_lines" ] && continue
+  for p in "${patterns[@]}"; do
+    # `-e` marks the next arg as the pattern — required because some
+    # patterns start with `-` (e.g. the PEM `-----BEGIN…` rule) and
+    # would otherwise be parsed as grep options.
+    hit=$(echo "$diff_lines" | grep -E -e "$p" || true)
+    [ -z "$hit" ] && continue
+    # Allow lines that obviously aren't a real secret value.
+    # Common placeholder + example forms:
+    #   word1 word2 …          BIP39 docs
+    #   PLACEHOLDER / change-me / TODO / XXX
+    #   <angle-bracket-tokens>  doc templates
+    #   $(...) / ${...}         shell substitution (not literal secret)
+    #   dev0000…0000            docs/sdk examples with zero-filled tail
+    #   abcd…1234 / 0000…       fixture tail-fillers
+    if echo "$hit" | grep -qE 'word1 word2|PLACEHOLDER|change-me|TODO|XXX|<.*>|\$\(|\$\{|^\+\+\+|^\+#|(dev|test|fake|example)0{12,}|abcd[0-9a-f]{4,}1234'; then
+      continue
+    fi
+    echo "✘ Blocked: $f staged content matches pattern '$p':" >&2
+    echo "$hit" | head -5 | sed 's/^/   /' >&2
+    exit 1
+  done
+done
+
+# 3. Standard formatter / linter pass.
 bunx lint-staged

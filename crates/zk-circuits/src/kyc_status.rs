@@ -10,7 +10,6 @@
 //! - 3: Enhanced (document + liveness + AML)
 
 use ark_bls12_381::{Bls12_381, Fr};
-use ark_ff::PrimeField;
 use ark_groth16::{Groth16, PreparedVerifyingKey, ProvingKey};
 use ark_r1cs_std::{fields::fp::FpVar, prelude::*};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};

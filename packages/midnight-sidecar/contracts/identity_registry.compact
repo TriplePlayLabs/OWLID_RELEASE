@@ -1,106 +1,58 @@
-// OwlID Identity Registry - Compact Smart Contract for Midnight
+// OwlID Identity Registry — Compact contract for Midnight.
 // Anchors DIDs and credential commitments on-chain.
 // Privacy-preserving: only cryptographic commitments stored, never raw PII.
 //
 // Membership of a commitment in the registry is tracked via a
-// `Set<Bytes<32>>` (`registeredCommitments`). On-chain Merkle proofs
-// were dropped — OwlID's Rust core (crates/crypto) maintains and
-// proves Merkle inclusion off-chain when needed. Verifiers that just
-// need "has this commitment been registered?" call
-// `isCommitmentRegistered(commitment)`; verifiers that need
-// "is this commitment currently active for DID X?" call
-// `getCommitment(didHash) == commitment` and
-// `getCommitmentStatus(didHash) == ACTIVE`.
+// `Set<Bytes<32>>` (`registeredCommitments`). Off-chain Merkle proofs
+// over commitments are produced by OwlID's Rust core (crates/crypto).
+//
+// Owner / pause / initialization inherited from vendored OZ stdlib
+// (contracts/lib).
 
 pragma language_version >= 0.23;
 
 import CompactStandardLibrary;
+import "./lib/access/Ownable" prefix Ownable_;
+import "./lib/security/Pausable" prefix Pausable_;
+import "./lib/security/Initializable" prefix Initializable_;
 
 export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
 
-// Identity commitment status
 export enum CommitmentStatus {
   INACTIVE,
   ACTIVE,
   EXPIRED
 }
 
-// Public on-chain state
-export ledger owner: Either<ZswapCoinPublicKey, ContractAddress>;
-export ledger paused: Boolean;
-
-// Map: DID hash → commitment (Merkle root of the credential)
 export ledger commitments: Map<Bytes<32>, Bytes<32>>;
-
-// Map: DID hash → commitment status
 export ledger commitmentStatuses: Map<Bytes<32>, CommitmentStatus>;
-
-// Map: DID hash → issuer key hash (who attested this identity)
 export ledger commitmentIssuers: Map<Bytes<32>, Bytes<32>>;
-
-// Map: DID hash → owner public key hash (who owns this DID)
 export ledger didOwners: Map<Bytes<32>, Bytes<32>>;
-
-// Set of all commitments ever registered. Constant-time membership
-// check via `registeredCommitments.member(c)`. Append-only by design
-// (old commitments persist after updates/expiry); verifiers that
-// need "currently active" semantics combine this with
-// `commitmentStatuses.lookup(didHash) == ACTIVE`.
-//
-// Off-chain Merkle proofs are now produced by OwlID's Rust core
-// (`crates/crypto`) over the same set of commitments — the on-chain
-// MerkleTree was dropped because the on-chain semantics were a
-// strict subset of what the host can provide.
 export ledger registeredCommitments: Set<Bytes<32>>;
-
-// Counter for total registration actions (historical, not active count)
 export ledger identityCount: Counter;
 
-// Witness: provides the user's private key for DID ownership proof
 witness ownerSecretKey(): Bytes<32>;
 
-// Initialize the registry
 constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>) {
-  owner = disclose(initialOwner);
+  Ownable_initialize(initialOwner);
 }
 
-// Internal: assert caller is the registry owner (admin)
-circuit assertOnlyOwner(): [] {
-  const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
-  assert(caller == owner, "Only owner can perform this action");
-}
-
-// Internal: assert contract is not paused
-circuit assertNotPaused(): [] {
-  assert(!paused, "Contract is paused");
-}
-
-// Internal: derive a public key hash from a secret key for DID ownership
-// Uses domain-separated persistent hashing (deterministic, cross-DApp)
+// Domain-separated derivation of an owner-pubkey-hash from a secret key.
 circuit deriveOwnerHash(sk: Bytes<32>): Bytes<32> {
   return persistentHash<Vector<2, Bytes<32>>>([pad(32, "owlid:did:owner:"), sk]);
 }
 
-// Register an identity commitment on-chain
-// Any user can register their own DID - ownership proven via witness
-// The commitment is the Merkle root hash of the credential document
-//
-// @param didHash - Hash of the DID identifier (derived off-chain)
-// @param commitment - Merkle root hash of the credential
-// @param issuerKeyHash - Hash of the issuer who attested this credential
 export circuit registerIdentity(
   didHash: Bytes<32>,
   commitment: Bytes<32>,
   issuerKeyHash: Bytes<32>
 ): [] {
-  assertNotPaused();
+  Pausable_assertNotPaused();
 
-  // Validate inputs are non-zero
   assert(didHash != pad(32, "") as Bytes<32>, "Invalid zero DID hash");
   assert(commitment != pad(32, "") as Bytes<32>, "Invalid zero commitment");
   assert(issuerKeyHash != pad(32, "") as Bytes<32>, "Invalid zero issuer hash");
 
-  // Ensure DID is not already registered and active
   const dDidHash = disclose(didHash);
   if (commitmentStatuses.member(dDidHash)) {
     assert(
@@ -109,17 +61,14 @@ export circuit registerIdentity(
     );
   }
 
-  // Derive owner hash from the caller's secret key (private, via witness)
   const sk = ownerSecretKey();
   const ownerHash = deriveOwnerHash(sk);
 
-  // Store the commitment
   commitments.insert(dDidHash, disclose(commitment));
   commitmentStatuses.insert(dDidHash, disclose(CommitmentStatus.ACTIVE));
   commitmentIssuers.insert(dDidHash, disclose(issuerKeyHash));
   didOwners.insert(dDidHash, disclose(ownerHash));
 
-  // Track in the membership set if not already present.
   const dCommitment = disclose(commitment);
   if (!registeredCommitments.member(dCommitment)) {
     registeredCommitments.insert(dCommitment);
@@ -127,56 +76,41 @@ export circuit registerIdentity(
   identityCount.increment(1);
 }
 
-// Update an existing identity commitment
-// Only the DID owner (proven via witness) can update their commitment
-//
-// @param didHash - Hash of the DID identifier
-// @param newCommitment - New Merkle root hash
-// @param issuerKeyHash - Hash of the issuer for the new credential
 export circuit updateCommitment(
   didHash: Bytes<32>,
   newCommitment: Bytes<32>,
   issuerKeyHash: Bytes<32>
 ): [] {
-  assertNotPaused();
+  Pausable_assertNotPaused();
 
   assert(newCommitment != pad(32, "") as Bytes<32>, "Invalid zero commitment");
 
   const dDidHash = disclose(didHash);
-
-  // Verify the DID exists and is active
   assert(commitments.member(dDidHash), "DID not found");
   assert(
     commitmentStatuses.lookup(dDidHash) == CommitmentStatus.ACTIVE,
     "Commitment not active"
   );
 
-  // Verify ownership: derive owner hash from witness and compare
   const sk = ownerSecretKey();
   const ownerHash = deriveOwnerHash(sk);
   assert(didOwners.lookup(dDidHash) == ownerHash, "Not the DID owner");
 
-  // Update commitment.
   const dNewCommitment = disclose(newCommitment);
   commitments.insert(dDidHash, dNewCommitment);
   commitmentIssuers.insert(dDidHash, disclose(issuerKeyHash));
 
-  // Track the new commitment in the membership set if not present.
   if (!registeredCommitments.member(dNewCommitment)) {
     registeredCommitments.insert(dNewCommitment);
   }
 }
 
-// Admin-forced update of a commitment (admin only, for emergency recovery)
-// @param didHash - Hash of the DID identifier
-// @param newCommitment - New Merkle root hash
-// @param issuerKeyHash - Hash of the issuer for the new credential
 export circuit adminUpdateCommitment(
   didHash: Bytes<32>,
   newCommitment: Bytes<32>,
   issuerKeyHash: Bytes<32>
 ): [] {
-  assertOnlyOwner();
+  Ownable_assertOnlyOwner();
 
   const dDidHash = disclose(didHash);
   assert(commitments.member(dDidHash), "DID not found");
@@ -191,27 +125,16 @@ export circuit adminUpdateCommitment(
   }
 }
 
-// Check whether a commitment hash has ever been registered. Used by
-// verifiers that hold a commitment without knowing its DID hash.
-//
-// @param commitment - Merkle root hash of a credential
-// @return true if the commitment is in the membership set
 export circuit isCommitmentRegistered(commitment: Bytes<32>): Boolean {
   return registeredCommitments.member(disclose(commitment));
 }
 
-// Get the commitment for a DID
-// @param didHash - Hash of the DID identifier
-// @return The current Merkle root commitment
 export circuit getCommitment(didHash: Bytes<32>): Bytes<32> {
   const dDidHash = disclose(didHash);
   assert(commitments.member(dDidHash), "DID not found");
   return commitments.lookup(dDidHash);
 }
 
-// Get the status of an identity commitment
-// @param didHash - Hash of the DID identifier
-// @return The commitment status
 export circuit getCommitmentStatus(didHash: Bytes<32>): CommitmentStatus {
   const dDidHash = disclose(didHash);
   if (!commitmentStatuses.member(dDidHash)) {
@@ -220,19 +143,14 @@ export circuit getCommitmentStatus(didHash: Bytes<32>): CommitmentStatus {
   return commitmentStatuses.lookup(dDidHash);
 }
 
-// Get the issuer of an identity commitment
-// @param didHash - Hash of the DID identifier
-// @return The issuer key hash
 export circuit getCommitmentIssuer(didHash: Bytes<32>): Bytes<32> {
   const dDidHash = disclose(didHash);
   assert(commitmentIssuers.member(dDidHash), "DID not found");
   return commitmentIssuers.lookup(dDidHash);
 }
 
-// Expire an identity commitment (admin only)
-// @param didHash - Hash of the DID identifier
 export circuit expireCommitment(didHash: Bytes<32>): [] {
-  assertOnlyOwner();
+  Ownable_assertOnlyOwner();
   const dDidHash = disclose(didHash);
   assert(commitments.member(dDidHash), "DID not found");
   assert(
@@ -242,22 +160,24 @@ export circuit expireCommitment(didHash: Bytes<32>): [] {
   commitmentStatuses.insert(dDidHash, disclose(CommitmentStatus.EXPIRED));
 }
 
-// Pause the contract (admin only)
 export circuit pause(): [] {
-  assertOnlyOwner();
-  assert(!paused, "Already paused");
-  paused = disclose(true);
+  Ownable_assertOnlyOwner();
+  Pausable__pause();
 }
 
-// Unpause the contract (admin only)
 export circuit unpause(): [] {
-  assertOnlyOwner();
-  assert(paused, "Not paused");
-  paused = disclose(false);
+  Ownable_assertOnlyOwner();
+  Pausable__unpause();
 }
 
-// Transfer registry ownership
 export circuit transferOwnership(newOwner: Either<ZswapCoinPublicKey, ContractAddress>): [] {
-  assertOnlyOwner();
-  owner = disclose(newOwner);
+  Ownable_transferOwnership(newOwner);
+}
+
+export circuit owner(): Either<ZswapCoinPublicKey, ContractAddress> {
+  return Ownable_owner();
+}
+
+export circuit isPaused(): Boolean {
+  return Pausable_isPaused();
 }

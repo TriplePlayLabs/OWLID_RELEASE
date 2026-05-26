@@ -18,6 +18,7 @@ packages/*/.nuxt/
 packages/*/.nitro/
 packages/*/.cache/
 packages/*/.vinxi/
+packages/docs-site/doc_build/
 
 # IDE
 .vscode/
@@ -30,12 +31,14 @@ packages/*/.vinxi/
 .DS_Store
 Thumbs.db
 
-# Environment / secrets — keep local only, never commit
+# Environment / secrets — keep local only, never commit.
+# Catch every variant: .env, .env.local, .env.preview, .env.preprod,
+# .env.<anything>, including dotted sub-suffixes like .env.production.local.
+# Allow .env.example (committed template) + .env.gcp.example (deploy template).
 .env
-.env.local
-.env.*.local
-.env.prod
-.env.contracts
+.env.*
+!.env.example
+!.env.*.example
 accounts.json
 
 # Build artifacts
@@ -69,3 +72,6 @@ deploy/gcp/terraform/*.tfstate.*
 deploy/gcp/terraform/.terraform.tfstate.lock.info
 
 packages/*/.tanstack/
+
+# Local plugin state (midnight-expert hook bookkeeping)
+.midnight-expert/

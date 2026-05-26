@@ -26,6 +26,7 @@ import { apiKeyHeaders, getApiKey, getVerificationUrl } from '@owlid/config'
 import {
   IssuersApi,
   MonitoringApi,
+  PredicatesApi,
   PresentationApi,
   RegistryApi,
   RevocationsApi,
@@ -42,7 +43,10 @@ function buildConfig(opts?: VerifierClientOptions): Configuration {
   const apiKey = opts?.apiKey ?? getApiKey()
   return new Configuration({
     basePath: getVerificationUrl(opts?.basePath),
-    headers: { ...opts?.headers, ...apiKeyHeaders(apiKey) },
+    // Caller's per-call headers override the API-key baseline (e.g. a
+    // per-session `Authorization: Bearer <session_token>` on protected
+    // routes).
+    headers: { ...apiKeyHeaders(apiKey), ...opts?.headers },
     // Send the admin session cookie (`owlid_admin_token`) when the SPA is
     // logged in. The verification service accepts either an API key
     // (Authorization header) or an admin session cookie. Setting
@@ -59,6 +63,7 @@ let _issuersApi: IssuersApi | null = null
 let _monitoringApi: MonitoringApi | null = null
 let _revocationsApi: RevocationsApi | null = null
 let _registryApi: RegistryApi | null = null
+let _predicatesApi: PredicatesApi | null = null
 let _cachedConfig: Configuration | null = null
 
 function sharedConfig(opts?: VerifierClientOptions): Configuration {
@@ -119,6 +124,167 @@ export function getRegistryApi(opts?: VerifierClientOptions): RegistryApi {
   return api
 }
 
+export function getPredicatesApi(opts?: VerifierClientOptions): PredicatesApi {
+  if (_predicatesApi && !opts) return _predicatesApi
+  const api = new PredicatesApi(sharedConfig(opts))
+  if (!opts) _predicatesApi = api
+  return api
+}
+
+/** One status event pushed over the `/predicates/tx/:txId/events`
+ *  SSE stream. Mirrors the wire shape the sidecar emits. */
+export interface PredicateStatusEvent {
+  txId: string
+  status: string
+  error?: string
+}
+
+/**
+ * Subscribe to the SSE stream of relay-job phase transitions for a
+ * specific `txId` (or relay job-id). The system uses exactly two
+ * notification transports end-to-end: WS for two-way channels and
+ * SSE for server→client pushes. This is the SSE side; there is no
+ * polling fallback by design.
+ *
+ * Uses `fetch` + `ReadableStream` rather than the browser's
+ * `EventSource` so the `Authorization: Bearer …` header set by
+ * `@owlid/config` reaches the verification service. (`EventSource`
+ * does not allow custom headers.)
+ *
+ * Auto-reconnects on transport-level disconnects (Cloud Run idle
+ * teardown, browser network change, edge-proxy connection drop)
+ * with exponential back-off up to ~30 s. Reconnect is safe: the
+ * sidecar always emits the current job snapshot as its first event,
+ * so a late re-subscriber catches up to the latest known state
+ * without missing the terminal status. Stops reconnecting on a
+ * terminal status, on `AbortSignal`, or on a non-retryable HTTP
+ * status (4xx other than 408/429).
+ *
+ * Yields one event per phase transition the sidecar pushes; completes
+ * when the sidecar emits a terminal status and closes the stream.
+ */
+export async function* streamPredicateStatus(
+  txId: string,
+  opts?: VerifierClientOptions & { signal?: AbortSignal },
+): AsyncGenerator<PredicateStatusEvent> {
+  const apiKey = opts?.apiKey ?? getApiKey()
+  const basePath = getVerificationUrl(opts?.basePath)
+  const url = `${basePath}/predicates/tx/${encodeURIComponent(txId)}/events`
+  const TERMINAL = new Set([
+    'SucceedEntirely',
+    'FailEntirely',
+    'FailFallible',
+    'balance-failed',
+    'submit-failed',
+  ])
+  // Back-off schedule used after every transport-level disconnect.
+  // Caps at ~30 s so a sustained outage doesn't burn the client; the
+  // outer caller can supply its own abort signal for a hard cap.
+  const backoff = [1000, 2000, 4000, 8000, 16000, 30000]
+  let attempt = 0
+  let seenTerminal = false
+  while (!seenTerminal) {
+    if (opts?.signal?.aborted) return
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'text/event-stream',
+          ...apiKeyHeaders(apiKey),
+          ...opts?.headers,
+        },
+        credentials: 'include',
+        signal: opts?.signal,
+        // Hint to the runtime to keep the connection alive long-term.
+        // Browsers ignore unknown init keys; Node 20+ honours `keepalive`
+        // for short requests only — neither hurts here.
+        keepalive: false,
+      })
+    } catch (e) {
+      if (opts?.signal?.aborted) return
+      // Network-level failure (DNS, offline, TCP RST). Retry with backoff.
+      await sleep(backoff[Math.min(attempt, backoff.length - 1)])
+      attempt++
+      continue
+    }
+    if (!res.ok || !res.body) {
+      // 4xx non-retryable; 5xx retryable.
+      if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
+        throw new Error(`predicate status stream failed: ${res.status} ${res.statusText}`)
+      }
+      await sleep(backoff[Math.min(attempt, backoff.length - 1)])
+      attempt++
+      continue
+    }
+    // Successful connection — reset back-off counter so the next
+    // disconnect retries from the front of the schedule again.
+    attempt = 0
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        let idx
+        while ((idx = buf.indexOf('\n\n')) >= 0) {
+          const raw = buf.slice(0, idx)
+          buf = buf.slice(idx + 2)
+          const frame = parseSseFrame(raw)
+          if (frame.event === 'status' && frame.data) {
+            try {
+              const ev = JSON.parse(frame.data) as PredicateStatusEvent
+              yield ev
+              if (TERMINAL.has(ev.status)) seenTerminal = true
+            } catch {
+              /* ignore malformed frame */
+            }
+          }
+          // `ping` keep-alives + unknown event names are ignored.
+          if (frame.event === 'error') {
+            throw new Error(frame.data || 'sidecar emitted error')
+          }
+        }
+      }
+    } catch (e) {
+      if (opts?.signal?.aborted) return
+      // Stream errored mid-flight (Cloud Run teardown, browser net
+      // change, ERR_NETWORK_CHANGED). Loop reconnects from the top.
+    } finally {
+      try {
+        await reader.cancel()
+      } catch {
+        /* ignore */
+      }
+    }
+    if (seenTerminal) return
+    // EOF without terminal status — reconnect immediately. The
+    // sidecar will replay the current job snapshot on first event.
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function parseSseFrame(raw: string): { event?: string; data?: string; id?: string } {
+  let event: string | undefined
+  let id: string | undefined
+  const dataLines: string[] = []
+  for (const line of raw.split('\n')) {
+    if (line.startsWith(':')) continue
+    const sep = line.indexOf(':')
+    const field = sep < 0 ? line : line.slice(0, sep)
+    const value = sep < 0 ? '' : line.slice(sep + 1).replace(/^ /, '')
+    if (field === 'event') event = value
+    else if (field === 'data') dataLines.push(value)
+    else if (field === 'id') id = value
+  }
+  return { event, id, data: dataLines.length ? dataLines.join('\n') : undefined }
+}
+
 /** Drop cached singletons (useful in tests after reconfiguring). */
 export function resetVerifierClient(): void {
   _verificationApi = null
@@ -127,6 +293,7 @@ export function resetVerifierClient(): void {
   _monitoringApi = null
   _revocationsApi = null
   _registryApi = null
+  _predicatesApi = null
   _cachedConfig = null
 }
 
@@ -134,6 +301,7 @@ export {
   Configuration,
   IssuersApi,
   MonitoringApi,
+  PredicatesApi,
   PresentationApi,
   RegistryApi,
   RevocationsApi,
@@ -141,8 +309,14 @@ export {
 }
 
 export type {
-  VerifyRequest,
+  VerifyDcqlRequest,
+  VerifyDcqlResponse,
   VerifyResponse,
+  DcqlRequest,
+  DcqlCredentialQuery,
+  DcqlMeta,
+  DcqlClaimQuery,
+  DcqlCredentialSet,
   ChallengeResponse,
   CheckRevocationRequest,
   CheckRevocationResponse,
@@ -152,4 +326,10 @@ export type {
   CircuitDataset,
   CircuitDatasetInfo,
   RevocationEntry,
+  CheckPredicateRequest,
+  CheckPredicateResponse,
+  PredicateSnapshotResponse,
+  RelayProofRequest,
+  RelayProofResponse,
+  OwlPredicate,
 } from './models/index.js'

@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * OwlID Verification Service
- * Token verification, trusted issuer management, and credential revocation
+ * SD-JWT VC presentation verification, trusted issuer management, and credential revocation
  *
  * The version of the OpenAPI document: 1.0.0
  *
@@ -13,11 +13,17 @@
  */
 
 import * as runtime from '../runtime.js'
-import type { CreatePresentationResponse } from '../models/index.js'
+import type { CreatePresentationRequest, CreatePresentationResponse } from '../models/index.js'
 import {
+  CreatePresentationRequestFromJSON,
+  CreatePresentationRequestToJSON,
   CreatePresentationResponseFromJSON,
   CreatePresentationResponseToJSON,
 } from '../models/index.js'
+
+export interface CreateSessionRequest {
+  createPresentationRequest: CreatePresentationRequest
+}
 
 /**
  * PresentationApi - interface
@@ -28,17 +34,20 @@ import {
 export interface PresentationApiInterface {
   /**
    *
+   * @param {CreatePresentationRequest} createPresentationRequest
    * @param {*} [options] Override http request option.
    * @throws {RequiredError}
    * @memberof PresentationApiInterface
    */
   createSessionRaw(
+    requestParameters: CreateSessionRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<runtime.ApiResponse<CreatePresentationResponse>>
 
   /**
    */
   createSession(
+    requestParameters: CreateSessionRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<CreatePresentationResponse>
 }
@@ -50,11 +59,21 @@ export class PresentationApi extends runtime.BaseAPI implements PresentationApiI
   /**
    */
   async createSessionRaw(
+    requestParameters: CreateSessionRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<runtime.ApiResponse<CreatePresentationResponse>> {
+    if (requestParameters['createPresentationRequest'] == null) {
+      throw new runtime.RequiredError(
+        'createPresentationRequest',
+        'Required parameter "createPresentationRequest" was null or undefined when calling createSession().',
+      )
+    }
+
     const queryParameters: any = {}
 
     const headerParameters: runtime.HTTPHeaders = {}
+
+    headerParameters['Content-Type'] = 'application/json'
 
     const response = await this.request(
       {
@@ -62,6 +81,7 @@ export class PresentationApi extends runtime.BaseAPI implements PresentationApiI
         method: 'POST',
         headers: headerParameters,
         query: queryParameters,
+        body: CreatePresentationRequestToJSON(requestParameters['createPresentationRequest']),
       },
       initOverrides,
     )
@@ -74,9 +94,10 @@ export class PresentationApi extends runtime.BaseAPI implements PresentationApiI
   /**
    */
   async createSession(
+    requestParameters: CreateSessionRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<CreatePresentationResponse> {
-    const response = await this.createSessionRaw(initOverrides)
+    const response = await this.createSessionRaw(requestParameters, initOverrides)
     return await response.value()
   }
 }

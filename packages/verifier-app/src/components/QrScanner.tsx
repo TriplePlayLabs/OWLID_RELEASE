@@ -1,31 +1,23 @@
 import { useState } from 'react'
 import { Scanner } from '@yudiel/react-qr-scanner'
-import { Camera, X, AlertCircle } from 'lucide-react'
+import { AlertCircle } from 'lucide-react'
 
 interface QrScannerProps {
   onScan: (data: string) => void
   onCancel: () => void
+  /** Optional caption rendered under the camera view. Defaults to the
+   *  generic OwlID proof QR prompt. */
+  caption?: string
 }
 
-export function QrScanner({ onScan, onCancel }: QrScannerProps) {
+/** Headless scanner card — the parent owns the title + close button so
+ *  there's only one heading on screen. Renders the camera preview, a
+ *  permission error, and a short caption. */
+export function QrScanner({ onScan, onCancel: _onCancel, caption }: QrScannerProps) {
   const [error, setError] = useState<string | null>(null)
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="font-medium flex items-center gap-2">
-          <Camera className="w-5 h-5 text-blue-400" />
-          Scan QR Code
-        </h3>
-        <button
-          onClick={onCancel}
-          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
-          aria-label="Cancel scanning"
-        >
-          <X className="w-5 h-5" />
-        </button>
-      </div>
-
       <div className="rounded-xl overflow-hidden border border-white/10 bg-black">
         <Scanner
           onScan={(result) => {
@@ -64,7 +56,7 @@ export function QrScanner({ onScan, onCancel }: QrScannerProps) {
       )}
 
       <p className="text-xs text-center text-zinc-500">
-        Point your camera at an OwlID proof QR code
+        {caption ?? 'Point your camera at an OwlID proof QR code'}
       </p>
     </div>
   )

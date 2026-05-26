@@ -1,0 +1,14 @@
+{
+  "name": "@owlid/native-sdk-wasm32-wasi",
+  "version": "1.0.0",
+  "os": ["linux", "darwin", "win32"],
+  "main": "owl-id.wasi.cjs",
+  "browser": "owl-id.wasi-browser.js",
+  "files": [
+    "owl-id.wasi.cjs",
+    "owl-id.wasi-browser.js",
+    "owl-id.wasm32-wasi.wasm",
+    "wasi-worker.mjs",
+    "wasi-worker-browser.mjs"
+  ]
+}

@@ -11,9 +11,7 @@ use crate::models::{
     VerificationSession, VerifiedIdentityClaims,
 };
 use crate::normalizer::{MockClaims, RawProviderClaims};
-use crate::provider::{
-    DigitalIdentityProvider, FormConfig, ProviderFlowType, VerificationStart,
-};
+use crate::provider::{DigitalIdentityProvider, FormConfig, ProviderFlowType, VerificationStart};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::sync::Arc;
@@ -124,8 +122,8 @@ impl MockDigiDProvider {
         self.validate_form(&form)?;
 
         // Convert to JSON for form submission handler
-        let form_data = serde_json::to_value(&form)
-            .map_err(|e| IdpError::Serialization(e.to_string()))?;
+        let form_data =
+            serde_json::to_value(&form).map_err(|e| IdpError::Serialization(e.to_string()))?;
 
         // Use the trait method
         let raw_claims = self.handle_form_submission(session_id, form_data).await?;
@@ -325,8 +323,8 @@ impl MockBankIdProvider {
             });
         }
 
-        let form_data = serde_json::to_value(&form)
-            .map_err(|e| IdpError::Serialization(e.to_string()))?;
+        let form_data =
+            serde_json::to_value(&form).map_err(|e| IdpError::Serialization(e.to_string()))?;
 
         let raw_claims = self.handle_form_submission(session_id, form_data).await?;
         Ok(raw_claims.normalize())
@@ -500,7 +498,9 @@ impl MockProviderFactory {
     pub fn get_provider(&self, provider_id: &str) -> Option<MockProvider> {
         match provider_id {
             "mock-digid" => Some(MockProvider::DigiD(MockDigiDProvider::new(self.db.clone()))),
-            "mock-bankid" => Some(MockProvider::BankId(MockBankIdProvider::new(self.db.clone()))),
+            "mock-bankid" => Some(MockProvider::BankId(MockBankIdProvider::new(
+                self.db.clone(),
+            ))),
             _ => None,
         }
     }
@@ -595,7 +595,10 @@ mod tests {
         // Test trait methods
         assert_eq!(provider.provider_id(), "mock-digid");
         assert_eq!(provider.provider_type(), ProviderFlowType::FormBased);
-        assert_eq!(provider.verification_level(), VerificationLevel::Substantial);
+        assert_eq!(
+            provider.verification_level(),
+            VerificationLevel::Substantial
+        );
 
         let info = provider.info();
         assert_eq!(info.id, "mock-digid");

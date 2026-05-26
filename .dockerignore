@@ -22,6 +22,10 @@ examples/
 **/.next/
 **/dist/
 
+# Sidecar wallet / contract private-state LevelDB — gitignored host state.
+# Cloud Build excludes it via .gitignore; exclude here so local builds match.
+packages/midnight-sidecar/midnight-level-db/
+
 # Native-sdk binaries are built inside Dockerfile.native-sdk-builder, not
 # copied from the host. Drop the host-built artifacts so they don't leak in.
 packages/native-sdk/*.node

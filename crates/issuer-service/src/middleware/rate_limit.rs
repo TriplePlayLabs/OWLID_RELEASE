@@ -87,9 +87,10 @@ impl InMemoryRateLimiter {
         }
         let now = Instant::now();
         let mut guard = self.inner.write().await;
-        let entry = guard
-            .entry(key.to_string())
-            .or_insert(Window { started: now, count: 0 });
+        let entry = guard.entry(key.to_string()).or_insert(Window {
+            started: now,
+            count: 0,
+        });
         if now.saturating_duration_since(entry.started) > self.config.window {
             entry.started = now;
             entry.count = 0;

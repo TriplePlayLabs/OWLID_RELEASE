@@ -4,26 +4,26 @@ End-to-end deploy of the OwlID stack to a single GCP project on Cloud Run + Clou
 
 ## Reading order
 
-| Doc | When to read |
-|-----|--------------|
-| [README.md](README.md) (this file) | one-page overview, layout, prerequisites |
-| [RUNBOOK.md](RUNBOOK.md) | step-by-step playbooks for every deploy scenario |
-| [SECRETS.md](SECRETS.md) | how secrets are stored, rotated, audited |
-| [ENV-WIRING.md](ENV-WIRING.md) | every env var, who consumes it, where it comes from |
+| Doc                                | When to read                                        |
+| ---------------------------------- | --------------------------------------------------- |
+| [README.md](README.md) (this file) | one-page overview, layout, prerequisites            |
+| [RUNBOOK.md](RUNBOOK.md)           | step-by-step playbooks for every deploy scenario    |
+| [SECRETS.md](SECRETS.md)           | how secrets are stored, rotated, audited            |
+| [ENV-WIRING.md](ENV-WIRING.md)     | every env var, who consumes it, where it comes from |
 
 ## Stack
 
-| Component | GCP service | Idle cost | Notes |
-|-----------|-------------|-----------|-------|
-| `verification` (Rust, port 8000) | Cloud Run v2 | €0 | min=0, scales to zero |
-| `issuer` (Rust, port 8001) | Cloud Run v2 | €0 | min=0, scales to zero |
-| `sidecar` (Bun + Hono, port 3000) | Cloud Run v2 | €0 | min=0; placeholder Midnight endpoints |
-| `app` / `admin` / `verifier` (static SPA) | Cloud Run v2 + nginx | €0 | min=0, runtime config via `/config.js` |
-| Postgres (`verification` + `issuer` DBs) | Cloud SQL `db-f1-micro` ENTERPRISE | ~€8/mo | always-on |
-| Container images | Artifact Registry `europe-west1-docker.pkg.dev/owlid-491411/owlid` | ~€0 | small layers |
-| Secrets (9) | Secret Manager | free <10k ops/mo | runtime SA reads |
-| Domain | Cloud Domains + Cloud DNS | $14/yr | `owlid.app` registered, mapping commented out until ACTIVE |
-| Midnight node / indexer / proof server | not yet deployed | — | wire later |
+| Component                                 | GCP service                                                        | Idle cost        | Notes                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------ | ---------------- | ---------------------------------------------------------- |
+| `verification` (Rust, port 8000)          | Cloud Run v2                                                       | €0               | min=0, scales to zero                                      |
+| `issuer` (Rust, port 8001)                | Cloud Run v2                                                       | €0               | min=0, scales to zero                                      |
+| `sidecar` (Bun + Hono, port 3000)         | Cloud Run v2                                                       | €0               | min=0; placeholder Midnight endpoints                      |
+| `app` / `admin` / `verifier` (static SPA) | Cloud Run v2 + nginx                                               | €0               | min=0, runtime config via `/config.js`                     |
+| Postgres (`verification` + `issuer` DBs)  | Cloud SQL `db-f1-micro` ENTERPRISE                                 | ~€8/mo           | always-on                                                  |
+| Container images                          | Artifact Registry `europe-west1-docker.pkg.dev/owlid-491411/owlid` | ~€0              | small layers                                               |
+| Secrets (9)                               | Secret Manager                                                     | free <10k ops/mo | runtime SA reads                                           |
+| Domain                                    | Cloud Domains + Cloud DNS                                          | $14/yr           | `owlid.app` registered, mapping commented out until ACTIVE |
+| Midnight node / indexer / proof server    | not yet deployed                                                   | —                | wire later                                                 |
 
 Total dev sandbox idle: ~€8–10/mo.
 
@@ -103,23 +103,24 @@ just gcp-teardown
 
 ## Justfile recipes
 
-| Recipe | Calls | Purpose |
-|--------|-------|---------|
-| `just gcp-bootstrap` | `scripts/tf-bootstrap.sh` | GCS state bucket + `terraform init` |
-| `just gcp-pre-tf-cleanup` | `scripts/pre-tf-cleanup.sh` | one-shot deletion of manual gcloud-created resources |
-| `just gcp-plan` | `terraform plan` | preview changes |
-| `just gcp-apply` | `terraform apply` | apply changes (uses real images) |
-| `just gcp-apply-placeholder` | `terraform apply -var=use_placeholder_images=true` | apply when real images don't exist yet |
-| `just gcp-build` | `scripts/build-all.sh` | submit all 6 Cloud Build jobs in parallel |
-| `just gcp-migrate` | `scripts/migrate.sh` | run sqlx migrations against Cloud SQL |
-| `just gcp-urls` | `terraform output` | print Cloud Run URLs |
-| `just gcp-teardown` | `scripts/teardown.sh` | `terraform destroy` (interactive confirm) |
+| Recipe                       | Calls                                              | Purpose                                              |
+| ---------------------------- | -------------------------------------------------- | ---------------------------------------------------- |
+| `just gcp-bootstrap`         | `scripts/tf-bootstrap.sh`                          | GCS state bucket + `terraform init`                  |
+| `just gcp-pre-tf-cleanup`    | `scripts/pre-tf-cleanup.sh`                        | one-shot deletion of manual gcloud-created resources |
+| `just gcp-plan`              | `terraform plan`                                   | preview changes                                      |
+| `just gcp-apply`             | `terraform apply`                                  | apply changes (uses real images)                     |
+| `just gcp-apply-placeholder` | `terraform apply -var=use_placeholder_images=true` | apply when real images don't exist yet               |
+| `just gcp-build`             | `scripts/build-all.sh`                             | submit all 6 Cloud Build jobs in parallel            |
+| `just gcp-migrate`           | `scripts/migrate.sh`                               | run sqlx migrations against Cloud SQL                |
+| `just gcp-urls`              | `terraform output`                                 | print Cloud Run URLs                                 |
+| `just gcp-teardown`          | `scripts/teardown.sh`                              | `terraform destroy` (interactive confirm)            |
 
 ## What Terraform owns vs. what it doesn't
 
 **TF owns:** APIs enabled, Artifact Registry repo, runtime SA + IAM, Cloud SQL instance + DBs + user, secrets (resource shells + initial values), Cloud Run services, DNS managed zone, billing budget.
 
 **TF does not own:**
+
 - **Container images** in Artifact Registry — built by Cloud Build, referenced by tag from TF
 - **DB migrations** — `sqlx-cli` runs separately, against the running SQL instance
 - **Secret values after first creation** — `lifecycle.ignore_changes = [secret_data]` keeps them sticky, rotate via `gcloud secrets versions add`
@@ -135,6 +136,7 @@ just gcp-pre-tf-cleanup
 ```
 
 Deletes Cloud SQL, secrets, runtime SA, budgets. Keeps:
+
 - Artifact Registry repo + already-built images (TF imports it via `imports.tf`)
 - DNS managed zone (TF imports)
 - Domain registration (TF doesn't manage)

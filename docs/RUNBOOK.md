@@ -2,17 +2,18 @@
 
 ## 1. Service Overview
 
-| Service              | Port | Container                 | Description                          |
-| -------------------- | ---- | ------------------------- | ------------------------------------ |
-| Verification Service | 8000 | owl-verification          | Token verification, revocation, GDPR |
-| Issuer Service       | 8001 | owl-issuer                | Credential issuance                  |
-| PostgreSQL (verify)  | 5432 | owl-postgres-verification | Verification database                |
-| PostgreSQL (issuer)  | 5433 | owl-postgres-issuer       | Issuer database                      |
-| Midnight Sidecar     | 3000 | (local process)           | Bridge to Midnight blockchain        |
-| Midnight Node        | 9944 | owlid-midnight-node       | Devnet consensus + RPC               |
-| Midnight Indexer     | 8088 | owlid-midnight-indexer    | GraphQL API for chain state          |
-| Proof Server         | 6300 | owlid-proof-server        | ZK proof generation                  |
-| Frontend App         | 5000 | (local process)           | Vite + React UI                      |
+| Service              | Port | Container                 | Description                                           |
+| -------------------- | ---- | ------------------------- | ----------------------------------------------------- |
+| Verification Service | 8000 | owl-verification          | Token verification, revocation, GDPR                  |
+| Issuer Service       | 8001 | owl-issuer                | Credential issuance                                   |
+| PostgreSQL (verify)  | 5432 | owl-postgres-verification | Verification database                                 |
+| PostgreSQL (issuer)  | 5433 | owl-postgres-issuer       | Issuer database                                       |
+| Midnight Sidecar     | 3000 | (local process)           | Bridge to Midnight blockchain                         |
+| Midnight Node        | 9944 | owlid-midnight-node       | Devnet consensus + RPC                                |
+| Midnight Indexer     | 8088 | owlid-midnight-indexer    | GraphQL API for chain state                           |
+| Proof Server         | 6300 | owlid-proof-server        | ZK proof generation (sidecar + opt-in holder)         |
+| Proof Server Proxy   | 6301 | owlid-proof-server-proxy  | Caddy CORS front for browser holders (opt-in profile) |
+| Frontend App         | 5000 | (local process)           | Vite + React UI                                       |
 
 Database tables (verification service):
 
@@ -73,12 +74,21 @@ just dev-sidecar  # Midnight sidecar only
 
 **Midnight Integration:**
 
-| Variable                    | Description                                       |
-| --------------------------- | ------------------------------------------------- |
-| `MIDNIGHT_ENABLED`          | Enable/disable Midnight integration               |
-| `MIDNIGHT_NODE_URL`         | Node RPC endpoint (default `ws://localhost:9944`) |
-| `MIDNIGHT_INDEXER_URL`      | Indexer GraphQL (default `http://localhost:8088`) |
-| `MIDNIGHT_PROOF_SERVER_URL` | Proof server (default `http://localhost:6300`)    |
+| Variable                    | Description                                                    |
+| --------------------------- | -------------------------------------------------------------- |
+| `MIDNIGHT_SIDECAR_URL`      | Sidecar URL (required; default `http://midnight-sidecar:3000`) |
+| `MIDNIGHT_SIDECAR_API_KEY`  | Shared secret with sidecar (required)                          |
+| `MIDNIGHT_NODE_URL`         | Node RPC endpoint (default `ws://localhost:9944`)              |
+| `MIDNIGHT_INDEXER_URL`      | Indexer GraphQL (default `http://localhost:8088`)              |
+| `MIDNIGHT_PROOF_SERVER_URL` | Proof server (default `http://localhost:6300`)                 |
+
+> **Required.** Both verification-service and issuer-service exit 1
+> on startup if the sidecar's `/health` is unreachable. The sidecar
+> bridges three Compact registries (issuer, revocation, identity) and
+> the verification service mirrors their state over SSE (`/events`)
+> into Postgres + cache — the verifier hot path never touches the
+> chain. See [`MIDNIGHT.md`](./MIDNIGHT.md) and
+> the Midnight section of [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ### Database Migrations
 
@@ -376,8 +386,7 @@ in the database. This is a breaking change.
 
 ### Midnight integration errors
 
-- Confirm `MIDNIGHT_ENABLED` is set to `true`.
-- Check sidecar health: `curl http://localhost:3000/health`.
+- Check sidecar health: `curl http://localhost:3000/health`. The services exit 1 at startup if the sidecar is unreachable.
 - Verify Midnight node is running: `curl http://localhost:9944/health`.
 - Check indexer: the healthcheck file at `/var/run/indexer-standalone/running` must exist.
 - Review sidecar logs: `just dev-sidecar` output or container logs.
@@ -388,3 +397,45 @@ in the database. This is a breaking change.
 - Connection pool exhausted: restart the service; consider tuning pool size.
 - Expired records accumulating: run `SELECT delete_expired_records();` or set up pg_cron.
 - Rate limit table bloating: run `SELECT cleanup_rate_limits();`.
+
+## 11. Hosted Proof Server
+
+The Cloud Run service `proof-server` exposes
+`https://proofs.<domain>` to the holder app for opt-in remote proving.
+The service is a multi-container deployment:
+
+- **Main container (proxy):** Caddy 2.10 from `Dockerfile.proof-server`,
+  built per-deploy. Listens on Cloud Run's `$PORT` (8080), injects CORS,
+  forwards to localhost:6300.
+- **Sidecar container (prover):** `midnightntwrk/proof-server:8.0.3`
+  unchanged. Listens on `6300` inside the pod (private, not exposed).
+
+Resource budget: 4 vCPU + 8 GiB for the prover, 1 vCPU + 512 MiB for the
+proxy. Per-instance request concurrency is capped at 2. Default scaling
+is `min=0` / `max=10` — scale to zero is cheap but the first request
+after idle pays ~30 s for SRS load. For hot-warm production set
+`proof_server_min_instances = 1` in `terraform.tfvars`.
+
+### Image pin
+
+Bump in two places when upgrading Midnight:
+
+- `docker-compose.midnight.yml` → `proof-server.image`
+- `deploy/gcp/terraform/variables.tf` → `midnight_proof_server_image_tag`
+
+Both must match the `@midnight-ntwrk/ledger-vX` major in `packages/sdk`.
+
+### Diagnosis
+
+- `curl https://proofs.<domain>/version` — should return JSON proof-server
+  version. If 403 with no body the CORS allowlist rejected the Origin.
+- `gcloud run services logs read proof-server --region=<region>` — Caddy
+  logs every request; the prover logs are interleaved (RUST_LOG=info).
+- Browser console: `OPTIONS /prove 403` means the holder's Origin is not
+  in the Caddyfile regex. Update `docker/proof-server/Caddyfile`.
+
+### CORS allowlist
+
+The Caddyfile allowlist lives in `docker/proof-server/Caddyfile`
+(`@allowed_origin` matcher). Add new origins there + rebuild the image
+via `gcloud builds submit --config=deploy/gcp/cloudbuild/proof-server.yaml`.

@@ -26,6 +26,20 @@ import {
   FlowStateOneOf1FromJSONTyped,
   FlowStateOneOf1ToJSON,
 } from './FlowStateOneOf1.js'
+import type { FlowStateOneOf10 } from './FlowStateOneOf10.js'
+import {
+  instanceOfFlowStateOneOf10,
+  FlowStateOneOf10FromJSON,
+  FlowStateOneOf10FromJSONTyped,
+  FlowStateOneOf10ToJSON,
+} from './FlowStateOneOf10.js'
+import type { FlowStateOneOf11 } from './FlowStateOneOf11.js'
+import {
+  instanceOfFlowStateOneOf11,
+  FlowStateOneOf11FromJSON,
+  FlowStateOneOf11FromJSONTyped,
+  FlowStateOneOf11ToJSON,
+} from './FlowStateOneOf11.js'
 import type { FlowStateOneOf2 } from './FlowStateOneOf2.js'
 import {
   instanceOfFlowStateOneOf2,
@@ -91,6 +105,8 @@ import {
 export type FlowState =
   | FlowStateOneOf
   | FlowStateOneOf1
+  | FlowStateOneOf10
+  | FlowStateOneOf11
   | FlowStateOneOf2
   | FlowStateOneOf3
   | FlowStateOneOf4
@@ -113,6 +129,12 @@ export function FlowStateFromJSONTyped(json: any, ignoreDiscriminator: boolean):
   }
   if (instanceOfFlowStateOneOf1(json)) {
     return FlowStateOneOf1FromJSONTyped(json, true)
+  }
+  if (instanceOfFlowStateOneOf10(json)) {
+    return FlowStateOneOf10FromJSONTyped(json, true)
+  }
+  if (instanceOfFlowStateOneOf11(json)) {
+    return FlowStateOneOf11FromJSONTyped(json, true)
   }
   if (instanceOfFlowStateOneOf2(json)) {
     return FlowStateOneOf2FromJSONTyped(json, true)
@@ -159,6 +181,12 @@ export function FlowStateToJSONTyped(
   }
   if (instanceOfFlowStateOneOf1(value)) {
     return FlowStateOneOf1ToJSON(value as FlowStateOneOf1)
+  }
+  if (instanceOfFlowStateOneOf10(value)) {
+    return FlowStateOneOf10ToJSON(value as FlowStateOneOf10)
+  }
+  if (instanceOfFlowStateOneOf11(value)) {
+    return FlowStateOneOf11ToJSON(value as FlowStateOneOf11)
   }
   if (instanceOfFlowStateOneOf2(value)) {
     return FlowStateOneOf2ToJSON(value as FlowStateOneOf2)

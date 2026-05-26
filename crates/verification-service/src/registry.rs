@@ -6,10 +6,10 @@
 //! truth without round-tripping the issuer service.
 
 use axum::{
-    extract::Path,
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    extract::Path,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use owl_proof_system::predicates::{self, PredicateParams};
 use serde::Serialize;
@@ -25,6 +25,10 @@ pub struct PredicateInfo {
     /// `GreaterOrEqual` predicates carry a number (e.g. `"18"`); `InSet`
     /// predicates carry a registered dataset name (e.g. `"\"eu\""`).
     pub value: String,
+    /// DCQL claim-path route token. This — not `attribute` — is what a
+    /// verifier MUST put on the DCQL claim path: the holder SDK and the
+    /// verifier route on it (`age_over_18`, `verification_level`, …).
+    pub route: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -51,20 +55,69 @@ pub async fn list_predicates() -> Json<Vec<PredicateInfo>> {
     let preds = predicates::list_all()
         .iter()
         .map(|p| {
-            let (op, value_json) = match p.params {
-                PredicateParams::Threshold(t) => ("GreaterOrEqual", serde_json::json!(t)),
-                PredicateParams::SetName(name) => ("InSet", serde_json::json!(name)),
+            // `op` is always the registry's `PredicateOp` — never derived
+            // from `params`. `value` is the wire value the holder drops
+            // onto the DCQL claim; `Dynamic` predicates carry no
+            // registry value (the verifier supplies it at request time).
+            let op = match p.op {
+                predicates::PredicateOp::GreaterOrEqual => "GreaterOrEqual",
+                predicates::PredicateOp::InSet => "InSet",
+                predicates::PredicateOp::InRange => "InRange",
+            };
+            let value_json = match p.params {
+                PredicateParams::Threshold(t) => serde_json::json!(t),
+                PredicateParams::SetName(name) => serde_json::json!(name),
+                PredicateParams::Dynamic => serde_json::Value::Null,
             };
             PredicateInfo {
                 id: p.id.to_string(),
-                attribute: p.attribute.to_string(),
+                // `attribute` is the SD-JWT VC standard claim name —
+                // display/metadata only. The DCQL claim PATH is `route`
+                // (see below); routing never uses `attribute`.
+                attribute: to_sd_jwt_claim(p.attribute).to_string(),
                 label: p.label.to_string(),
                 op: op.to_string(),
                 value: value_json.to_string(),
+                route: p.route.to_string(),
             }
         })
         .collect();
     Json(preds)
+}
+
+/// OwlID internal attribute → SD-JWT VC standard claim name. Mirror of
+/// `owl_issuer_service::sd_jwt_bridge::standard_name` (cannot depend on
+/// issuer-service from here). Keep both lists in sync when adding new
+/// attributes.
+fn to_sd_jwt_claim(attr: &str) -> &str {
+    match attr {
+        "firstName" => "given_name",
+        "lastName" => "family_name",
+        "dateOfBirth" => "birthdate",
+        "placeOfBirth" => "place_of_birth",
+        "streetAddress" => "street_address",
+        "postalCode" => "postal_code",
+        "nationalId" => "national_id",
+        "passportNumber" => "passport_number",
+        "driversLicense" => "drivers_license",
+        "taxId" => "tax_id",
+        "documentType" => "document_type",
+        "documentNumber" => "document_number",
+        "issuingCountry" => "issuing_country",
+        "documentExpiry" => "document_expiry",
+        "documentIssueDate" => "document_issue_date",
+        "verificationLevel" => "verification_level",
+        "verifiedAt" => "verified_at",
+        "verifiedBy" => "verified_by",
+        "verificationMethod" => "verification_method",
+        "isOver18" => "age_over_18",
+        "isOver21" => "age_over_21",
+        "isOver65" => "age_over_65",
+        "isEuCitizen" => "nationality_eu",
+        "isResident" => "resident",
+        "emailVerified" => "email_verified",
+        other => other,
+    }
 }
 
 /// Summarise every registered set-membership dataset (name + version only).
@@ -166,4 +219,63 @@ pub async fn get_proving_key(Path(filename): Path<String>) -> Response {
         bytes,
     )
         .into_response()
+}
+
+/// Filenames of every per-kind predicate Compact artifact served by
+/// `/predicate-zk/{filename}`. Same role as `/zk-keys` for Groth16: the
+/// holder's WASM build leaves the multi-MB keys out and prefetches this
+/// list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One
+/// Compact contract per predicate kind (devnet block-weight cap) — the
+/// circuit names cover every deployed kind in one bucket.
+#[utoipa::path(
+    get,
+    path = "/predicate-zk",
+    tag = "registry",
+    responses((status = 200, description = "Available predicate artifact filenames", body = Vec<String>))
+)]
+pub async fn list_predicate_assets() -> Json<Vec<String>> {
+    Json(crate::predicate_assets::ALL.iter().map(|s| s.to_string()).collect())
+}
+
+/// Serve a raw per-kind predicate Compact artifact (zkir / prover /
+/// verifier). Public — Compact ZK material is public; integrity, not
+/// secrecy, is what matters. Immutable-cached: a contract change ships
+/// a new artifact set behind a new build. Mirrors [`get_proving_key`].
+#[utoipa::path(
+    get,
+    path = "/predicate-zk/{filename}",
+    tag = "registry",
+    params(("filename" = String, Path, description = "<circuit>.{bzkir|prover|verifier}")),
+    responses(
+        (status = 200, description = "Artifact bytes"),
+        (status = 404, description = "Unknown artifact"),
+    )
+)]
+pub async fn get_predicate_asset(Path(filename): Path<String>) -> Response {
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Some(bytes) = crate::predicate_assets::lookup(&filename) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    // Stream in 1 MiB chunks. The set-membership prover artefacts are
+    // ~37 MiB (Vector<64, Bytes<32>> SHA-256 + per-verifier fold)
+    // which exceeds Cloud Run's 32 MiB single-response buffer limit
+    // when sent as one Vec<u8>. Streaming responses are not capped the
+    // same way; the proxy forwards chunks as soon as they land.
+    const CHUNK: usize = 1 << 20;
+    let total = bytes.len();
+    let stream = futures_util::stream::iter(
+        bytes
+            .chunks(CHUNK)
+            .map(|c| Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(c))),
+    );
+    let body = axum::body::Body::from_stream(stream);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+        .header(header::CONTENT_LENGTH, total)
+        .body(body)
+        .expect("static headers always produce a valid response")
 }

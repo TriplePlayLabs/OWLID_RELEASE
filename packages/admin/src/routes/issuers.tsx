@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
-import { ShieldCheck, Plus, Copy } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { ShieldCheck, Plus, Search } from 'lucide-react'
 import { toast } from 'sonner'
 
 import {
@@ -13,7 +13,6 @@ import {
 import { Button } from '@owlid/ui/components/ui/button'
 import { Input } from '@owlid/ui/components/ui/input'
 import { Label } from '@owlid/ui/components/ui/label'
-import { Badge } from '@owlid/ui/components/ui/badge'
 import {
   Table,
   TableBody,
@@ -34,31 +33,58 @@ import {
 } from '@owlid/ui/components/ui/dialog'
 import { Textarea } from '@owlid/ui/components/ui/textarea'
 import { useTrustedIssuers, useAddTrustedIssuer } from '~/hooks/use-verification'
+import { PageHeader } from '~/components/PageHeader'
+import { CopyButton } from '~/components/CopyButton'
+import { StatusBadge } from '~/components/StatusBadge'
+import { TableSkeleton, TableError, TableEmpty } from '~/components/TableStates'
 
 export const Route = createFileRoute('/issuers')({
   component: IssuersPage,
 })
 
+const HEX_RE = /^[0-9a-fA-F]+$/
+
 function IssuersPage() {
   const issuers = useTrustedIssuers()
   const addIssuer = useAddTrustedIssuer()
 
+  const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [publicKey, setPublicKey] = useState('')
   const [description, setDescription] = useState('')
   const [issuerUrl, setIssuerUrl] = useState('')
+  const [query, setQuery] = useState('')
+
+  const keyError =
+    publicKey.length > 0 && !HEX_RE.test(publicKey.trim()) ? 'Public key must be hex-encoded' : null
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const list = issuers.data ?? []
+    if (!q) return list
+    return list.filter(
+      (i) =>
+        i.name.toLowerCase().includes(q) ||
+        i.publicKey.toLowerCase().includes(q) ||
+        (i.description ?? '').toLowerCase().includes(q),
+    )
+  }, [issuers.data, query])
 
   function handleAdd() {
-    if (!name || !publicKey) {
+    if (!name.trim() || !publicKey.trim()) {
       toast.error('Name and public key are required')
+      return
+    }
+    if (keyError) {
+      toast.error(keyError)
       return
     }
     addIssuer.mutate(
       {
-        publicKey,
-        name,
-        description: description || undefined,
-        issuerUrl: issuerUrl || undefined,
+        publicKey: publicKey.trim(),
+        name: name.trim(),
+        description: description.trim() || undefined,
+        issuerUrl: issuerUrl.trim() || undefined,
       },
       {
         onSuccess: () => {
@@ -67,28 +93,20 @@ function IssuersPage() {
           setPublicKey('')
           setDescription('')
           setIssuerUrl('')
+          setOpen(false)
         },
         onError: (err) => toast.error(err.message),
       },
     )
   }
 
-  function copyKey(key: string) {
-    navigator.clipboard.writeText(key)
-    toast.success('Public key copied')
-  }
-
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Trusted Issuers</h1>
-          <p className="text-muted-foreground">
-            Manage which issuer public keys are trusted for credential verification
-          </p>
-        </div>
-
-        <Dialog>
+      <PageHeader
+        title="Trusted Issuers"
+        description="Issuer public keys trusted for credential verification — anchored on Midnight"
+      >
+        <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button>
               <Plus className="mr-2 h-4 w-4" /> Add Issuer
@@ -98,7 +116,8 @@ function IssuersPage() {
             <DialogHeader>
               <DialogTitle>Add Trusted Issuer</DialogTitle>
               <DialogDescription>
-                Register a new issuer public key as trusted in the verification service.
+                Register an issuer public key as trusted. This writes to the Midnight trust
+                registry.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
@@ -119,7 +138,9 @@ function IssuersPage() {
                   className="font-mono text-xs"
                   value={publicKey}
                   onChange={(e) => setPublicKey(e.target.value)}
+                  aria-invalid={keyError != null}
                 />
+                {keyError && <p className="text-xs text-destructive">{keyError}</p>}
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="description">Description</Label>
@@ -144,22 +165,35 @@ function IssuersPage() {
               <DialogClose asChild>
                 <Button variant="outline">Cancel</Button>
               </DialogClose>
-              <Button onClick={handleAdd} disabled={addIssuer.isPending}>
-                {addIssuer.isPending ? 'Adding...' : 'Add Issuer'}
+              <Button onClick={handleAdd} disabled={addIssuer.isPending || keyError != null}>
+                {addIssuer.isPending ? 'Adding…' : 'Add Issuer'}
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
+      </PageHeader>
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ShieldCheck className="h-5 w-5" /> Registered Issuers
-          </CardTitle>
-          <CardDescription>
-            {issuers.data ? `${issuers.data.length} issuers registered` : 'Loading...'}
-          </CardDescription>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <ShieldCheck className="h-5 w-5" /> Registered Issuers
+              </CardTitle>
+              <CardDescription>
+                {issuers.data ? `${issuers.data.length} registered` : 'Loading…'}
+              </CardDescription>
+            </div>
+            <div className="relative w-full max-w-xs">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search issuers…"
+                className="pl-8"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           <Table>
@@ -169,48 +203,45 @@ function IssuersPage() {
                 <TableHead>Public Key</TableHead>
                 <TableHead>Description</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="w-[50px]" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {issuers.isLoading && (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">
-                    Loading...
-                  </TableCell>
-                </TableRow>
+              {issuers.isLoading && <TableSkeleton cols={4} />}
+              {issuers.isError && (
+                <TableError
+                  colSpan={4}
+                  message={issuers.error?.message ?? 'Failed to load issuers'}
+                  onRetry={() => issuers.refetch()}
+                />
               )}
-              {issuers.data?.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">
-                    No trusted issuers registered
-                  </TableCell>
-                </TableRow>
+              {issuers.data && filtered.length === 0 && (
+                <TableEmpty
+                  colSpan={4}
+                  icon={<ShieldCheck className="h-6 w-6" />}
+                  title={query ? 'No matching issuers' : 'No trusted issuers'}
+                  description={
+                    query
+                      ? 'Try a different search term.'
+                      : 'Add an issuer public key to start verifying credentials.'
+                  }
+                />
               )}
-              {issuers.data?.map((issuer) => (
+              {filtered.map((issuer) => (
                 <TableRow key={issuer.publicKey}>
                   <TableCell className="font-medium">{issuer.name}</TableCell>
                   <TableCell>
-                    <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
-                      {issuer.publicKey.slice(0, 16)}...
-                    </code>
+                    <div className="flex items-center gap-1">
+                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
+                        {issuer.publicKey.slice(0, 16)}…
+                      </code>
+                      <CopyButton value={issuer.publicKey} label="Public key" />
+                    </div>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     {issuer.description ?? '—'}
                   </TableCell>
                   <TableCell>
-                    {issuer.isActive ? (
-                      <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
-                        Active
-                      </Badge>
-                    ) : (
-                      <Badge variant="secondary">Inactive</Badge>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <Button variant="ghost" size="icon" onClick={() => copyKey(issuer.publicKey)}>
-                      <Copy className="h-4 w-4" />
-                    </Button>
+                    <StatusBadge status={issuer.isActive ? 'active' : 'disabled'} />
                   </TableCell>
                 </TableRow>
               ))}

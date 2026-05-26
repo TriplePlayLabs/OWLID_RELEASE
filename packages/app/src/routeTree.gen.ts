@@ -11,13 +11,13 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IdentityRouteRouteImport } from './routes/_identity/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as IdentityWalletRouteImport } from './routes/_identity/wallet'
+import { Route as IdentitySettingsRouteImport } from './routes/_identity/settings'
 import { Route as IdentityRegisterRouteImport } from './routes/_identity/register'
 import { Route as IdentityRecentProofsRouteImport } from './routes/_identity/recent-proofs'
-import { Route as IdentityPassportRouteImport } from './routes/_identity/passport'
 import { Route as IdentityLoginRouteImport } from './routes/_identity/login'
-import { Route as IdentityLockedRouteImport } from './routes/_identity/locked'
-import { Route as IdentityCreateIdentityRouteImport } from './routes/_identity/create-identity'
 import { Route as IdentityCallbackRouteImport } from './routes/_identity/callback'
+import { Route as IdentityAddProviderRouteImport } from './routes/_identity/add-provider'
 
 const IdentityRouteRoute = IdentityRouteRouteImport.update({
   id: '/_identity',
@@ -27,6 +27,16 @@ const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const IdentityWalletRoute = IdentityWalletRouteImport.update({
+  id: '/wallet',
+  path: '/wallet',
+  getParentRoute: () => IdentityRouteRoute,
+} as any)
+const IdentitySettingsRoute = IdentitySettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => IdentityRouteRoute,
 } as any)
 const IdentityRegisterRoute = IdentityRegisterRouteImport.update({
   id: '/register',
@@ -38,24 +48,9 @@ const IdentityRecentProofsRoute = IdentityRecentProofsRouteImport.update({
   path: '/recent-proofs',
   getParentRoute: () => IdentityRouteRoute,
 } as any)
-const IdentityPassportRoute = IdentityPassportRouteImport.update({
-  id: '/passport',
-  path: '/passport',
-  getParentRoute: () => IdentityRouteRoute,
-} as any)
 const IdentityLoginRoute = IdentityLoginRouteImport.update({
   id: '/login',
   path: '/login',
-  getParentRoute: () => IdentityRouteRoute,
-} as any)
-const IdentityLockedRoute = IdentityLockedRouteImport.update({
-  id: '/locked',
-  path: '/locked',
-  getParentRoute: () => IdentityRouteRoute,
-} as any)
-const IdentityCreateIdentityRoute = IdentityCreateIdentityRouteImport.update({
-  id: '/create-identity',
-  path: '/create-identity',
   getParentRoute: () => IdentityRouteRoute,
 } as any)
 const IdentityCallbackRoute = IdentityCallbackRouteImport.update({
@@ -63,71 +58,76 @@ const IdentityCallbackRoute = IdentityCallbackRouteImport.update({
   path: '/callback',
   getParentRoute: () => IdentityRouteRoute,
 } as any)
+const IdentityAddProviderRoute = IdentityAddProviderRouteImport.update({
+  id: '/add-provider',
+  path: '/add-provider',
+  getParentRoute: () => IdentityRouteRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/add-provider': typeof IdentityAddProviderRoute
   '/callback': typeof IdentityCallbackRoute
-  '/create-identity': typeof IdentityCreateIdentityRoute
-  '/locked': typeof IdentityLockedRoute
   '/login': typeof IdentityLoginRoute
-  '/passport': typeof IdentityPassportRoute
   '/recent-proofs': typeof IdentityRecentProofsRoute
   '/register': typeof IdentityRegisterRoute
+  '/settings': typeof IdentitySettingsRoute
+  '/wallet': typeof IdentityWalletRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/add-provider': typeof IdentityAddProviderRoute
   '/callback': typeof IdentityCallbackRoute
-  '/create-identity': typeof IdentityCreateIdentityRoute
-  '/locked': typeof IdentityLockedRoute
   '/login': typeof IdentityLoginRoute
-  '/passport': typeof IdentityPassportRoute
   '/recent-proofs': typeof IdentityRecentProofsRoute
   '/register': typeof IdentityRegisterRoute
+  '/settings': typeof IdentitySettingsRoute
+  '/wallet': typeof IdentityWalletRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_identity': typeof IdentityRouteRouteWithChildren
+  '/_identity/add-provider': typeof IdentityAddProviderRoute
   '/_identity/callback': typeof IdentityCallbackRoute
-  '/_identity/create-identity': typeof IdentityCreateIdentityRoute
-  '/_identity/locked': typeof IdentityLockedRoute
   '/_identity/login': typeof IdentityLoginRoute
-  '/_identity/passport': typeof IdentityPassportRoute
   '/_identity/recent-proofs': typeof IdentityRecentProofsRoute
   '/_identity/register': typeof IdentityRegisterRoute
+  '/_identity/settings': typeof IdentitySettingsRoute
+  '/_identity/wallet': typeof IdentityWalletRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/add-provider'
     | '/callback'
-    | '/create-identity'
-    | '/locked'
     | '/login'
-    | '/passport'
     | '/recent-proofs'
     | '/register'
+    | '/settings'
+    | '/wallet'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/add-provider'
     | '/callback'
-    | '/create-identity'
-    | '/locked'
     | '/login'
-    | '/passport'
     | '/recent-proofs'
     | '/register'
+    | '/settings'
+    | '/wallet'
   id:
     | '__root__'
     | '/'
     | '/_identity'
+    | '/_identity/add-provider'
     | '/_identity/callback'
-    | '/_identity/create-identity'
-    | '/_identity/locked'
     | '/_identity/login'
-    | '/_identity/passport'
     | '/_identity/recent-proofs'
     | '/_identity/register'
+    | '/_identity/settings'
+    | '/_identity/wallet'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -151,6 +151,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_identity/wallet': {
+      id: '/_identity/wallet'
+      path: '/wallet'
+      fullPath: '/wallet'
+      preLoaderRoute: typeof IdentityWalletRouteImport
+      parentRoute: typeof IdentityRouteRoute
+    }
+    '/_identity/settings': {
+      id: '/_identity/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof IdentitySettingsRouteImport
+      parentRoute: typeof IdentityRouteRoute
+    }
     '/_identity/register': {
       id: '/_identity/register'
       path: '/register'
@@ -165,32 +179,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IdentityRecentProofsRouteImport
       parentRoute: typeof IdentityRouteRoute
     }
-    '/_identity/passport': {
-      id: '/_identity/passport'
-      path: '/passport'
-      fullPath: '/passport'
-      preLoaderRoute: typeof IdentityPassportRouteImport
-      parentRoute: typeof IdentityRouteRoute
-    }
     '/_identity/login': {
       id: '/_identity/login'
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof IdentityLoginRouteImport
-      parentRoute: typeof IdentityRouteRoute
-    }
-    '/_identity/locked': {
-      id: '/_identity/locked'
-      path: '/locked'
-      fullPath: '/locked'
-      preLoaderRoute: typeof IdentityLockedRouteImport
-      parentRoute: typeof IdentityRouteRoute
-    }
-    '/_identity/create-identity': {
-      id: '/_identity/create-identity'
-      path: '/create-identity'
-      fullPath: '/create-identity'
-      preLoaderRoute: typeof IdentityCreateIdentityRouteImport
       parentRoute: typeof IdentityRouteRoute
     }
     '/_identity/callback': {
@@ -200,27 +193,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IdentityCallbackRouteImport
       parentRoute: typeof IdentityRouteRoute
     }
+    '/_identity/add-provider': {
+      id: '/_identity/add-provider'
+      path: '/add-provider'
+      fullPath: '/add-provider'
+      preLoaderRoute: typeof IdentityAddProviderRouteImport
+      parentRoute: typeof IdentityRouteRoute
+    }
   }
 }
 
 interface IdentityRouteRouteChildren {
+  IdentityAddProviderRoute: typeof IdentityAddProviderRoute
   IdentityCallbackRoute: typeof IdentityCallbackRoute
-  IdentityCreateIdentityRoute: typeof IdentityCreateIdentityRoute
-  IdentityLockedRoute: typeof IdentityLockedRoute
   IdentityLoginRoute: typeof IdentityLoginRoute
-  IdentityPassportRoute: typeof IdentityPassportRoute
   IdentityRecentProofsRoute: typeof IdentityRecentProofsRoute
   IdentityRegisterRoute: typeof IdentityRegisterRoute
+  IdentitySettingsRoute: typeof IdentitySettingsRoute
+  IdentityWalletRoute: typeof IdentityWalletRoute
 }
 
 const IdentityRouteRouteChildren: IdentityRouteRouteChildren = {
+  IdentityAddProviderRoute: IdentityAddProviderRoute,
   IdentityCallbackRoute: IdentityCallbackRoute,
-  IdentityCreateIdentityRoute: IdentityCreateIdentityRoute,
-  IdentityLockedRoute: IdentityLockedRoute,
   IdentityLoginRoute: IdentityLoginRoute,
-  IdentityPassportRoute: IdentityPassportRoute,
   IdentityRecentProofsRoute: IdentityRecentProofsRoute,
   IdentityRegisterRoute: IdentityRegisterRoute,
+  IdentitySettingsRoute: IdentitySettingsRoute,
+  IdentityWalletRoute: IdentityWalletRoute,
 }
 
 const IdentityRouteRouteWithChildren = IdentityRouteRoute._addFileChildren(

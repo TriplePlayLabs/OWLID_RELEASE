@@ -1,6 +1,6 @@
 import { Copy, Share2, ShieldCheck } from 'lucide-react'
-import { QRCodeSVG } from 'qrcode.react'
 import { toast } from 'sonner'
+import { OwlQrCode } from '~/components/identity/OwlQrCode'
 import type { StoredProof } from '@owlid/sdk'
 import { Button } from '@owlid/ui/components/ui/button'
 import {
@@ -61,8 +61,12 @@ function ProofQrModal({ isOpen, args, close }: ModalRenderProps<Args>) {
             TTL.
           </DialogDescription>
         </DialogHeader>
-        <div className="bg-white p-4 rounded-xl flex items-center justify-center">
-          <QRCodeSVG value={buildQrPayload(proof)} size={240} level="M" />
+        <div className="flex items-center justify-center">
+          <OwlQrCode
+            value={buildQrPayload(proof)}
+            size={280}
+            ariaLabel={`Proof QR: ${proof.claim}`}
+          />
         </div>
         <p className="text-[11px] text-center text-muted-foreground/70">
           Minted {relativeTime(new Date(proof.createdAt))} ·{' '}

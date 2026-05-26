@@ -1,15 +1,14 @@
-//! T-019: GDPR Right-to-Erasure
-//!
-//! Provides endpoints for GDPR compliance, specifically the right to be forgotten.
-//! Handles credential revocation and data anonymization for a given owner.
+//! GDPR Right-to-Erasure endpoints. Revokes credentials and
+//! anonymizes stored data for a given owner.
 
+#![allow(dead_code)] // intentional API surface / serde fields
 use crate::db::DatabaseError;
 use crate::state::AppState;
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 
@@ -94,7 +93,7 @@ pub async fn gdpr_erasure(
     // This uses the revocations repository to mark credentials as revoked
     let credentials: Vec<crate::db::IssuedCredential> = sqlx::query_as(
         r#"
-        SELECT id, root_hash, issuer_public_key, owner_public_key,
+        SELECT id, credential_id, issuer_public_key, owner_public_key,
                credential_data, issued_at, expires_at, is_active, metadata
         FROM issued_credentials
         WHERE owner_public_key = $1 AND is_active = true
@@ -110,7 +109,7 @@ pub async fn gdpr_erasure(
         let _ = state
             .revocations
             .revoke(
-                cred.root_hash.clone(),
+                cred.credential_id.clone(),
                 cred.issuer_public_key.clone(),
                 Some("GDPR right-to-erasure".to_string()),
                 None,

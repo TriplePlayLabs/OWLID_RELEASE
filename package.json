@@ -3,8 +3,7 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*",
-    "packages/native-sdk/npm/*"
+    "packages/*"
   ],
   "trustedDependencies": [
     "@midnight-ntwrk/compact-runtime",
@@ -18,7 +17,6 @@
     "build": "bun run --filter '*' build",
     "build:app": "bun run --filter @owlid/app build",
     "build:sdk": "bun run --filter @owlid/sdk build",
-    "build:native-sdk": "bun run --filter @owlid/native-sdk build",
     "build:admin": "bun run --filter @owlid/admin build",
     "build:docs": "bun run --filter @owlid/docs-site build",
     "test": "bun run --filter '*' test",
@@ -35,6 +33,8 @@
     "prepare": "husky"
   },
   "devDependencies": {
+    "@slidev/cli": "^52.15.2",
+    "@slidev/theme-default": "^0.25.0",
     "@taplo/cli": "^0.7.0",
     "@types/bun": "^1.3.13",
     "binaryen": "^125.0.0",
@@ -69,5 +69,8 @@
   "packageManager": "bun@1.3.13",
   "overrides": {
     "@midnight-ntwrk/compact-js": "2.5.0"
+  },
+  "dependencies": {
+    "countries-list": "^3.3.0"
   }
 }

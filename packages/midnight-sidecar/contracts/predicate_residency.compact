@@ -1,0 +1,124 @@
+// OwlID predicate contract — residency-in-witness-Merkle-set with per-verifier salting.
+//
+// Verifier supplies only a `setHash: Bytes<32>` as a public arg.
+// Holder supplies a Compact stdlib `MerkleTreePath<8, Bytes<32>>`
+// proving their country code is a leaf of the verifier's declared
+// allowed-set Merkle tree. The circuit recomputes the root via the
+// stdlib `merkleTreePathRoot` (1 persistentHash for the leaf, 8
+// transientHash for the path) and folds the root into setHash to
+// confirm it matches what the verifier declared.
+//
+// Tree is depth 8 (256 leaves) — covers the entire ISO 3166-1 alpha-2
+// codepoint set with headroom. Off-chain, both verifier and holder
+// build the same tree via `@midnight-ntwrk/compact-runtime`'s
+// `StateBoundedMerkleTree` (TS) or `midnight-transient-crypto` (Rust)
+// so the root is deterministic across all 3 mirrors.
+//
+// setHash recipe:
+//   setHash = persistentHash([ verifierIdHash, root ])
+//   verifierIdHash = SHA-256(verifier_client_id_utf8)
+//   root = stdlib merkleTreePathRoot of (sorted, deduped, zero-padded)
+//          allowed-set, leaf = pad32(country_code)
+//
+// On-chain attestation key:
+//   key = SHA-256( "owlid:attest:resin:" || rootHash || setHash )
+//
+// The pre-Merkle Vector<64, Bytes<32>> design produced a 37 MiB prover
+// (10× SHA-256 lookup tables) that exceeded the proof server's 32 MiB
+// upload cap. Switching the path hashes to transientHash (Poseidon)
+// cuts the prover to ~12-15 MiB while raising set capacity 64 → 256.
+
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+import "./lib/access/Ownable" prefix Ownable_;
+import "./lib/security/Pausable" prefix Pausable_;
+
+export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
+
+// Holder's residence country code (ISO 3166-1 alpha-2 right-padded to
+// 32 bytes — `pad(32, "NL")`-shape). Used as the leaf of the
+// allowed-set Merkle tree.
+witness residentCountry(): Bytes<32>;
+
+// SHA-256 of the OID4VP verifier `client_id` UTF-8 bytes. Mixed into
+// setHash so two verifiers asking the same allowed-set produce
+// different on-chain keys; defeats cross-verifier correlation of
+// well-known policies.
+witness verifierIdHash(): Bytes<32>;
+
+// Merkle inclusion proof for the holder's country in the verifier's
+// allowed-set tree. The verifier and holder agree on the tree shape
+// off-chain (sorted, deduped, zero-padded to 256 leaves); the holder
+// derives this path from the verifier's DCQL `values` array.
+witness allowedCountryPath(): MerkleTreePath<8, Bytes<32>>;
+
+export ledger attestations: Set<Bytes<32>>;
+export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
+export ledger attestCount: Counter;
+
+constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>) {
+  Ownable_initialize(initialOwner);
+}
+
+circuit keyOf(tag: Bytes<32>, dRootHash: Bytes<32>, dParam: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([tag, dRootHash, dParam]);
+}
+
+circuit record(key: Bytes<32>): [] {
+  if (!attestations.member(key)) {
+    attestations.insert(key);
+    attestTree.insert(key);
+    attestCount.increment(1);
+  }
+}
+
+export circuit attestResidencyIn(
+  rootHash: Bytes<32>,
+  setHash:  Bytes<32>
+): [] {
+  Pausable_assertNotPaused();
+  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
+  assert(setHash  != pad(32, "") as Bytes<32>, "zero setHash");
+
+  const country = residentCountry();
+  const vId     = verifierIdHash();
+  const path    = allowedCountryPath();
+
+  assert(country != pad(32, "") as Bytes<32>, "no residence country in credential");
+  assert(vId     != pad(32, "") as Bytes<32>, "missing verifierIdHash");
+  assert(path.leaf == country, "merkle path leaf != residence country");
+
+  // Reconstruct the verifier's allowed-set Merkle root from the path.
+  // merkleTreePathRoot uses 1 persistentHash (SHA-256, leaf domain) +
+  // 8 transientHash (Poseidon) — Poseidon keeps the per-step constraint
+  // cost low so the prover artefact stays well under the 32 MiB upload
+  // cap on the hosted proof server.
+  const rootDigest = merkleTreePathRoot<8, Bytes<32>>(path);
+
+  // setHash = persistentHash([ verifierIdHash, root.field ])
+  // — verifier and holder both compute the same root off-chain and
+  // wrap it the same way to derive setHash.
+  const computed = persistentHash<Vector<2, Bytes<32>>>(
+    [disclose(vId), disclose(rootDigest.field) as Bytes<32>]
+  );
+  assert(setHash == computed, "setHash mismatch");
+
+  record(keyOf(
+    pad(32, "owlid:attest:resin:"),
+    disclose(rootHash),
+    disclose(setHash)
+  ));
+}
+
+export circuit isAttested(key: Bytes<32>): Boolean {
+  return attestations.member(disclose(key));
+}
+
+export circuit pause(): [] { Ownable_assertOnlyOwner(); Pausable__pause(); }
+export circuit unpause(): [] { Ownable_assertOnlyOwner(); Pausable__unpause(); }
+export circuit transferOwnership(newOwner: Either<ZswapCoinPublicKey, ContractAddress>): [] {
+  Ownable_transferOwnership(newOwner);
+}
+export circuit owner(): Either<ZswapCoinPublicKey, ContractAddress> { return Ownable_owner(); }
+export circuit isPaused(): Boolean { return Pausable_isPaused(); }

@@ -136,8 +136,27 @@ export function useCheckRevocation() {
 // ---------------------------------------------------------------------------
 
 export function useVerifyToken() {
-  return useMutation<VerifyResponse, Error, { token: string; challenge: string }>({
-    mutationFn: (req) => getVerificationApi().verifyToken({ verifyRequest: req }),
+  return useMutation<
+    VerifyResponse,
+    Error,
+    { presentation: string; challenge: string; audience?: string }
+  >({
+    mutationFn: async (req) => {
+      const r = await getVerificationApi().verifyDcql({
+        verifyDcqlRequest: {
+          vpToken: { cred0: req.presentation },
+          challenge: req.challenge,
+          audience: req.audience,
+          query: { credentials: [{ id: 'cred0', format: 'dc+sd-jwt', claims: [] }] },
+        },
+      })
+      const per = r.perCredential.cred0
+      return {
+        valid: r.valid,
+        subjects: per?.subjects,
+        error: r.error ?? per?.error,
+      }
+    },
   })
 }
 

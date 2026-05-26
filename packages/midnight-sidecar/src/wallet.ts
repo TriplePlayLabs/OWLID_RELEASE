@@ -8,13 +8,21 @@
  */
 
 import * as ledger from '@midnight-ntwrk/ledger-v8'
-import { type DefaultConfiguration, WalletFacade } from '@midnight-ntwrk/wallet-sdk-facade'
+import {
+  type DefaultConfiguration,
+  mergeWalletEntries,
+  WalletEntrySchema,
+  WalletFacade,
+} from '@midnight-ntwrk/wallet-sdk-facade'
+import { makeWasmProvingService } from '@midnight-ntwrk/wallet-sdk-capabilities/proving'
 import { DustWallet } from '@midnight-ntwrk/wallet-sdk-dust-wallet'
 import { HDWallet, Roles } from '@midnight-ntwrk/wallet-sdk-hd'
 import { ShieldedWallet } from '@midnight-ntwrk/wallet-sdk-shielded'
+// `InMemoryTransactionHistoryStorage` moved to wallet-sdk-abstractions
+// in the 3.0 wave (unshielded-wallet dropped its `storage/` re-exports).
+import { InMemoryTransactionHistoryStorage } from '@midnight-ntwrk/wallet-sdk-abstractions'
 import {
   createKeystore,
-  InMemoryTransactionHistoryStorage,
   PublicKey as UnshieldedPublicKey,
   type UnshieldedKeystore,
   UnshieldedWallet,
@@ -120,13 +128,19 @@ async function initWalletFromSeed(seed: Buffer, config: WalletConfig): Promise<H
       indexerHttpUrl: config.indexerUrl,
       indexerWsUrl: config.indexerWsUrl,
     },
-    provingServerUrl: new URL(config.proofServerUrl),
+    // No `provingServerUrl`: proving is in-process WASM (see the
+    // `provingService` override in WalletFacade.init below).
     relayURL: new URL(config.nodeWsUrl),
     costParameters: {
       additionalFeeOverhead: 300_000_000_000_000n,
       feeBlocksMargin: 5,
     },
-    txHistoryStorage: new InMemoryTransactionHistoryStorage(),
+    // SDK 4.0 requires a schema-typed history store. Pass the
+    // facade-exported `WalletEntrySchema` + `mergeWalletEntries` so
+    // serialize/restore round-trips through the canonical wallet
+    // history shape. The sidecar doesn't currently consume the
+    // history, but the SDK now requires it.
+    txHistoryStorage: new InMemoryTransactionHistoryStorage(WalletEntrySchema, mergeWalletEntries),
   }
 
   // Initialize via WalletFacade.init() (v2.0.0 — constructor is private)
@@ -142,6 +156,12 @@ async function initWalletFromSeed(seed: Buffer, config: WalletConfig): Promise<H
         dustSecretKey,
         ledger.LedgerParameters.initialParameters().dust,
       ),
+    // The wallet's balance/dust re-prove leg uses the wallet SDK's own
+    // in-process WASM prover (`@midnight-ntwrk/wallet-sdk-prover-client`)
+    // instead of an external proof server, overriding the URL-based
+    // default. This covers only the standard wallet (zswap/dust) circuits
+    // — the holder's per-kind predicate proof is a separate path.
+    provingService: () => makeWasmProvingService(),
   })
 
   // Start the wallet sync (critical! without this the wallet never connects)
@@ -201,9 +221,12 @@ export async function createHeadlessWallet(config: WalletConfig): Promise<Headle
   const wallet = await initWalletFromSeed(seed, config)
 
   console.log(`[wallet] coinPublicKey: ${wallet.coinPublicKey.slice(0, 16)}...`)
-  console.log('[wallet] Waiting for wallet to sync (timeout: 120s)...')
+  console.log(
+    `[wallet] Waiting for wallet to sync (timeout: ${Math.round(DEFAULT_SYNC_TIMEOUT_MS / 1000)}s, ` +
+      `override via MIDNIGHT_WALLET_SYNC_TIMEOUT_MS)...`,
+  )
 
-  await waitForSync(wallet.facade, 120_000)
+  await waitForSync(wallet.facade)
 
   console.log('[wallet] Synced.')
   return wallet
@@ -221,13 +244,23 @@ export async function createWalletFromMnemonic(
 
   console.log(`[wallet] Wallet address: ${wallet.unshieldedKeystore.getBech32Address().asString()}`)
   console.log('[wallet] Waiting for wallet to sync...')
-  await waitForSync(wallet.facade, 120_000)
+  await waitForSync(wallet.facade)
 
   return wallet
 }
 
+/** Default cold-sync timeout. Devnet syncs in ~30s; preview testnet
+ *  needs minutes the first time (weeks of blocks to scan). Override
+ *  with `MIDNIGHT_WALLET_SYNC_TIMEOUT_MS`. */
+const DEFAULT_SYNC_TIMEOUT_MS = Number(
+  process.env.MIDNIGHT_WALLET_SYNC_TIMEOUT_MS ?? 30 * 60 * 1000,
+)
+
 /** Wait for wallet to report isSynced === true */
-export async function waitForSync(facade: WalletFacade, timeoutMs = 120_000): Promise<void> {
+export async function waitForSync(
+  facade: WalletFacade,
+  timeoutMs: number = DEFAULT_SYNC_TIMEOUT_MS,
+): Promise<void> {
   await Promise.race([
     Rx.firstValueFrom(
       facade.state().pipe(
@@ -289,6 +322,72 @@ export async function getWalletBalances(
   const dustAddr = DustAddress.encodePublicKey(networkId, wallet.dustSecretKey.publicKey)
 
   return { unshieldedAddr, shieldedAddr, dustAddr, unshielded, shielded, dust }
+}
+
+/** Read-only diagnostic snapshot of the wallet's live sync + balance
+ *  state. Used to investigate why the deployed sidecar fails to balance
+ *  dust while a fresh sync of the same wallet does not. */
+export async function walletDiagnosticSnapshot(
+  wallet: HeadlessWallet,
+): Promise<Record<string, unknown>> {
+  const state = (await Rx.firstValueFrom(wallet.facade.state())) as any
+  const now = new Date()
+  const ut = ledger.nativeToken().raw
+  const safe = <T>(fn: () => T): T | string => {
+    try {
+      return fn()
+    } catch (e) {
+      return `err:${e}`
+    }
+  }
+  const unshieldedCoins: any[] = state.unshielded?.availableCoins ?? []
+  // Dust UTXO state — what the SDK balancer actually picks from.
+  // `availableCoins` are spendable; `pendingCoins` are dust outputs
+  // consumed by in-flight tx that haven't finalized yet. The
+  // aggregate `dust` balance includes the *projected* generation
+  // from registered NIGHT UTXOs and may exceed the sum of
+  // availableCoins — when balancer says "Insufficient Funds: could
+  // not balance dust" with dust > 0, the spread between them is the
+  // diagnosis.
+  const dustAvailable: any[] = state.dust?.availableCoins ?? []
+  const dustPending: any[] = state.dust?.pendingCoins ?? []
+  return {
+    time: now.toISOString(),
+    isSynced: state.isSynced,
+    syncProgress: {
+      shielded: safe(() => state.shielded?.state?.progress?.isStrictlyComplete()),
+      unshielded: safe(() => state.unshielded?.progress?.isStrictlyComplete()),
+      dust: safe(() => state.dust?.state?.progress?.isStrictlyComplete()),
+    },
+    progressRaw: {
+      shielded: safe(() => JSON.stringify(state.shielded?.state?.progress, bigintReplacer)),
+      unshielded: safe(() => JSON.stringify(state.unshielded?.progress, bigintReplacer)),
+      dust: safe(() => JSON.stringify(state.dust?.state?.progress, bigintReplacer)),
+    },
+    night: {
+      unshielded: String(state.unshielded?.balances?.[ut] ?? 0n),
+      shielded: String(state.shielded?.balances?.[ut] ?? 0n),
+    },
+    dust: String(safe(() => state.dust?.balance(now) ?? 0n)),
+    unshieldedUtxoCount: unshieldedCoins.length,
+    unshieldedUtxos: unshieldedCoins.map((c) => ({
+      registeredForDust: c.meta?.registeredForDustGeneration,
+      value: String(c.value ?? c.amount ?? ''),
+    })),
+    dustAvailableCount: dustAvailable.length,
+    dustPendingCount: dustPending.length,
+    dustAvailableSample: dustAvailable.slice(0, 5).map((c) => ({
+      value: String(c.value ?? c.initialValue ?? c.amount ?? ''),
+      ctime: c.ctime ? new Date(Number(c.ctime)).toISOString() : null,
+    })),
+    dustPendingSample: dustPending.slice(0, 5).map((c) => ({
+      value: String(c.value ?? c.initialValue ?? c.amount ?? ''),
+    })),
+  }
+}
+
+function bigintReplacer(_k: string, v: unknown): unknown {
+  return typeof v === 'bigint' ? `${v}n` : v
 }
 
 /**

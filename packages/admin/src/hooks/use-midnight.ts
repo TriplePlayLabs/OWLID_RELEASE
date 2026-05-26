@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { getAdminApi, type MidnightStatus } from '@owlid/admin-client'
 
 const STATUS_KEY = ['admin', 'midnight', 'status'] as const
@@ -13,21 +13,5 @@ export function useMidnightStatus() {
     // and slow enough not to drown the sidecar in health probes.
     refetchInterval: 10_000,
     refetchOnWindowFocus: true,
-  })
-}
-
-export function useToggleMidnight() {
-  const queryClient = useQueryClient()
-  return useMutation<void, Error, boolean>({
-    mutationFn: async (enable) => {
-      if (enable) {
-        await getAdminApi().enableMidnight()
-      } else {
-        await getAdminApi().disableMidnight()
-      }
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: STATUS_KEY })
-    },
   })
 }

@@ -1,17 +1,9 @@
-import { Token } from '@owlid/sdk/native'
 import type { StoredProof } from '@owlid/sdk'
 
-// Re-encode the persisted JSON token as a compact `OID1:` string. The raw
-// JSON is far too large for a single QR code (RangeError "Data too long"
-// from qrcode.react); the compact form is the canonical wire format.
+// The stored SD-JWT VC presentation is already the compact wire format
+// (`<JWT>~<disclosure>~…~<KB-JWT>`) — encode it directly into the QR.
 export function buildQrPayload(p: StoredProof): string {
-  try {
-    return Token.fromJson(p.tokenJson).toCompact()
-  } catch {
-    // Last-resort fallback. Likely still too long for a single QR but at
-    // least a `Copy` action will surface something to debug with.
-    return p.tokenJson
-  }
+  return p.presentation
 }
 
 export interface ProofGroup {

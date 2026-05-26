@@ -12,7 +12,6 @@ use crate::error::Result;
 use crate::issuance::issue_credential_direct;
 use crate::models::VerifiedIdentityClaims;
 use owl_crypto::SignatureAlgorithm;
-use owl_proof_system::document::ProofDocument;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -37,17 +36,44 @@ fn normalize_nationality_to_alpha2(input: &str) -> String {
     // Alpha-3 to alpha-2 mapping (EU + common countries)
     let alpha2 = match upper.as_str() {
         // EU member states
-        "AUT" => "AT", "BEL" => "BE", "BGR" => "BG", "HRV" => "HR",
-        "CYP" => "CY", "CZE" => "CZ", "DNK" => "DK", "EST" => "EE",
-        "FIN" => "FI", "FRA" => "FR", "DEU" => "DE", "GRC" => "GR",
-        "HUN" => "HU", "IRL" => "IE", "ITA" => "IT", "LVA" => "LV",
-        "LTU" => "LT", "LUX" => "LU", "MLT" => "MT", "NLD" => "NL",
-        "POL" => "PL", "PRT" => "PT", "ROU" => "RO", "SVK" => "SK",
-        "SVN" => "SI", "ESP" => "ES", "SWE" => "SE",
+        "AUT" => "AT",
+        "BEL" => "BE",
+        "BGR" => "BG",
+        "HRV" => "HR",
+        "CYP" => "CY",
+        "CZE" => "CZ",
+        "DNK" => "DK",
+        "EST" => "EE",
+        "FIN" => "FI",
+        "FRA" => "FR",
+        "DEU" => "DE",
+        "GRC" => "GR",
+        "HUN" => "HU",
+        "IRL" => "IE",
+        "ITA" => "IT",
+        "LVA" => "LV",
+        "LTU" => "LT",
+        "LUX" => "LU",
+        "MLT" => "MT",
+        "NLD" => "NL",
+        "POL" => "PL",
+        "PRT" => "PT",
+        "ROU" => "RO",
+        "SVK" => "SK",
+        "SVN" => "SI",
+        "ESP" => "ES",
+        "SWE" => "SE",
         // Non-EU common
-        "GBR" => "GB", "USA" => "US", "CAN" => "CA", "AUS" => "AU",
-        "CHE" => "CH", "NOR" => "NO", "ISL" => "IS", "JPN" => "JP",
-        "BRA" => "BR", "TUR" => "TR",
+        "GBR" => "GB",
+        "USA" => "US",
+        "CAN" => "CA",
+        "AUS" => "AU",
+        "CHE" => "CH",
+        "NOR" => "NO",
+        "ISL" => "IS",
+        "JPN" => "JP",
+        "BRA" => "BR",
+        "TUR" => "TR",
         _ => "",
     };
     if !alpha2.is_empty() {
@@ -162,40 +188,76 @@ impl CredentialBridge {
         self
     }
 
-    /// Convert IdP claims to document attributes for the Merkle tree
+    /// The credential store (for the Token Status List projection).
+    pub fn credential_repo(&self) -> Option<&CredentialRepository> {
+        self.credential_repo.as_ref()
+    }
+
+    /// Convert IdP claims to the issuer-signed SD-JWT VC claim set.
     ///
     /// This is the key function that determines what goes into a credential.
-    /// The attribute structure enables selective disclosure - users can later
-    /// prove individual attributes without revealing others.
+    /// The claim set drives the SD-JWT VC `_sd` array, so the holder can
+    /// later prove individual claims without revealing others.
     pub fn claims_to_attributes(
         &self,
         claims: &VerifiedIdentityClaims,
     ) -> BTreeMap<String, serde_json::Value> {
         let mut attrs = BTreeMap::new();
 
+        // Sentinel DOB the OIDC-only normalizers emit when the provider
+        // can't vouch for a real date of birth (Google et al). Treat it
+        // as "absent" so the SD-JWT VC doesn't ship a lie.
+        let sentinel_dob = chrono::NaiveDate::from_ymd_opt(1900, 1, 1).unwrap();
+        let has_real_dob = claims.date_of_birth != sentinel_dob;
+
         if self.config.include_raw_fields {
-            // Core identity (can be selectively disclosed)
-            attrs.insert("firstName".into(), serde_json::json!(claims.first_name));
-            attrs.insert("lastName".into(), serde_json::json!(claims.last_name));
-            attrs.insert(
-                "dateOfBirth".into(),
-                serde_json::json!(claims.date_of_birth.to_string()),
-            );
-            attrs.insert(
-                "placeOfBirth".into(),
-                serde_json::json!(claims.place_of_birth),
-            );
-            attrs.insert(
-                "nationality".into(),
-                serde_json::json!(normalize_nationality_to_alpha2(&claims.nationality)),
-            );
+            // Core identity — only emit when the provider actually
+            // attested to it. Empty strings + sentinel DOB are the
+            // signal "I don't know this", not a fact about the holder.
+            if !claims.first_name.is_empty() {
+                attrs.insert("firstName".into(), serde_json::json!(claims.first_name));
+            }
+            if !claims.last_name.is_empty() {
+                attrs.insert("lastName".into(), serde_json::json!(claims.last_name));
+            }
+            if has_real_dob {
+                attrs.insert(
+                    "dateOfBirth".into(),
+                    serde_json::json!(claims.date_of_birth.to_string()),
+                );
+            }
+            if !claims.place_of_birth.is_empty() {
+                attrs.insert(
+                    "placeOfBirth".into(),
+                    serde_json::json!(claims.place_of_birth),
+                );
+            }
+            if !claims.nationality.is_empty() {
+                attrs.insert(
+                    "nationality".into(),
+                    serde_json::json!(normalize_nationality_to_alpha2(&claims.nationality)),
+                );
+            }
 
             if let Some(ref gender) = claims.gender {
                 attrs.insert("gender".into(), serde_json::json!(gender));
             }
 
-            // Government IDs (highly sensitive, rarely disclosed)
-            attrs.insert("nationalId".into(), serde_json::json!(claims.national_id));
+            // National ID — OIDC normalizers stash the provider `sub`
+            // here for lack of a better slot, but it's an account
+            // subject, not a government ID. Only emit as `nationalId`
+            // when there's a real document context (passport / doc
+            // number / issuing country present).
+            let looks_like_document_session = claims.passport_number.is_some()
+                || claims.document_number.is_some()
+                || claims.issuing_country.is_some();
+            if !claims.national_id.is_empty() && looks_like_document_session {
+                attrs.insert("nationalId".into(), serde_json::json!(claims.national_id));
+            } else if !claims.national_id.is_empty() {
+                // OIDC sub — separate slot so verifiers don't conflate
+                // an account identifier with a government ID.
+                attrs.insert("sub".into(), serde_json::json!(claims.national_id));
+            }
 
             if let Some(ref passport) = claims.passport_number {
                 attrs.insert("passportNumber".into(), serde_json::json!(passport));
@@ -220,32 +282,94 @@ impl CredentialBridge {
                 attrs.insert("issuingCountry".into(), serde_json::json!(issuing_country));
             }
             if let Some(ref expiry) = claims.document_expiry {
-                attrs.insert("documentExpiry".into(), serde_json::json!(expiry.to_string()));
+                attrs.insert(
+                    "documentExpiry".into(),
+                    serde_json::json!(expiry.to_string()),
+                );
             }
             if let Some(ref issue_date) = claims.document_issue_date {
-                attrs.insert("documentIssueDate".into(), serde_json::json!(issue_date.to_string()));
+                attrs.insert(
+                    "documentIssueDate".into(),
+                    serde_json::json!(issue_date.to_string()),
+                );
             }
-            // NOTE: portrait_image is explicitly NOT included in the credential/Merkle tree
-            // for privacy reasons. It's only returned in API responses for local storage.
+            // NOTE: portrait_image is explicitly NOT included in the issued
+            // SD-JWT VC for privacy reasons. It's only returned in API
+            // responses for local storage.
 
-            // Address
-            attrs.insert(
-                "streetAddress".into(),
-                serde_json::json!(claims.street_address),
-            );
-            attrs.insert("city".into(), serde_json::json!(claims.city));
-            attrs.insert("postalCode".into(), serde_json::json!(claims.postal_code));
-            attrs.insert("country".into(), serde_json::json!(claims.country));
+            // Address — only emit when the provider actually returned
+            // an address. OIDC providers blank these out and we don't
+            // want empty-string disclosures.
+            if !claims.street_address.is_empty() {
+                attrs.insert(
+                    "streetAddress".into(),
+                    serde_json::json!(claims.street_address),
+                );
+            }
+            if !claims.city.is_empty() {
+                attrs.insert("city".into(), serde_json::json!(claims.city));
+            }
+            if !claims.postal_code.is_empty() {
+                attrs.insert("postalCode".into(), serde_json::json!(claims.postal_code));
+            }
+            if !claims.country.is_empty() {
+                attrs.insert("country".into(), serde_json::json!(claims.country));
+            }
+
+            // Account-level identifiers (OIDC providers — Google et al).
+            if let Some(ref email) = claims.email {
+                attrs.insert("email".into(), serde_json::json!(email));
+            }
+            if let Some(ref name) = claims.name {
+                attrs.insert("name".into(), serde_json::json!(name));
+            }
+            if let Some(ref picture) = claims.picture {
+                attrs.insert("picture".into(), serde_json::json!(picture));
+            }
+            if let Some(ref locale) = claims.locale {
+                attrs.insert("locale".into(), serde_json::json!(locale));
+            }
+            if let Some(ref hd) = claims.hosted_domain {
+                attrs.insert("hostedDomain".into(), serde_json::json!(hd));
+            }
         }
 
         if self.config.include_derived_proofs {
-            // Derived boolean proofs (the key privacy feature!)
-            // These allow proving age without revealing date of birth
-            attrs.insert("isOver18".into(), serde_json::json!(claims.is_over_18));
-            attrs.insert("isOver21".into(), serde_json::json!(claims.is_over_21));
-            attrs.insert("isOver65".into(), serde_json::json!(claims.is_over_65));
-            attrs.insert("isEuCitizen".into(), serde_json::json!(claims.is_eu_citizen));
-            attrs.insert("isResident".into(), serde_json::json!(claims.is_resident));
+            // Age + EU + residency claims are derived from real source
+            // data. If the provider didn't give us a real DOB / country
+            // (OIDC-account providers), the "no" booleans are sentinel
+            // garbage, not facts. Skip them so the SD-JWT VC doesn't
+            // assert false predicates.
+            if has_real_dob {
+                attrs.insert("isOver18".into(), serde_json::json!(claims.is_over_18));
+                attrs.insert("isOver21".into(), serde_json::json!(claims.is_over_21));
+                attrs.insert("isOver65".into(), serde_json::json!(claims.is_over_65));
+            }
+            if !claims.nationality.is_empty() {
+                attrs.insert(
+                    "isEuCitizen".into(),
+                    serde_json::json!(claims.is_eu_citizen),
+                );
+            }
+            if !claims.country.is_empty() {
+                attrs.insert("isResident".into(), serde_json::json!(claims.is_resident));
+            }
+            // `residentCountry` drives the new `attestResidencyIn` flow:
+            // the issuer stamps the holder's actual country of residence
+            // so the wallet can later prove it `∈ verifier-supplied set`.
+            // Only present when the provider returned a geo-verified
+            // address (otherwise the residency attestation is skipped).
+            if let Some(ref country) = claims.resident_country {
+                if !country.is_empty() {
+                    attrs.insert("residentCountry".into(), serde_json::json!(country));
+                }
+            }
+            // Provider-attested `email_verified` flag — drives the
+            // Midnight `attestEmailVerified` predicate. Only present
+            // when the source provider vouches for it (Google OIDC).
+            if let Some(verified) = claims.email_verified {
+                attrs.insert("emailVerified".into(), serde_json::json!(verified));
+            }
         }
 
         if self.config.include_metadata {
@@ -268,17 +392,19 @@ impl CredentialBridge {
         attrs
     }
 
-    /// Issue a credential directly (no HTTP call)
+    /// Issue a credential directly (no HTTP call).
     ///
-    /// This creates a ProofDocument from the verified claims using direct
-    /// function calls instead of calling an external issuer service.
+    /// Builds standard claims from the verified identity and returns the
+    /// signed **SD-JWT VC** (the only credential representation).
     pub async fn issue_credential(
         &self,
         claims: &VerifiedIdentityClaims,
         issuer_private_key: &str,
         owner_public_key: &str,
         key_algorithm: SignatureAlgorithm,
-    ) -> Result<ProofDocument> {
+        issuer_public_url: &str,
+        personhood: bool,
+    ) -> Result<String> {
         let attributes = self.claims_to_attributes(claims);
 
         issue_credential_direct(
@@ -287,6 +413,8 @@ impl CredentialBridge {
             key_algorithm,
             attributes,
             self.credential_repo.as_ref(),
+            issuer_public_url,
+            personhood,
         )
         .await
     }
@@ -297,10 +425,7 @@ impl CredentialBridge {
 
         map.insert("firstName".to_string(), claims.first_name.clone());
         map.insert("lastName".to_string(), claims.last_name.clone());
-        map.insert(
-            "dateOfBirth".to_string(),
-            claims.date_of_birth.to_string(),
-        );
+        map.insert("dateOfBirth".to_string(), claims.date_of_birth.to_string());
         map.insert(
             "nationality".to_string(),
             normalize_nationality_to_alpha2(&claims.nationality),
@@ -321,6 +446,109 @@ impl Default for CredentialBridge {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Unique-personhood secret derivation
+// ---------------------------------------------------------------------------
+
+/// Derive the holder-only `personhoodSecret` for a verified identity.
+///
+/// Returns `Some(secret)` for document-verified / government-eID
+/// identities (a stable document or eID identifier is present), and
+/// `None` for identities with no such handle (plain OIDC accounts —
+/// Google et al — which therefore get no `unique_personhood` predicate).
+///
+/// The secret is `HKDF(salt = SHA-256(issuer key), ikm = identity_hash)`
+/// — deterministic per real human and not holder-influenceable. Two
+/// wallets for the same human derive the *same* secret, so the Midnight
+/// `attestUniquePersonhood` nullifier blocks the second from claiming
+/// any campaign the first already claimed. That on-chain nullifier is
+/// the sybil boundary; no issuer-side dedup table exists or is needed.
+pub fn derive_personhood(
+    claims: &VerifiedIdentityClaims,
+    issuer_private_key: &str,
+) -> Option<[u8; 32]> {
+    let (identifier, namespace) = personhood_identity(claims)?;
+    let identity_hash = personhood_identity_hash(&namespace, &identifier);
+    Some(derive_personhood_secret(issuer_private_key, &identity_hash))
+}
+
+/// `(identifier, namespace)` for the verified identity's stable
+/// document/eID handle, or `None` when the provider cannot anchor a
+/// real human. The namespace keeps document numbers from colliding
+/// across issuing countries / document types.
+fn personhood_identity(claims: &VerifiedIdentityClaims) -> Option<(String, String)> {
+    // Document-scan providers (Didit, Onfido, Jumio, Stripe) — the
+    // scanned document number is the strongest handle available.
+    if let Some(doc) = claims.document_number.as_deref().map(str::trim) {
+        if !doc.is_empty() {
+            let country = claims
+                .issuing_country
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("??");
+            let dtype = claims
+                .document_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("doc");
+            return Some((doc.to_string(), format!("doc:{country}:{dtype}")));
+        }
+    }
+    // Government eID providers (DigiD, BankID, eIDAS) — `national_id`
+    // is a government identifier (BSN, personal number, person
+    // identifier), document-grade for this purpose. Plain OIDC accounts
+    // stash an account `sub` in `national_id` instead and are excluded.
+    if let Some(class) = gov_eid_class(&claims.provider_id) {
+        let nid = claims.national_id.trim();
+        if !nid.is_empty() {
+            return Some((nid.to_string(), format!("eid:{class}")));
+        }
+    }
+    None
+}
+
+/// Government-eID provider class, or `None` for document-scan KYC and
+/// plain OIDC providers.
+fn gov_eid_class(provider_id: &str) -> Option<&'static str> {
+    let p = provider_id.to_ascii_lowercase();
+    if p.contains("digid") {
+        Some("digid")
+    } else if p.contains("bankid") {
+        Some("bankid")
+    } else if p.contains("eidas") {
+        Some("eidas")
+    } else {
+        None
+    }
+}
+
+/// `SHA-256("owlid:personhood:identity\0" || namespace || "\0" || identifier)`.
+fn personhood_identity_hash(namespace: &str, identifier: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"owlid:personhood:identity\0");
+    h.update(namespace.as_bytes());
+    h.update(b"\0");
+    h.update(identifier.as_bytes());
+    h.finalize().into()
+}
+
+/// HKDF-SHA-256 personhood secret. Salt = `SHA-256(issuer key hex)` so a
+/// verifier cannot recompute the secret even from the public identity;
+/// IKM = `identity_hash` ⇒ deterministic per real human.
+fn derive_personhood_secret(issuer_private_key_hex: &str, identity_hash: &[u8; 32]) -> [u8; 32] {
+    use hkdf::Hkdf;
+    use sha2::{Digest, Sha256};
+    let salt: [u8; 32] = Sha256::digest(issuer_private_key_hex.as_bytes()).into();
+    let hk = Hkdf::<Sha256>::new(Some(&salt), identity_hash);
+    let mut okm = [0u8; 32];
+    hk.expand(b"owlid:personhood:secret", &mut okm)
+        .expect("HKDF expand of 32 bytes never fails");
+    okm
 }
 
 #[cfg(test)]
@@ -356,10 +584,17 @@ mod tests {
             is_over_65: false,
             is_eu_citizen: true,
             is_resident: true,
+            resident_country: Some("NL".to_string()),
             verified_at: Utc::now(),
             verification_level: VerificationLevel::Substantial,
             provider_id: "mock-digid".to_string(),
+            name: None,
+            picture: None,
+            locale: None,
+            hosted_domain: None,
             verification_method: "simulated".to_string(),
+            email: None,
+            email_verified: None,
         }
     }
 
@@ -474,11 +709,18 @@ mod tests {
                 &issuer_private_key,
                 &owner_public_key,
                 SignatureAlgorithm::Ed25519,
+                "https://issuer.example",
+                false,
             )
             .await;
 
         assert!(result.is_ok());
-        let proof_doc = result.unwrap();
-        assert!(proof_doc.root_hash().len() > 0);
+        let sd_jwt_vc = result.unwrap();
+        owl_proof_system::sd_jwt::verify(
+            &sd_jwt_vc,
+            &issuer_keypair.public_key(),
+            &owl_proof_system::sd_jwt::VerifyParams::default(),
+        )
+        .expect("issued SD-JWT VC must verify");
     }
 }

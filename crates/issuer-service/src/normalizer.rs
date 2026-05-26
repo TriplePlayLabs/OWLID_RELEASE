@@ -3,7 +3,7 @@
 //! Different identity providers return claims in different formats.
 //! This module normalizes them to a common `VerifiedIdentityClaims` structure.
 
-use crate::models::{is_eu_citizen, is_over_age, VerificationLevel, VerifiedIdentityClaims};
+use crate::models::{VerificationLevel, VerifiedIdentityClaims, is_eu_citizen, is_over_age};
 use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,9 @@ pub enum RawProviderClaims {
     /// Didit KYC verification data
     Didit(DiditVerificationData),
 
+    /// Google OIDC ID-token + userinfo claims
+    Google(GoogleOidcClaims),
+
     /// Mock provider claims (for testing)
     Mock(MockClaims),
 }
@@ -50,6 +53,7 @@ impl RawProviderClaims {
             Self::StripeIdentity(claims) => normalize_stripe(claims),
             Self::Eidas(claims) => normalize_eidas(claims),
             Self::Didit(claims) => normalize_didit(claims),
+            Self::Google(claims) => normalize_google(claims),
             Self::Mock(claims) => normalize_mock(claims),
         }
     }
@@ -64,6 +68,7 @@ impl RawProviderClaims {
             Self::StripeIdentity(_) => "stripe-identity",
             Self::Eidas(_) => "eidas",
             Self::Didit(_) => "didit",
+            Self::Google(_) => "google",
             Self::Mock(c) => &c.provider_id,
         }
     }
@@ -100,10 +105,7 @@ fn normalize_digid(claims: &DigiDSamlClaims) -> VerifiedIdentityClaims {
     // Parse name from common_name
     let name_parts: Vec<&str> = claims.common_name.split_whitespace().collect();
     let (first_name, last_name) = if name_parts.len() >= 2 {
-        (
-            name_parts[0].to_string(),
-            name_parts[1..].join(" "),
-        )
+        (name_parts[0].to_string(), name_parts[1..].join(" "))
     } else {
         (claims.common_name.clone(), String::new())
     };
@@ -147,10 +149,17 @@ fn normalize_digid(claims: &DigiDSamlClaims) -> VerifiedIdentityClaims {
         is_over_65: is_over_age(date_of_birth, 65),
         is_eu_citizen: true, // Netherlands is EU
         is_resident: true,   // Verified by DigiD means Dutch resident
+        resident_country: Some("NL".to_string()),
         verified_at: Utc::now(),
         verification_level,
         provider_id: "digid".to_string(),
+        name: None,
+        picture: None,
+        locale: None,
+        hosted_domain: None,
         verification_method: "saml_assertion".to_string(),
+        email: None,
+        email_verified: None,
     }
 }
 
@@ -228,10 +237,17 @@ fn normalize_bankid(claims: &BankIdCompletionData) -> VerifiedIdentityClaims {
         is_over_65: is_over_age(date_of_birth, 65),
         is_eu_citizen: true, // Sweden is EU
         is_resident: true,   // BankID means Swedish resident
+        resident_country: Some("SE".to_string()),
         verified_at: Utc::now(),
         verification_level: VerificationLevel::High, // BankID is high assurance
         provider_id: "bankid".to_string(),
+        name: None,
+        picture: None,
+        locale: None,
+        hosted_domain: None,
         verification_method: "bank_mobile_app".to_string(),
+        email: None,
+        email_verified: None,
     }
 }
 
@@ -285,8 +301,18 @@ fn normalize_onfido(claims: &OnfidoApplicantData) -> VerifiedIdentityClaims {
 
     // Determine if passport based on document type
     let (passport_number, national_id) = match claims.document_type.as_deref() {
-        Some("passport") => (claims.document_number.clone(), claims.id_numbers.first().cloned().unwrap_or_default()),
-        _ => (None, claims.document_number.clone().or_else(|| claims.id_numbers.first().cloned()).unwrap_or_default()),
+        Some("passport") => (
+            claims.document_number.clone(),
+            claims.id_numbers.first().cloned().unwrap_or_default(),
+        ),
+        _ => (
+            None,
+            claims
+                .document_number
+                .clone()
+                .or_else(|| claims.id_numbers.first().cloned())
+                .unwrap_or_default(),
+        ),
     };
 
     VerifiedIdentityClaims {
@@ -306,19 +332,38 @@ fn normalize_onfido(claims: &OnfidoApplicantData) -> VerifiedIdentityClaims {
         document_expiry: None,
         document_issue_date: None,
         portrait_image: None,
-        street_address: claims.address.as_ref().map(|a| a.line1.clone()).unwrap_or_default(),
-        city: claims.address.as_ref().map(|a| a.town.clone()).unwrap_or_default(),
-        postal_code: claims.address.as_ref().map(|a| a.postcode.clone()).unwrap_or_default(),
+        street_address: claims
+            .address
+            .as_ref()
+            .map(|a| a.line1.clone())
+            .unwrap_or_default(),
+        city: claims
+            .address
+            .as_ref()
+            .map(|a| a.town.clone())
+            .unwrap_or_default(),
+        postal_code: claims
+            .address
+            .as_ref()
+            .map(|a| a.postcode.clone())
+            .unwrap_or_default(),
         country: country.clone(),
         is_over_18: is_over_age(date_of_birth, 18),
         is_over_21: is_over_age(date_of_birth, 21),
         is_over_65: is_over_age(date_of_birth, 65),
         is_eu_citizen: is_eu_citizen(&nationality),
         is_resident: false, // Can't determine residency from Onfido alone
+        resident_country: None,
         verified_at: Utc::now(),
         verification_level: VerificationLevel::High, // Document + liveness = high
         provider_id: "onfido".to_string(),
+        name: None,
+        picture: None,
+        locale: None,
+        hosted_domain: None,
         verification_method: "document_liveness".to_string(),
+        email: None,
+        email_verified: None,
     }
 }
 
@@ -339,7 +384,7 @@ pub struct JumioIdentityData {
     pub nationality: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gender: Option<String>,
-    pub id_type: String,       // "PASSPORT", "DRIVING_LICENSE", "ID_CARD"
+    pub id_type: String, // "PASSPORT", "DRIVING_LICENSE", "ID_CARD"
     pub id_number: String,
     pub id_country: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -385,19 +430,42 @@ fn normalize_jumio(claims: &JumioIdentityData) -> VerifiedIdentityClaims {
         document_expiry: None,
         document_issue_date: None,
         portrait_image: None,
-        street_address: claims.address.as_ref().map(|a| a.line1.clone()).unwrap_or_default(),
-        city: claims.address.as_ref().map(|a| a.city.clone()).unwrap_or_default(),
-        postal_code: claims.address.as_ref().map(|a| a.postal_code.clone()).unwrap_or_default(),
-        country: claims.address.as_ref().map(|a| a.country.clone()).unwrap_or(claims.id_country.clone()),
+        street_address: claims
+            .address
+            .as_ref()
+            .map(|a| a.line1.clone())
+            .unwrap_or_default(),
+        city: claims
+            .address
+            .as_ref()
+            .map(|a| a.city.clone())
+            .unwrap_or_default(),
+        postal_code: claims
+            .address
+            .as_ref()
+            .map(|a| a.postal_code.clone())
+            .unwrap_or_default(),
+        country: claims
+            .address
+            .as_ref()
+            .map(|a| a.country.clone())
+            .unwrap_or(claims.id_country.clone()),
         is_over_18: is_over_age(date_of_birth, 18),
         is_over_21: is_over_age(date_of_birth, 21),
         is_over_65: is_over_age(date_of_birth, 65),
         is_eu_citizen: is_eu_citizen(&nationality),
         is_resident: false,
+        resident_country: None,
         verified_at: Utc::now(),
         verification_level: VerificationLevel::High,
         provider_id: "jumio".to_string(),
+        name: None,
+        picture: None,
+        locale: None,
+        hosted_domain: None,
         verification_method: "document_liveness".to_string(),
+        email: None,
+        email_verified: None,
     }
 }
 
@@ -438,12 +506,8 @@ pub struct StripeAddress {
 }
 
 fn normalize_stripe(claims: &StripeVerifiedOutputs) -> VerifiedIdentityClaims {
-    let date_of_birth = NaiveDate::from_ymd_opt(
-        claims.dob.year,
-        claims.dob.month,
-        claims.dob.day,
-    )
-    .unwrap_or_else(|| NaiveDate::from_ymd_opt(1900, 1, 1).unwrap());
+    let date_of_birth = NaiveDate::from_ymd_opt(claims.dob.year, claims.dob.month, claims.dob.day)
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(1900, 1, 1).unwrap());
 
     let country = claims
         .address
@@ -464,7 +528,9 @@ fn normalize_stripe(claims: &StripeVerifiedOutputs) -> VerifiedIdentityClaims {
         national_id: claims.id_number.clone().unwrap_or_default(),
         passport_number: None,
         drivers_license: None,
-        tax_id: claims.id_number_type.as_ref()
+        tax_id: claims
+            .id_number_type
+            .as_ref()
             .filter(|t| t.contains("tax") || t.contains("cpf"))
             .and_then(|_| claims.id_number.clone()),
         document_type: None,
@@ -473,19 +539,38 @@ fn normalize_stripe(claims: &StripeVerifiedOutputs) -> VerifiedIdentityClaims {
         document_expiry: None,
         document_issue_date: None,
         portrait_image: None,
-        street_address: claims.address.as_ref().map(|a| a.line1.clone()).unwrap_or_default(),
-        city: claims.address.as_ref().map(|a| a.city.clone()).unwrap_or_default(),
-        postal_code: claims.address.as_ref().map(|a| a.postal_code.clone()).unwrap_or_default(),
+        street_address: claims
+            .address
+            .as_ref()
+            .map(|a| a.line1.clone())
+            .unwrap_or_default(),
+        city: claims
+            .address
+            .as_ref()
+            .map(|a| a.city.clone())
+            .unwrap_or_default(),
+        postal_code: claims
+            .address
+            .as_ref()
+            .map(|a| a.postal_code.clone())
+            .unwrap_or_default(),
         country,
         is_over_18: is_over_age(date_of_birth, 18),
         is_over_21: is_over_age(date_of_birth, 21),
         is_over_65: is_over_age(date_of_birth, 65),
         is_eu_citizen: is_eu_citizen(&nationality),
         is_resident: false,
+        resident_country: None,
         verified_at: Utc::now(),
         verification_level: VerificationLevel::High,
         provider_id: "stripe-identity".to_string(),
+        name: None,
+        picture: None,
+        locale: None,
+        hosted_domain: None,
         verification_method: "document_selfie".to_string(),
+        email: None,
+        email_verified: None,
     }
 }
 
@@ -557,10 +642,17 @@ fn normalize_eidas(claims: &EidasOidcClaims) -> VerifiedIdentityClaims {
         is_over_65: is_over_age(date_of_birth, 65),
         is_eu_citizen: true, // eIDAS is EU-only
         is_resident: true,   // Verified by national eID
+        resident_country: Some(claims.issuing_country.clone()),
         verified_at: Utc::now(),
         verification_level,
         provider_id: "eidas".to_string(),
+        name: None,
+        picture: None,
+        locale: None,
+        hosted_domain: None,
         verification_method: "eidas_oidc".to_string(),
+        email: None,
+        email_verified: None,
     }
 }
 
@@ -602,9 +694,28 @@ pub struct DiditVerificationData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_of_issue: Option<String>,
     /// Portrait image from document/selfie (base64)
-    /// Note: This is NOT included in the credential/Merkle tree for privacy
+    /// Note: This is NOT included in the issued SD-JWT VC for privacy
     #[serde(skip_serializing_if = "Option::is_none")]
     pub portrait_image: Option<String>,
+    /// Raw address from the document (Didit `address` field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// Standardised full address (Didit `formatted_address` or
+    /// `parsed_address.formatted_address`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formatted_address: Option<String>,
+    /// Place of birth (Didit `place_of_birth`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place_of_birth: Option<String>,
+    /// ISO 3166-1 alpha-2 country code from Didit `parsed_address.country`
+    /// — present iff the geographic-lookup pass produced a country.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resident_country: Option<String>,
+    /// Mirrors `parsed_address.is_verified`. `true` means Didit
+    /// validated the address against a real-world geo dataset, which is
+    /// the truth source for residency stamping.
+    #[serde(default)]
+    pub address_verified: bool,
 }
 
 fn normalize_didit(claims: &DiditVerificationData) -> VerifiedIdentityClaims {
@@ -624,40 +735,54 @@ fn normalize_didit(claims: &DiditVerificationData) -> VerifiedIdentityClaims {
         .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
 
     // Map gender code to full word if needed
-    let gender = claims.gender.as_ref().map(|g| match g.to_uppercase().as_str() {
-        "M" => "Male".to_string(),
-        "F" => "Female".to_string(),
-        "X" => "Other".to_string(),
-        other => other.to_string(),
-    });
+    let gender = claims
+        .gender
+        .as_ref()
+        .map(|g| match g.to_uppercase().as_str() {
+            "M" => "Male".to_string(),
+            "F" => "Female".to_string(),
+            "X" => "Other".to_string(),
+            other => other.to_string(),
+        });
 
     // Determine ID fields based on document type
-    let (passport_number, drivers_license, national_id) = match claims.document_type.to_lowercase().as_str() {
-        "passport" => (Some(claims.document_number.clone()), None, String::new()),
-        "driver's license" | "drivers_license" | "driving_license" => {
-            (None, Some(claims.document_number.clone()), String::new())
-        }
-        "id_card" | "national_id" | "id card" => {
-            (None, None, claims.document_number.clone())
-        }
-        _ => (None, None, claims.document_number.clone()),
-    };
+    let (passport_number, drivers_license, national_id) =
+        match claims.document_type.to_lowercase().as_str() {
+            "passport" => (Some(claims.document_number.clone()), None, String::new()),
+            "driver's license" | "drivers_license" | "driving_license" => {
+                (None, Some(claims.document_number.clone()), String::new())
+            }
+            "id_card" | "national_id" | "id card" => (None, None, claims.document_number.clone()),
+            _ => (None, None, claims.document_number.clone()),
+        };
+
+    // Residency truth source: Didit's geo-lookup said "yes, this
+    // address matches a real-world place" AND we got a country code
+    // back. Anything weaker leaves residency unstamped — passport
+    // alone is not proof of residence.
+    let resident_country_code = claims.resident_country.as_deref().unwrap_or("");
+    let is_resident = claims.address_verified && resident_country_code.len() == 2;
 
     VerifiedIdentityClaims {
         first_name: claims.first_name.clone(),
         last_name: claims.last_name.clone(),
         date_of_birth,
-        place_of_birth: String::new(), // Didit doesn't typically provide this
+        place_of_birth: claims.place_of_birth.clone().unwrap_or_default(),
         nationality: claims.nationality.clone(),
         gender,
         national_id,
         passport_number,
         drivers_license,
         tax_id: None,
-        street_address: String::new(), // Didit doesn't provide address
+        // Address surfaced from Didit's parsed_address pass.
+        street_address: claims.address.clone().unwrap_or_default(),
         city: String::new(),
         postal_code: String::new(),
-        country: claims.issuing_state.clone(),
+        country: if is_resident {
+            resident_country_code.to_string()
+        } else {
+            claims.issuing_state.clone()
+        },
         // Document information (new fields)
         document_type: Some(claims.document_type.clone()),
         document_number: Some(claims.document_number.clone()),
@@ -671,12 +796,23 @@ fn normalize_didit(claims: &DiditVerificationData) -> VerifiedIdentityClaims {
         is_over_21: is_over_age(date_of_birth, 21),
         is_over_65: is_over_age(date_of_birth, 65),
         is_eu_citizen: is_eu_citizen(&claims.nationality),
-        is_resident: false, // Can't determine residency from document alone
+        is_resident,
+        resident_country: if is_resident {
+            Some(resident_country_code.to_string())
+        } else {
+            None
+        },
         // Verification metadata
         verified_at: Utc::now(),
         verification_level: VerificationLevel::High, // Document + liveness = high
         provider_id: "didit".to_string(),
+        name: None,
+        picture: None,
+        locale: None,
+        hosted_domain: None,
         verification_method: "document_liveness".to_string(),
+        email: None,
+        email_verified: None,
     }
 }
 
@@ -744,10 +880,123 @@ fn normalize_mock(claims: &MockClaims) -> VerifiedIdentityClaims {
         is_over_65: is_over_age(dob, 65),
         is_eu_citizen: is_eu_citizen(&claims.nationality),
         is_resident: claims.verifies_residency,
+        resident_country: if claims.verifies_residency { Some(claims.nationality.clone()) } else { None },
         verified_at: Utc::now(),
         verification_level: claims.verification_level,
         provider_id: claims.provider_id.clone(),
+        name: None,
+        picture: None,
+        locale: None,
+        hosted_domain: None,
         verification_method: claims.verification_method.clone(),
+        email: None,
+        email_verified: None,
+    }
+}
+
+// =============================================================================
+// Google OIDC Claims
+// =============================================================================
+
+/// Verified Google OIDC claims (subset of OpenID Connect standard claims).
+///
+/// Sourced from a JWKS-verified `id_token` plus a `/userinfo` fetch.
+/// Google attests `email` + `email_verified` and the user's display name;
+/// it does **not** attest date-of-birth, address, or nationality, so the
+/// derived `VerifiedIdentityClaims` carry placeholder DOB and `is_resident
+/// = false`. Verifiers that need strong identity must pair Google with a
+/// dedicated KYC provider (Didit / Onfido / Stripe Identity).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GoogleOidcClaims {
+    /// Google's stable user identifier (`sub` claim).
+    pub sub: String,
+    /// Verified email address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Whether Google has verified the email address.
+    #[serde(default)]
+    pub email_verified: bool,
+    /// Given name (first name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub given_name: Option<String>,
+    /// Family name (last name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family_name: Option<String>,
+    /// Full display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Profile picture URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    /// BCP-47 locale (e.g. "en-GB").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+    /// Workspace hosted-domain (`hd` claim) — present iff the user
+    /// authenticated against a Google Workspace org rather than a
+    /// consumer account. Useful for B2B / corporate-SSO flows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hd: Option<String>,
+}
+
+fn normalize_google(claims: &GoogleOidcClaims) -> VerifiedIdentityClaims {
+    // Split display name when only `name` is provided.
+    let (first_name, last_name) = match (&claims.given_name, &claims.family_name) {
+        (Some(f), Some(l)) => (f.clone(), l.clone()),
+        _ => {
+            let display = claims.name.clone().unwrap_or_default();
+            let parts: Vec<&str> = display.split_whitespace().collect();
+            match parts.len() {
+                0 => (String::new(), String::new()),
+                1 => (parts[0].to_string(), String::new()),
+                _ => (parts[0].to_string(), parts[1..].join(" ")),
+            }
+        }
+    };
+
+    // Google OIDC does not vouch for DOB, address, or nationality.
+    let date_of_birth = NaiveDate::from_ymd_opt(1900, 1, 1).unwrap();
+
+    VerifiedIdentityClaims {
+        first_name,
+        last_name,
+        date_of_birth,
+        place_of_birth: String::new(),
+        nationality: String::new(),
+        gender: None,
+        national_id: claims.sub.clone(),
+        passport_number: None,
+        drivers_license: None,
+        tax_id: None,
+        document_type: None,
+        document_number: None,
+        issuing_country: None,
+        document_expiry: None,
+        document_issue_date: None,
+        portrait_image: None,
+        street_address: String::new(),
+        city: String::new(),
+        postal_code: String::new(),
+        country: String::new(),
+        // Google IS the source of truth for email + email_verified.
+        email: claims.email.clone(),
+        email_verified: Some(claims.email_verified),
+        name: claims.name.clone(),
+        picture: claims.picture.clone(),
+        locale: claims.locale.clone(),
+        hosted_domain: claims.hd.clone(),
+        is_over_18: false,
+        is_over_21: false,
+        is_over_65: false,
+        is_eu_citizen: false,
+        is_resident: false,
+        resident_country: None,
+        verified_at: Utc::now(),
+        // Email-only OIDC is a Low-assurance signal. Pair with a KYC
+        // provider for anything regulated.
+        verification_level: VerificationLevel::Low,
+        provider_id: "google".to_string(),
+        verification_method: "google_oidc".to_string(),
     }
 }
 

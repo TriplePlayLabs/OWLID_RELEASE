@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * OwlID Verification Service
- * Token verification, trusted issuer management, and credential revocation
+ * SD-JWT VC presentation verification, trusted issuer management, and credential revocation
  *
  * The version of the OpenAPI document: 1.0.0
  *
@@ -32,6 +32,26 @@ export interface CreatePresentationResponse {
    */
   nonce: string
   /**
+   * `openid4vp://?request_uri=...` deeplink — a standard wallet
+   * scans this as a QR and follows the Request Object flow.
+   * @type {string}
+   * @memberof CreatePresentationResponse
+   */
+  openid4vpUri: string
+  /**
+   * Absolute URL of the OpenID4VP 1.0 §5 Request Object — external
+   * wallets `GET` this to learn `response_uri`, `dcql_query`, `nonce`.
+   * @type {string}
+   * @memberof CreatePresentationResponse
+   */
+  requestUri: string
+  /**
+   * Absolute URL of the OpenID4VP `direct_post` response endpoint.
+   * @type {string}
+   * @memberof CreatePresentationResponse
+   */
+  responseUri: string
+  /**
    *
    * @type {string}
    * @memberof CreatePresentationResponse
@@ -53,6 +73,9 @@ export function instanceOfCreatePresentationResponse(
 ): value is CreatePresentationResponse {
   if (!('expiresIn' in value) || value['expiresIn'] === undefined) return false
   if (!('nonce' in value) || value['nonce'] === undefined) return false
+  if (!('openid4vpUri' in value) || value['openid4vpUri'] === undefined) return false
+  if (!('requestUri' in value) || value['requestUri'] === undefined) return false
+  if (!('responseUri' in value) || value['responseUri'] === undefined) return false
   if (!('sessionId' in value) || value['sessionId'] === undefined) return false
   if (!('wsUrl' in value) || value['wsUrl'] === undefined) return false
   return true
@@ -72,6 +95,9 @@ export function CreatePresentationResponseFromJSONTyped(
   return {
     expiresIn: json['expiresIn'],
     nonce: json['nonce'],
+    openid4vpUri: json['openid4vpUri'],
+    requestUri: json['requestUri'],
+    responseUri: json['responseUri'],
     sessionId: json['sessionId'],
     wsUrl: json['wsUrl'],
   }
@@ -92,6 +118,9 @@ export function CreatePresentationResponseToJSONTyped(
   return {
     expiresIn: value['expiresIn'],
     nonce: value['nonce'],
+    openid4vpUri: value['openid4vpUri'],
+    requestUri: value['requestUri'],
+    responseUri: value['responseUri'],
     sessionId: value['sessionId'],
     wsUrl: value['wsUrl'],
   }

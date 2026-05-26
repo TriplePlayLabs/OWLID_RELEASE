@@ -7,8 +7,8 @@ import {
   OwlVerifier,
   OwlIssuer,
   EU_ALPHA2,
-  signTokenWithPasskey,
-  signToken,
+  proveCredentialWithPasskey,
+  proveCredential,
   respondToPresentation,
   type VerificationResult,
   type IssuanceSession,
@@ -69,8 +69,8 @@ expect(typeof issuer.listProviders === 'function', 'OwlIssuer.listProviders exis
 
 // 3. Static helpers.
 expect(typeof respondToPresentation === 'function', 'respondToPresentation exported')
-expect(typeof signToken === 'function', 'signToken exported')
-expect(typeof signTokenWithPasskey === 'function', 'signTokenWithPasskey exported')
+expect(typeof proveCredential === 'function', 'proveCredential exported')
+expect(typeof proveCredentialWithPasskey === 'function', 'proveCredentialWithPasskey exported')
 
 // 4. Reference data.
 expect(EU_ALPHA2.includes('NL'), 'EU_ALPHA2 contains NL')

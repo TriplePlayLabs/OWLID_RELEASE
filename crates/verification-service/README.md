@@ -82,15 +82,16 @@ GDPR routes additionally require the `gdpr` permission. Trusted issuer mutation,
 ### 1. Verify a token
 
 ```bash
-# 1. Holder builds a token using @owlid/sdk locally with the verifier's challenge.
-# 2. Verifier service POSTs the token + challenge here:
+# 1. Holder builds an SD-JWT VC presentation with @owlid/sdk
+#    (selected disclosures + KB-JWT bound to the verifier's challenge).
+# 2. Verifier service POSTs the presentation + challenge here:
 
 curl -X POST http://localhost:8000/verify \
   -H "Authorization: Bearer owlid_sk_test_dev0000000000000000000000000000000000000000" \
   -H "Content-Type: application/json" \
   -d '{
-    "token": "OID1:...",
-    "challenge": "the-challenge-the-verifier-issued"
+    "presentation": "<jwt>~<disclosure>~<disclosure>~<kb-jwt>",
+    "challenge": "the-nonce-bound-into-the-kb-jwt"
   }'
 ```
 
@@ -99,7 +100,7 @@ Response:
 ```json
 {
   "valid": true,
-  "subjects": { "firstName": "Alice", "isOver18": true },
+  "subjects": { "given_name": "Alice", "age_over_18": true },
   "error": null
 }
 ```
@@ -180,22 +181,22 @@ Response is a signed receipt; the actual erasure also writes an `audit_events` r
 
 ## Configuration
 
-| Variable                    | Default                                                          | Notes                                |
-| --------------------------- | ---------------------------------------------------------------- | ------------------------------------ |
-| `VERIFICATION_DATABASE_URL` | `postgres://owl:owl_dev@postgres-verification:5432/verification` | Required                             |
-| `SERVER_HOST`               | `0.0.0.0`                                                        |                                      |
-| `SERVER_PORT`               | `8000`                                                           |                                      |
-| `RUST_LOG`                  | `info`                                                           | Tracing filter                       |
-| `ADMIN_JWT_SECRET`          | (required, no default in prod)                                   | HS256 secret for admin JWTs          |
-| `CORS_ALLOWED_ORIGINS`      | dev defaults (`localhost:5000/5001/4000`)                        | Comma-separated list                 |
-| `RATE_LIMIT_ENABLED`        | `true`                                                           |                                      |
-| `RATE_LIMIT_MAX_REQUESTS`   | `100`                                                            | Per identifier per window            |
-| `RATE_LIMIT_WINDOW_MINUTES` | `1`                                                              |                                      |
-| `MIDNIGHT_ENABLED`          | `true`                                                           | If true the service consults sidecar |
-| `MIDNIGHT_SIDECAR_URL`      | `http://midnight-sidecar:3000`                                   | Bridge to chain                      |
-| `MIDNIGHT_SIDECAR_API_KEY`  | (required if `MIDNIGHT_ENABLED=true`)                            | Shared secret with sidecar           |
-| `ENCRYPTION_KEY`            | (optional)                                                       | 32-byte hex, AES-GCM at rest         |
-| `TLS_ENABLED`               | `false`                                                          | Prefer terminating TLS upstream      |
+| Variable                    | Default                                                          | Notes                                                  |
+| --------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------ |
+| `VERIFICATION_DATABASE_URL` | `postgres://owl:owl_dev@postgres-verification:5432/verification` | Required                                               |
+| `SERVER_HOST`               | `0.0.0.0`                                                        |                                                        |
+| `SERVER_PORT`               | `8000`                                                           |                                                        |
+| `RUST_LOG`                  | `info`                                                           | Tracing filter                                         |
+| `ADMIN_JWT_SECRET`          | (required, no default in prod)                                   | HS256 secret for admin JWTs                            |
+| `CORS_ALLOWED_ORIGINS`      | dev defaults (`localhost:5000/5001/4000`)                        | Comma-separated list                                   |
+| `RATE_LIMIT_ENABLED`        | `true`                                                           |                                                        |
+| `RATE_LIMIT_MAX_REQUESTS`   | `100`                                                            | Per identifier per window                              |
+| `RATE_LIMIT_WINDOW_MINUTES` | `1`                                                              |                                                        |
+| `MIDNIGHT_SIDECAR_URL`      | `http://midnight-sidecar:3000`                                   | Sidecar URL (required; service exits 1 if unreachable) |
+| `MIDNIGHT_SIDECAR_API_KEY`  | (required)                                                       | Shared secret with sidecar                             |
+| `MIDNIGHT_SIDECAR_TIMEOUT`  | `120`                                                            | Per-request timeout in seconds                         |
+| `ENCRYPTION_KEY`            | (optional)                                                       | 32-byte hex, AES-GCM at rest                           |
+| `TLS_ENABLED`               | `false`                                                          | Prefer terminating TLS upstream                        |
 
 Full env reference: see `.env.example` at the repo root.
 

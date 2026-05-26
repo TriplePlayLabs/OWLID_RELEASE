@@ -79,6 +79,20 @@ export interface VerifiedIdentityClaims {
    */
   driversLicense?: string | null
   /**
+   * Email address. Present for OIDC providers (Google, etc.) that
+   * expose it; absent for document-only providers.
+   * @type {string}
+   * @memberof VerifiedIdentityClaims
+   */
+  email?: string | null
+  /**
+   * Provider-attested `email_verified` flag — drives the
+   * `email:verified` predicate via Midnight `attestEmailVerified`.
+   * @type {boolean}
+   * @memberof VerifiedIdentityClaims
+   */
+  emailVerified?: boolean | null
+  /**
    *
    * @type {string}
    * @memberof VerifiedIdentityClaims
@@ -90,6 +104,13 @@ export interface VerifiedIdentityClaims {
    * @memberof VerifiedIdentityClaims
    */
   gender?: string | null
+  /**
+   * Workspace hosted-domain (Google Workspace `hd`). Distinguishes
+   * consumer accounts from corporate-SSO accounts.
+   * @type {string}
+   * @memberof VerifiedIdentityClaims
+   */
+  hostedDomain?: string | null
   /**
    *
    * @type {boolean}
@@ -133,6 +154,20 @@ export interface VerifiedIdentityClaims {
    */
   lastName: string
   /**
+   * BCP-47 locale tag. Google `locale` claim.
+   * @type {string}
+   * @memberof VerifiedIdentityClaims
+   */
+  locale?: string | null
+  /**
+   * Display name (Google `name`, Apple full name). Set by OIDC
+   * providers that expose the user's display name separately from
+   * first/last.
+   * @type {string}
+   * @memberof VerifiedIdentityClaims
+   */
+  name?: string | null
+  /**
    * National ID number (BSN, SSN, etc.)
    * @type {string}
    * @memberof VerifiedIdentityClaims
@@ -151,6 +186,12 @@ export interface VerifiedIdentityClaims {
    */
   passportNumber?: string | null
   /**
+   * Profile picture URL. Google `picture` claim.
+   * @type {string}
+   * @memberof VerifiedIdentityClaims
+   */
+  picture?: string | null
+  /**
    *
    * @type {string}
    * @memberof VerifiedIdentityClaims
@@ -158,7 +199,7 @@ export interface VerifiedIdentityClaims {
   placeOfBirth: string
   /**
    * Portrait image from document/selfie (base64)
-   * Returned in API response but excluded from Merkle tree for privacy
+   * Returned in API response but excluded from the issued SD-JWT VC for privacy
    * @type {string}
    * @memberof VerifiedIdentityClaims
    */
@@ -175,6 +216,14 @@ export interface VerifiedIdentityClaims {
    * @memberof VerifiedIdentityClaims
    */
   providerId: string
+  /**
+   * ISO 3166-1 alpha-2 residence country, set iff the provider
+   * returned a geo-verified address. Drives the per-country residency
+   * attestation (`attestResidencyIn`). `None` ⇒ no residency stamp.
+   * @type {string}
+   * @memberof VerifiedIdentityClaims
+   */
+  residentCountry?: string | null
   /**
    *
    * @type {string}
@@ -254,8 +303,11 @@ export function VerifiedIdentityClaimsFromJSONTyped(
     documentNumber: json['documentNumber'] == null ? undefined : json['documentNumber'],
     documentType: json['documentType'] == null ? undefined : json['documentType'],
     driversLicense: json['driversLicense'] == null ? undefined : json['driversLicense'],
+    email: json['email'] == null ? undefined : json['email'],
+    emailVerified: json['emailVerified'] == null ? undefined : json['emailVerified'],
     firstName: json['firstName'],
     gender: json['gender'] == null ? undefined : json['gender'],
+    hostedDomain: json['hostedDomain'] == null ? undefined : json['hostedDomain'],
     isEuCitizen: json['isEuCitizen'],
     isOver18: json['isOver18'],
     isOver21: json['isOver21'],
@@ -263,13 +315,17 @@ export function VerifiedIdentityClaimsFromJSONTyped(
     isResident: json['isResident'],
     issuingCountry: json['issuingCountry'] == null ? undefined : json['issuingCountry'],
     lastName: json['lastName'],
+    locale: json['locale'] == null ? undefined : json['locale'],
+    name: json['name'] == null ? undefined : json['name'],
     nationalId: json['nationalId'],
     nationality: json['nationality'],
     passportNumber: json['passportNumber'] == null ? undefined : json['passportNumber'],
+    picture: json['picture'] == null ? undefined : json['picture'],
     placeOfBirth: json['placeOfBirth'],
     portraitImage: json['portraitImage'] == null ? undefined : json['portraitImage'],
     postalCode: json['postalCode'],
     providerId: json['providerId'],
+    residentCountry: json['residentCountry'] == null ? undefined : json['residentCountry'],
     streetAddress: json['streetAddress'],
     taxId: json['taxId'] == null ? undefined : json['taxId'],
     verificationLevel: VerificationLevelFromJSON(json['verificationLevel']),
@@ -305,8 +361,11 @@ export function VerifiedIdentityClaimsToJSONTyped(
     documentNumber: value['documentNumber'],
     documentType: value['documentType'],
     driversLicense: value['driversLicense'],
+    email: value['email'],
+    emailVerified: value['emailVerified'],
     firstName: value['firstName'],
     gender: value['gender'],
+    hostedDomain: value['hostedDomain'],
     isEuCitizen: value['isEuCitizen'],
     isOver18: value['isOver18'],
     isOver21: value['isOver21'],
@@ -314,13 +373,17 @@ export function VerifiedIdentityClaimsToJSONTyped(
     isResident: value['isResident'],
     issuingCountry: value['issuingCountry'],
     lastName: value['lastName'],
+    locale: value['locale'],
+    name: value['name'],
     nationalId: value['nationalId'],
     nationality: value['nationality'],
     passportNumber: value['passportNumber'],
+    picture: value['picture'],
     placeOfBirth: value['placeOfBirth'],
     portraitImage: value['portraitImage'],
     postalCode: value['postalCode'],
     providerId: value['providerId'],
+    residentCountry: value['residentCountry'],
     streetAddress: value['streetAddress'],
     taxId: value['taxId'],
     verificationLevel: VerificationLevelToJSON(value['verificationLevel']),

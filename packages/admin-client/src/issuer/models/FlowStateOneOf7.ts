@@ -14,11 +14,18 @@
 
 import { mapValues } from '../runtime.js'
 /**
- * Form: processing submission
+ * OIDC redirect: callback received, exchanging code + verifying
+ * the ID token against the provider JWKS.
  * @export
  * @interface FlowStateOneOf7
  */
 export interface FlowStateOneOf7 {
+  /**
+   *
+   * @type {string}
+   * @memberof FlowStateOneOf7
+   */
+  state: string
   /**
    *
    * @type {string}
@@ -32,13 +39,14 @@ export interface FlowStateOneOf7 {
  * @enum {string}
  */
 export enum FlowStateOneOf7TypeEnum {
-  form_processing = 'form_processing',
+  oidc_processing = 'oidc_processing',
 }
 
 /**
  * Check if a given object implements the FlowStateOneOf7 interface.
  */
 export function instanceOfFlowStateOneOf7(value: object): value is FlowStateOneOf7 {
+  if (!('state' in value) || value['state'] === undefined) return false
   if (!('type' in value) || value['type'] === undefined) return false
   return true
 }
@@ -55,6 +63,7 @@ export function FlowStateOneOf7FromJSONTyped(
     return json
   }
   return {
+    state: json['state'],
     type: json['type'],
   }
 }
@@ -72,6 +81,7 @@ export function FlowStateOneOf7ToJSONTyped(
   }
 
   return {
+    state: value['state'],
     type: value['type'],
   }
 }

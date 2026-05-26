@@ -14,7 +14,7 @@
 
 import { mapValues } from '../runtime.js'
 /**
- * Verification completed successfully
+ * Form: waiting for user to submit form
  * @export
  * @interface FlowStateOneOf8
  */
@@ -32,7 +32,7 @@ export interface FlowStateOneOf8 {
  * @enum {string}
  */
 export enum FlowStateOneOf8TypeEnum {
-  completed = 'completed',
+  form_pending = 'form_pending',
 }
 
 /**

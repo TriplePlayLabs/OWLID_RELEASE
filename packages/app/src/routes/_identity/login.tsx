@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 import { Key, Lock, Loader2, Fingerprint, Shield } from 'lucide-react'
 import { toast } from 'sonner'
@@ -7,24 +7,26 @@ import { StepCard } from '~/components/identity/StepCard'
 import { useIdentity } from '~/hooks/use-identity'
 import { useWebAuthn } from '~/hooks/use-webauthn'
 import { storage } from '@owlid/sdk'
+import { readAuthState } from '~/lib/auth-gate'
 
 export const Route = createFileRoute('/_identity/login')({
+  beforeLoad: async () => {
+    const state = await readAuthState()
+    if (state.kind === 'unregistered') {
+      throw redirect({ to: '/register', replace: true })
+    }
+    // 'unknown' (SSR) or any has-passkey state: render the login page.
+  },
   component: LoginPage,
 })
 
 function LoginPage() {
   const navigate = useNavigate()
-  const { credentialId, isRegistered } = useIdentity()
+  const { credentialId } = useIdentity()
   const [isLoading, setIsLoading] = useState(false)
   const [isLoggedIn, setIsLoggedIn] = useState(false)
 
   const { authenticate } = useWebAuthn()
-
-  // Redirect if not registered
-  if (!isRegistered && !credentialId) {
-    navigate({ to: '/register' })
-    return null
-  }
 
   const handleLogin = async () => {
     setIsLoading(true)
@@ -38,11 +40,11 @@ function LoginPage() {
           description: 'Identity verified via Passkey.',
         })
         // Navigate based on whether credential already exists
-        const hasCredential = await storage.hasStoredCredential()
+        const hasCredential = await storage.hasAnyCredential()
         if (hasCredential) {
-          navigate({ to: '/passport' })
+          navigate({ to: '/wallet' })
         } else {
-          navigate({ to: '/create-identity' })
+          navigate({ to: '/add-provider' })
         }
       }
     } catch (error: unknown) {
@@ -57,7 +59,7 @@ function LoginPage() {
   }
 
   return (
-    <div className="my-auto w-full max-w-md mx-auto px-4 py-8">
+    <div className="w-full max-w-md mx-auto px-4 pt-8 pb-12">
       <div className="space-y-4">
         {/* Step 1: Complete */}
         <StepCard

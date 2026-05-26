@@ -25,15 +25,21 @@ import { Textarea } from '@owlid/ui/components/ui/textarea'
 import { registerModal, type ModalRenderProps } from '@owlid/ui/modal'
 import { useCreateApiKey } from '~/hooks/use-admin'
 
+// Scopes the verification service actually enforces (see `require_permission`
+// in the Rust router). `verify` covers the read + verify surface; `admin`
+// gates issuer + revocation management; `gdpr` gates erasure. There is no
+// finer-grained `manage_*` scope — issuer/revocation routes require `admin`.
 const AVAILABLE_PERMISSIONS = [
-  { id: 'verify', label: 'Verify', description: 'Verify credentials and tokens' },
-  { id: 'manage_issuers', label: 'Manage Issuers', description: 'Add/remove trusted issuers' },
   {
-    id: 'manage_revocations',
-    label: 'Manage Revocations',
-    description: 'Revoke/reactivate credentials',
+    id: 'verify',
+    label: 'Verify',
+    description: 'Verify presentations; read trusted issuers and revocation status',
   },
-  { id: 'admin', label: 'Admin', description: 'Full administrative access' },
+  {
+    id: 'admin',
+    label: 'Admin',
+    description: 'Manage trusted issuers, revocations and service metrics',
+  },
   { id: 'gdpr', label: 'GDPR Erasure', description: 'Right-to-be-forgotten endpoint' },
 ]
 

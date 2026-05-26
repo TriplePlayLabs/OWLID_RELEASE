@@ -1,7 +1,5 @@
-//! T-008: Credential schema validation
-//!
-//! Provides schema definitions and validation for credential attributes.
-//! Schemas enforce required fields and type constraints on documents.
+//! Credential schema definitions and attribute validation.
+//! Schemas enforce required fields and type constraints.
 
 use crate::error::ProofSystemError;
 use serde::{Deserialize, Serialize};

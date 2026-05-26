@@ -1,3 +1,4 @@
+#![allow(dead_code)] // intentional API surface / serde fields
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;

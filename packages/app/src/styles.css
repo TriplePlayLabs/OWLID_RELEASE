@@ -63,7 +63,8 @@
   perspective: 1500px;
   width: 100%;
   max-width: 420px;
-  aspect-ratio: 3 / 5;
+  /* Real ICAO passport booklet page: 88 × 125 mm. */
+  aspect-ratio: 88 / 125;
   margin: 0 auto;
   position: relative;
   z-index: 10;
@@ -100,6 +101,88 @@
   -webkit-backface-visibility: hidden;
 }
 
+/* Generic 3D flip wrapper shared by every credential card. Same physics
+   as `.passport-book` (perspective on container, preserve-3d on book,
+   180° rotateY on `.is-open`) so the UX feels uniform. Height is
+   pinned to match the wallet-stack card (h-56 = 14rem) so the flip
+   happens on the same surface the user just tapped — no size jump. */
+.card-book-container {
+  perspective: 1500px;
+  width: 100%;
+  height: 14rem;
+  margin: 0 auto;
+  position: relative;
+  z-index: 10;
+}
+
+/* Passport flip wrapper — like `.card-book-container` but its height is
+   driven inline (credit-card height closed, real passport-page aspect
+   open) and transitions, so the card grows into a full data page as it
+   flips. */
+.passport-flip-container {
+  perspective: 1500px;
+  width: 100%;
+  margin: 0 auto;
+  position: relative;
+  z-index: 10;
+  /* Smooth, non-overshooting ease — the flip's bouncy bezier overshoots
+     past the target and makes the height stretch bounce. */
+  transition: height 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-book {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  cursor: pointer;
+  /* Match the card radius so the focus outline is rounded, not a
+     sharp rectangle around the rounded card. */
+  border-radius: 1rem;
+}
+
+.card-book:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 3px;
+  border-radius: 1rem;
+}
+
+.card-book.is-open {
+  transform: rotateY(180deg);
+}
+
+.card-book__face {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  border-radius: 1rem;
+  overflow: hidden;
+  /* Opaque base so a card mid-flip never lets the stacked card behind
+     it bleed through (card components paint their own gradient on top). */
+  background: #09090b;
+  /* Card geometry. A hairline lit edge along the top reads as physical
+     thickness; a 1px containing ring crisps the rim. The UPWARD shadow
+     is what sells the stack — the front card casts it onto the card
+     peeking behind it, so they read as separate slabs instead of two
+     rectangles glued flush. The DOWNWARD shadow floats the deck off
+     the page. Pure box-shadow — the rotateY flip is untouched. */
+  /* Deck-level shadows only: the card's own 3D-shaded border lives on
+     the card component (it paints its gradient over this wrapper, so a
+     bevel here would be hidden). Top shadow tucks the card peeking
+     behind; bottom shadow floats the deck off the page. */
+  box-shadow:
+    0 -10px 20px -10px rgba(0, 0, 0, 0.6),
+    0 18px 32px -14px rgba(0, 0, 0, 0.9);
+}
+
+.card-book__back {
+  transform: rotateY(180deg);
+}
+
 /* Front Cover */
 .passport-cover {
   background: #09090b;
@@ -134,6 +217,9 @@
     0 0,
     10px 10px;
   overflow: hidden;
+  /* Container context so the MRZ line can size itself (`cqi`) to the
+     data-page width and fit all 44 glyphs without wrapping. */
+  container-type: inline-size;
 }
 
 /* Decorative Guilloche Pattern Overlay */
@@ -271,13 +357,22 @@
 
 .mrz-area {
   margin-top: auto;
-  font-family: 'OCR-B', 'JetBrains Mono', monospace;
-  font-size: 14px;
-  line-height: 1.4;
-  letter-spacing: 2px;
-  word-break: break-all;
   color: #000;
-  padding-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(0, 0, 0, 0.25);
+}
+
+/* One MRZ line is exactly 44 fixed-width glyphs. Size it to the data
+   page width (a container query) so all 44 fit on one line without
+   wrapping — real passports never wrap the MRZ. */
+.mrz-line {
+  font-family: 'OCR-B', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: clamp(7px, 3vw, 13px);
+  font-size: min(13px, 3.6cqi);
+  white-space: pre;
+  letter-spacing: 0;
+  line-height: 1.6;
+  color: #111;
 }
 
 /* Custom scrollbar for passport page */
@@ -321,6 +416,73 @@
 }
 
 @layer components {
+  /* Apple-Wallet-style stack of credential cards. Each card slots into a
+     grid row of fixed height; the rendered card is taller and overflows
+     upward, so a slice of each previous card stays visible at the top.
+     Hover/focus lifts the card, brings it to the front, and reveals its
+     full surface. */
+  .card-stack {
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+  .card-stack__item {
+    position: relative;
+    margin-top: -10rem; /* peek height — only the top ~3rem of the prior card shows */
+    transition:
+      transform 220ms ease,
+      box-shadow 220ms ease;
+    z-index: calc(var(--stack-index, 0) + 1);
+  }
+  .card-stack__item:first-child {
+    margin-top: 0;
+  }
+  /* Cards behind the front one sit slightly smaller — a real deck
+     recedes with depth. Scale the inner container, not the stack
+     item, so the hover/peek transforms on the item are untouched. */
+  .card-stack__item:not(:last-child) .card-book-container {
+    transform: scale(0.975);
+    transition: transform 220ms ease;
+  }
+  .card-stack__item:hover .card-book-container,
+  .card-stack__item:focus-within .card-book-container {
+    transform: scale(1);
+  }
+  /* With a single card there's nothing to peek behind, so the negative
+     margin would just leave a useless empty band above the card.
+     `:only-child` disables the peek in that case. */
+  .card-stack__item:only-child {
+    margin-top: 0;
+  }
+  .card-stack__item:hover,
+  .card-stack__item:focus-within {
+    transform: translateY(-6px);
+    /* Local to the stack only — must stay below the modal overlay
+       (z-50) so an open Present/Manual dialog covers the cards. */
+    z-index: 20;
+  }
+  /* Lifted card floats higher — one deeper shadow. */
+  .card-stack__item:hover .card-book__face,
+  .card-stack__item:focus-within .card-book__face {
+    box-shadow:
+      0 -10px 20px -10px rgba(0, 0, 0, 0.6),
+      0 30px 46px -16px rgba(0, 0, 0, 0.95);
+  }
+  .card-stack__item:hover ~ .card-stack__item {
+    transform: translateY(4rem);
+  }
+  /* While one card is open the rest of the stack is hidden — only the
+     flipped card and its details remain. The open card keeps its
+     component instance (it stays in the list) so the open/close flip
+     animates instead of remounting. */
+  .card-stack__item--open {
+    margin-top: 0;
+    z-index: 20;
+  }
+  .card-stack:has(.card-stack__item--open) .card-stack__item:not(.card-stack__item--open) {
+    display: none;
+  }
+
   .owl-container {
     position: relative;
     width: 150px;
@@ -505,6 +667,32 @@
   }
   50% {
     transform: translateY(-10px);
+  }
+}
+
+/* LoadingScreen — pulsing radial glow behind the owl. */
+@keyframes loader-glow {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.75;
+  }
+}
+
+/* LoadingScreen — breathing dots under the wordmark. */
+@keyframes loader-dot {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
   }
 }
 

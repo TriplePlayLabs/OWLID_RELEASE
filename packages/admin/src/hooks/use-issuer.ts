@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   getInfoApi,
   getOidcApi,
-  getProvidersApi,
   getSessionsApi,
   type IssuerInfoResponse,
   type OidcProviderInfo,
@@ -48,7 +47,9 @@ export function useIssuerInfo() {
 export function useProviders() {
   return useQuery<ProviderInfo[]>({
     queryKey: ['issuer', 'providers'],
-    queryFn: () => getProvidersApi().listProviders(),
+    // Admin-only endpoint that includes disabled providers (the public
+    // `/providers` filters them out so holders never see a disabled IdP).
+    queryFn: () => getIssuerAdminApi().listAllProviders(),
     // Refresh so an enable/disable flip from another seat shows up
     // without reload.
     refetchInterval: 30_000,

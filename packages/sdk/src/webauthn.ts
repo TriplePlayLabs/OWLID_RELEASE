@@ -6,7 +6,13 @@
  */
 
 import { decode } from 'cbor-x'
-import { bufferToBase64, bufferToBase64url, base64urlToBuffer, bytesToHex } from './encoding.js'
+import {
+  bufferToBase64,
+  bufferToBase64url,
+  base64urlToBuffer,
+  bytesToHex,
+  hexToBytes,
+} from './encoding.js'
 
 // ============================================================================
 // Types
@@ -233,6 +239,10 @@ export async function registerCredential(
     },
     timeout: options.timeout ?? 60000,
     attestation: options.attestation ?? 'none',
+    // Enable the WebAuthn PRF extension at creation so the passkey can
+    // later derive a stable per-credential secret used to encrypt the
+    // wallet-held SD-JWT VC holder key at rest. See wrapHolderKey.
+    extensions: { prf: {} } as AuthenticationExtensionsClientInputs,
   }
 
   const credential = (await navigator.credentials.create({
@@ -377,4 +387,108 @@ export async function isPlatformAuthenticatorAvailable(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+// ============================================================================
+// WebAuthn-PRF-wrapped holder key (at-rest protection + user-verification gate)
+// ============================================================================
+//
+// The SD-JWT VC `cnf` key is a wallet-held Ed25519 key. To avoid storing its
+// seed in plaintext localStorage (XSS-exfiltratable), it is encrypted with a
+// key derived from the passkey's WebAuthn PRF output. Decryption requires the
+// passkey (biometric/UV) — so localStorage theft alone is useless and every
+// presentation is gated by user verification.
+
+const PRF_SALT = new TextEncoder().encode('owlid:sd-jwt-vc:holder-key:v1')
+
+async function prfSecret(credentialId: string): Promise<Uint8Array> {
+  const assertion = (await navigator.credentials.get({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)).buffer as ArrayBuffer,
+      allowCredentials: [{ id: base64urlToBuffer(credentialId), type: 'public-key' }],
+      userVerification: 'required',
+      timeout: 60000,
+      extensions: {
+        prf: { eval: { first: PRF_SALT } },
+      } as AuthenticationExtensionsClientInputs,
+    },
+  })) as PublicKeyCredential | null
+  if (!assertion) throw new Error('Passkey assertion cancelled')
+  const ext = assertion.getClientExtensionResults() as {
+    prf?: { results?: { first?: unknown } }
+  }
+  const first = ext.prf?.results?.first
+  if (!first) {
+    throw new Error(
+      'Passkey does not support the PRF extension; cannot securely store the holder key',
+    )
+  }
+  // Browsers vary in what they hand back from the PRF extension — some
+  // return an ArrayBuffer, some a Uint8Array, some a DataView, and some
+  // (notably the Bun/WebKit JSON pass-through path) serialize the bytes
+  // as a plain number Array. Normalize to a Uint8Array so
+  // `crypto.subtle.importKey` sees a BufferSource of a known shape.
+  if (first instanceof Uint8Array) return first
+  if (first instanceof ArrayBuffer) return new Uint8Array(first)
+  if (ArrayBuffer.isView(first)) {
+    return new Uint8Array(
+      (first as ArrayBufferView).buffer,
+      (first as ArrayBufferView).byteOffset,
+      (first as ArrayBufferView).byteLength,
+    )
+  }
+  if (Array.isArray(first) && first.every((n) => typeof n === 'number')) {
+    return new Uint8Array(first as number[])
+  }
+  // Some implementations expose `{ [i]: byte, length, byteLength }` — a
+  // duck-typed array-like — without inheriting from `Uint8Array`.
+  if (
+    typeof (first as { length?: unknown }).length === 'number' &&
+    Number.isFinite((first as { length: number }).length)
+  ) {
+    return Uint8Array.from(first as ArrayLike<number>)
+  }
+  throw new Error(
+    `Passkey PRF returned an unsupported value type (${Object.prototype.toString.call(first)})`,
+  )
+}
+
+async function prfAesKey(credentialId: string): Promise<CryptoKey> {
+  const secret = await prfSecret(credentialId)
+  return crypto.subtle.importKey('raw', secret as BufferSource, 'AES-GCM', false, [
+    'encrypt',
+    'decrypt',
+  ])
+}
+
+/**
+ * Encrypt the Ed25519 holder seed with a key derived from the passkey PRF.
+ * Triggers a user-verification prompt. Returns an opaque `<iv>.<ct>` blob to
+ * persist instead of the plaintext seed.
+ */
+export async function wrapHolderKey(credentialId: string, seedHex: string): Promise<string> {
+  const key = await prfAesKey(credentialId)
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    hexToBytes(seedHex) as unknown as BufferSource,
+  )
+  return `${bufferToBase64url(iv.buffer as ArrayBuffer)}.${bufferToBase64url(ct)}`
+}
+
+/**
+ * Decrypt a {@link wrapHolderKey} blob. Triggers a passkey user-verification
+ * prompt (the holder-binding gate) and returns the Ed25519 seed hex.
+ */
+export async function unwrapHolderKey(credentialId: string, blob: string): Promise<string> {
+  const [ivB64, ctB64] = blob.split('.')
+  if (!ivB64 || !ctB64) throw new Error('Malformed wrapped holder key')
+  const key = await prfAesKey(credentialId)
+  const pt = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: new Uint8Array(base64urlToBuffer(ivB64)) },
+    key,
+    base64urlToBuffer(ctB64),
+  )
+  return bytesToHex(new Uint8Array(pt))
 }

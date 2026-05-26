@@ -1,121 +1,38 @@
 /**
  * Proofs Hook
  *
- * Manages proof selection and generation using the OwlID SDK.
- * Uses ZK predicate proofs for all proof types (age, nationality, KYC, residency).
- * WebAuthn provides hardware-backed P-256 signatures with biometric auth.
+ * Manages proof selection and generation using the OwlID SDK. A "proof" is a
+ * standard SD-JWT VC presentation: the issuer pre-asserts predicate claims
+ * (`age_over_18`, …); the holder selectively discloses them and binds the
+ * presentation to the verifier with a KB-JWT.
  */
 
 import { useState, useCallback, useMemo, useEffect } from 'react'
 import {
-  circuitsForPredicates,
-  Credential,
-  ensureProvingKeysFor,
-  PreparedToken,
-  Token as NativeToken,
-} from '@owlid/sdk/native'
-import {
-  type ProofRequest,
-  type WebAuthnSignatureData,
-  type VerifiedClaims,
+  presentSdJwtVc,
   proofStorage,
-  type StoredProof,
   storage,
+  unwrapHolderKey,
+  type StoredProof,
+  type VerifiedClaims,
 } from '@owlid/sdk'
 import type { GeneratedProof } from '~/types/proof'
-import { getAvailableProofs, getProofPredicates } from '~/utils/proof-utils'
+import { getAvailableProofs, disclosuresForPredicate } from '~/utils/proof-utils'
 import { usePredicates } from './use-predicates'
-import { useWebAuthn } from './use-webauthn'
 
-/**
- * Prepare a token with ZK predicates for WebAuthn signing (Phase 1)
- */
-async function prepareTokenForWebAuthn(
-  credentialJson: string,
-  predicates: ProofRequest['predicates'],
-  disclose: string[],
-  challenge: string,
-  ttlSeconds: number = 3600,
-) {
-  // No-op on native, IDB-cached fetch on WASM. Only loads circuits the
-  // request actually needs.
-  await ensureProvingKeysFor(circuitsForPredicates(predicates))
-
-  const proofDoc = Credential.fromJson(credentialJson)
-
-  const proofRequest: ProofRequest = {
-    disclose,
-    predicates,
-    trustedIssuers: [],
-    challenge,
-  }
-
-  const preparedToken = proofDoc.prepare(proofRequest, ttlSeconds)
-
-  return {
-    preparedToken,
-    webauthnChallenge: preparedToken.challenge(),
-  }
-}
-
-/**
- * Finalize a token with WebAuthn signature (Phase 2)
- */
-function finalizeTokenWithWebAuthn(
-  preparedTokenJson: string,
-  webauthnSig: WebAuthnSignatureData,
-  credentialPublicKey: string,
-) {
-  const preparedToken = PreparedToken.fromJson(preparedTokenJson)
-  const token = NativeToken.finalizeWebauthn(preparedToken, webauthnSig, credentialPublicKey)
-
-  return {
-    token,
-    tokenJson: token.toJson(),
-  }
-}
-
-/**
- * Convert GeneratedProof to StoredProof (for IndexedDB)
- */
-function toStoredProof(proof: GeneratedProof): StoredProof {
-  return {
-    id: proof.id,
-    name: proof.name,
-    claim: proof.claim,
-    result: proof.result,
-    tokenJson: JSON.stringify(proof.token),
-    createdAt: new Date().toISOString(),
-  }
-}
-
-/**
- * Convert StoredProof to GeneratedProof (from IndexedDB)
- * Requires available proofs to get icon and other display properties
- */
 function fromStoredProof(
   stored: StoredProof,
   availableProofs: ReturnType<typeof getAvailableProofs>,
 ): GeneratedProof | null {
   const baseProof = availableProofs.find((p) => p.id === stored.id)
   if (!baseProof) return null
-
-  const token = JSON.parse(stored.tokenJson)
-  // Regenerate compact QR data from stored JSON
-  let qrData: string
-  try {
-    const nativeToken = NativeToken.fromJson(stored.tokenJson)
-    qrData = nativeToken.toCompact()
-  } catch {
-    qrData = stored.tokenJson
-  }
   return {
     ...baseProof,
     name: stored.name,
-    payload: token,
-    qrData,
-    token,
-  }
+    payload: stored.presentation,
+    qrData: stored.presentation,
+    token: stored.presentation,
+  } as GeneratedProof
 }
 
 export function useProofs() {
@@ -125,145 +42,110 @@ export function useProofs() {
   const [isProofModalOpen, setIsProofModalOpen] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [verifiedClaims, setVerifiedClaims] = useState<VerifiedClaims | null>(null)
-  const [credentialAllowlist, setCredentialAllowlist] = useState<string[]>([])
 
-  // WebAuthn hook for hardware-backed signing
-  const { signForToken } = useWebAuthn()
   const { data: registry } = usePredicates()
 
-  // Load verified claims + credential's available_predicates allowlist
   useEffect(() => {
-    storage.getStoredClaims().then(setVerifiedClaims)
-    storage.loadCredentialData().then((cd) => {
-      const credAttrs = (cd?.credential as { availablePredicates?: string[] } | undefined)
-        ?.availablePredicates
-      setCredentialAllowlist(credAttrs ?? [])
-    })
+    storage.listCredentials().then((list) => setVerifiedClaims(list[0]?.verifiedClaims ?? null))
   }, [])
 
-  // Filtered by registry × claim shape × issuer-signed allowlist.
+  // Filtered by registry × claim shape (issuer-asserted claims).
   const availableProofs = useMemo(
-    () => getAvailableProofs(verifiedClaims, registry, credentialAllowlist),
-    [verifiedClaims, registry, credentialAllowlist],
+    () => getAvailableProofs(verifiedClaims, registry, []),
+    [verifiedClaims, registry],
   )
 
-  // Load persisted proofs from IndexedDB on mount
+  // Restore persisted presentations from IndexedDB.
   useEffect(() => {
     if (availableProofs.length === 0) return
-
     proofStorage
       .getAllProofs()
       .then((storedProofs) => {
         const restored = storedProofs
           .map((sp) => fromStoredProof(sp, availableProofs))
           .filter((p): p is GeneratedProof => p !== null)
-
-        if (restored.length > 0) {
-          setGeneratedProofs(restored)
-        }
+        if (restored.length > 0) setGeneratedProofs(restored)
       })
-      .catch((err) => {
-        console.warn('[Proofs] Failed to load stored proofs:', err)
-      })
+      .catch((err) => console.warn('[Proofs] Failed to load stored proofs:', err))
   }, [availableProofs])
 
   const toggleProofSelection = useCallback((proofId: string) => {
     setSelectedProofs((prev) => {
       const newSet = new Set(prev)
-      if (newSet.has(proofId)) {
-        newSet.delete(proofId)
-      } else {
-        newSet.add(proofId)
-      }
+      if (newSet.has(proofId)) newSet.delete(proofId)
+      else newSet.add(proofId)
       return newSet
     })
   }, [])
 
+  const closeProofModal = useCallback(() => {
+    setIsProofModalOpen(false)
+    setSelectedProofs(new Set())
+  }, [])
+
   /**
-   * Create proofs for selected items using WebAuthn hardware-backed signatures.
-   * All proofs use ZK predicates — no legacy disclosure path.
+   * Build SD-JWT VC presentations for the selected predicates, each bound to
+   * the verifier challenge via a KB-JWT.
    *
-   * @param challenge - Server-generated challenge from the verifier.
-   *                    The holder must scan the verifier's challenge QR first.
+   * @param challenge - Verifier nonce (scan the verifier challenge QR first).
    */
   const createProofs = useCallback(
     async (challenge: string) => {
-      if (isGenerating) return // Prevent concurrent proof generation
-
+      if (isGenerating) return
       if (!challenge) {
         console.error('Challenge is required. Scan the verifier challenge QR first.')
         return
       }
-
       const selected = availableProofs.filter((p) => selectedProofs.has(p.id))
-
-      if (selected.length === 0) {
-        return
-      }
+      if (selected.length === 0) return
 
       setIsGenerating(true)
-
       try {
-        const credentialData = await storage.loadCredentialData()
-        const webauthnCred = await storage.loadWebAuthnCredential()
-
-        if (!credentialData) {
-          console.error('No credential data found. Complete identity verification first.')
+        const list = await storage.listCredentials()
+        const credential = list[0]
+        if (!credential) {
+          console.error('No credential. Complete identity verification first.')
           return
         }
-
-        if (!webauthnCred) {
-          console.error('No WebAuthn credential found. Re-register with biometric authentication.')
+        const wrapped = await storage.getCredentialKeyWrapped(credential.credentialId)
+        if (!wrapped) {
+          console.error('No holder key found for this credential.')
           return
         }
+        const passkey = await storage.loadWebAuthnCredential()
+        if (!passkey) {
+          console.error('No passkey found — re-register required.')
+          return
+        }
+        // Passkey-gated decrypt of the per-cred holder key (UV prompt).
+        const holderKeyHex = await unwrapHolderKey(passkey.credentialId, wrapped)
 
+        const sdJwtVc = credential.sdJwtVc
         const generated: GeneratedProof[] = []
-        const credentialJson = JSON.stringify(credentialData.credential)
 
         for (const proof of selected) {
-          const predicates = getProofPredicates(proof.id, registry)
-
-          // Phase 1: Prepare token with ZK predicates
-          const prepared = await prepareTokenForWebAuthn(
-            credentialJson,
-            predicates,
-            [], // No attributes disclosed — ZK proof handles everything
-            challenge,
-            3600,
-          )
-
-          // Phase 2: Sign with WebAuthn (triggers biometric prompt)
-          const webauthnSig = await signForToken(
-            webauthnCred.credentialId,
-            prepared.webauthnChallenge,
-          )
-
-          // Phase 3: Finalize token with WebAuthn signature
-          const result = finalizeTokenWithWebAuthn(
-            prepared.preparedToken.toJson(),
-            {
-              authenticatorData: webauthnSig.authenticatorData,
-              clientDataJson: webauthnSig.clientDataJSON,
-              signature: webauthnSig.signature,
-            },
-            webauthnCred.publicKey,
-          )
-
-          // Parse token for display/storage, use compact format for QR
-          const token = JSON.parse(result.tokenJson)
-          const compactData = result.token.toCompact()
-
+          const disclose = disclosuresForPredicate(proof.id)
+          const presentation = presentSdJwtVc(sdJwtVc, holderKeyHex, disclose, {
+            aud: challenge,
+            nonce: challenge,
+          })
           generated.push({
             ...proof,
             name: proof.claim,
-            payload: token,
-            qrData: compactData,
-            token,
+            payload: presentation,
+            qrData: presentation,
+            token: presentation,
           } as GeneratedProof)
         }
 
-        // Save to IndexedDB for persistence
-        const toStore = generated.map(toStoredProof)
+        const toStore: StoredProof[] = generated.map((g) => ({
+          id: g.id,
+          name: g.name,
+          claim: g.claim,
+          result: g.result,
+          presentation: g.qrData,
+          createdAt: new Date().toISOString(),
+        }))
         await proofStorage.saveProofs(toStore)
 
         setGeneratedProofs((prev) => [
@@ -277,36 +159,21 @@ export function useProofs() {
         closeProofModal()
       }
     },
-    [availableProofs, selectedProofs, signForToken, isGenerating, registry],
+    [availableProofs, selectedProofs, isGenerating, closeProofModal],
   )
 
-  const closeProofModal = useCallback(() => {
-    setIsProofModalOpen(false)
-    setSelectedProofs(new Set())
-  }, [])
-
-  const openProofModal = useCallback(() => {
-    setIsProofModalOpen(true)
-  }, [])
+  const openProofModal = useCallback(() => setIsProofModalOpen(true), [])
 
   const shareProof = useCallback(async (proof: GeneratedProof): Promise<boolean> => {
-    // Check if we're on mobile (native share works well there)
     const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
-
-    // Only use native share on mobile - desktop share dialogs are buggy
     if (isMobile && navigator.share) {
       try {
-        await navigator.share({
-          title: `OwlID Proof: ${proof.claim}`,
-          text: proof.qrData,
-        })
+        await navigator.share({ title: `OwlID Proof: ${proof.claim}`, text: proof.qrData })
         return true
       } catch {
-        // Share cancelled or failed - fall through to clipboard
+        // fall through to clipboard
       }
     }
-
-    // Use clipboard on desktop (more reliable)
     try {
       await navigator.clipboard.writeText(proof.qrData)
       return true

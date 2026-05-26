@@ -58,10 +58,7 @@ impl PollingTask {
     }
 
     /// Create with default configuration
-    pub fn with_defaults(
-        db: Arc<IdpDatabase>,
-        registry: Arc<RwLock<ProviderRegistry>>,
-    ) -> Self {
+    pub fn with_defaults(db: Arc<IdpDatabase>, registry: Arc<RwLock<ProviderRegistry>>) -> Self {
         Self::new(db, registry, PollingConfig::default())
     }
 
@@ -106,10 +103,7 @@ impl PollingTask {
                             session.id, poll_count
                         );
                         self.db
-                            .mark_session_failed(
-                                session.id,
-                                "Verification timed out".to_string(),
-                            )
+                            .mark_session_failed(session.id, "Verification timed out".to_string())
                             .await?;
                         continue;
                     }
@@ -155,7 +149,10 @@ impl PollingTask {
             };
 
             // Poll the provider
-            debug!("Polling session {} with order_ref {}", session.id, order_ref);
+            debug!(
+                "Polling session {} with order_ref {}",
+                session.id, order_ref
+            );
             match provider.poll_status(session.id, &order_ref).await {
                 Ok(PollResult::Complete(raw_claims)) => {
                     info!("Session {} verification complete", session.id);
@@ -169,15 +166,8 @@ impl PollingTask {
 
                     // Mark session as verified
                     let raw_json = serde_json::to_value(&raw_claims).ok();
-                    if let Err(e) = self
-                        .db
-                        .mark_session_verified(session.id, raw_json)
-                        .await
-                    {
-                        error!(
-                            "Failed to mark session {} as verified: {}",
-                            session.id, e
-                        );
+                    if let Err(e) = self.db.mark_session_verified(session.id, raw_json).await {
+                        error!("Failed to mark session {} as verified: {}", session.id, e);
                     }
                 }
                 Ok(PollResult::Pending { message, .. }) => {
@@ -198,10 +188,7 @@ impl PollingTask {
                         .update_session_status(session.id, SessionStatus::Verifying)
                         .await
                     {
-                        error!(
-                            "Failed to update session {} status: {}",
-                            session.id, e
-                        );
+                        error!("Failed to update session {} status: {}", session.id, e);
                     }
                     if let Err(e) = self.db.update_polling_state(session.id, &order_ref).await {
                         error!(
@@ -213,10 +200,7 @@ impl PollingTask {
                 Ok(PollResult::Failed { reason, .. }) => {
                     warn!("Session {} verification failed: {}", session.id, reason);
                     if let Err(e) = self.db.mark_session_failed(session.id, reason).await {
-                        error!(
-                            "Failed to mark session {} as failed: {}",
-                            session.id, e
-                        );
+                        error!("Failed to mark session {} as failed: {}", session.id, e);
                     }
                 }
                 Ok(PollResult::Expired) => {
@@ -226,10 +210,7 @@ impl PollingTask {
                         .update_session_status(session.id, SessionStatus::Expired)
                         .await
                     {
-                        error!(
-                            "Failed to mark session {} as expired: {}",
-                            session.id, e
-                        );
+                        error!("Failed to mark session {} as expired: {}", session.id, e);
                     }
                 }
                 Err(e) => {

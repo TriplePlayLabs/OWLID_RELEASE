@@ -1,9 +1,10 @@
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
+import { HeadContent, Scripts, createRootRoute, useRouterState } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { Toaster } from '@owlid/ui/components/ui/sonner'
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@owlid/ui/components/ui/sidebar'
 import { Separator } from '@owlid/ui/components/ui/separator'
+import { TooltipProvider } from '@owlid/ui/components/ui/tooltip'
 import { ModalsPortal } from '@owlid/ui/modal'
 import { AppSidebar } from '~/components/AppSidebar'
 import {
@@ -11,6 +12,7 @@ import {
   BreadcrumbItem,
   BreadcrumbList,
   BreadcrumbPage,
+  BreadcrumbSeparator,
 } from '@owlid/ui/components/ui/breadcrumb'
 import { useAuth } from '~/hooks/use-auth'
 import { LoginPage } from '~/components/LoginPage'
@@ -36,11 +38,26 @@ export const Route = createRootRoute({
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
       { title: 'OwlID Admin' },
     ],
-    links: [{ rel: 'stylesheet', href: appCss }],
-    scripts: [
-      // Runtime config — see docker/runtime-config.sh.
-      { src: '/config.js' },
+    links: [
+      { rel: 'stylesheet', href: appCss },
+      { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
     ],
+    // Runtime config inlined at SSR time only. Client-side hydration
+    // re-runs head() and would clobber window.__OWLID_CONFIG__ with empty
+    // strings (process.env is empty in the browser shim). Gate via
+    // import.meta.env.SSR so the script is emitted only on the server.
+    scripts: import.meta.env.SSR
+      ? [
+          {
+            children: `window.__OWLID_CONFIG__ = ${JSON.stringify({
+              verificationUrl: process.env.OWLID_VERIFICATION_URL || '',
+              issuerUrl: process.env.OWLID_ISSUER_URL || '',
+              apiKey: process.env.OWLID_API_KEY || '',
+              wsBaseUrl: process.env.OWLID_WS_BASE_URL || '',
+            })};`,
+          },
+        ]
+      : [],
   }),
   shellComponent: RootDocument,
 })
@@ -53,7 +70,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       </head>
       <body>
         <QueryClientProvider client={queryClient}>
-          <AuthGate>{children}</AuthGate>
+          <TooltipProvider delayDuration={300}>
+            <AuthGate>{children}</AuthGate>
+          </TooltipProvider>
           <ModalsPortal />
           <Toaster />
           <ReactQueryDevtools initialIsOpen={false} />
@@ -62,6 +81,20 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       </body>
     </html>
   )
+}
+
+/** Pathname → human label for the header breadcrumb. */
+const ROUTE_LABELS: Record<string, string> = {
+  '/': 'Dashboard',
+  '/issuers': 'Trusted Issuers',
+  '/revocations': 'Revocations',
+  '/verify': 'Verify Token',
+  '/providers': 'Identity Providers',
+  '/sessions': 'Issuer Sessions',
+  '/api-keys': 'API Keys',
+  '/users': 'Admin Users',
+  '/logs': 'Activity',
+  '/settings': 'Settings',
 }
 
 function AuthGate({ children }: { children: React.ReactNode }) {
@@ -123,19 +156,29 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-          <SidebarTrigger className="-ml-1" />
-          <Separator orientation="vertical" className="mr-2 h-4" />
-          <Breadcrumb>
-            <BreadcrumbList>
-              <BreadcrumbItem>
-                <BreadcrumbPage>Admin</BreadcrumbPage>
-              </BreadcrumbItem>
-            </BreadcrumbList>
-          </Breadcrumb>
-        </header>
+        <DashboardHeader />
         <div className="flex-1 overflow-auto p-6">{children}</div>
       </SidebarInset>
     </SidebarProvider>
+  )
+}
+
+function DashboardHeader() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const label = ROUTE_LABELS[pathname] ?? 'Dashboard'
+  return (
+    <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 sticky top-0 z-10 bg-background">
+      <SidebarTrigger className="-ml-1" />
+      <Separator orientation="vertical" className="mr-2 h-4" />
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>OwlID Admin</BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>{label}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+    </header>
   )
 }

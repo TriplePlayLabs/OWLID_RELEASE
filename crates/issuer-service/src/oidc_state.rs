@@ -19,6 +19,12 @@ pub struct StoredOidcState {
     pub nonce: String,
     pub provider_id: String,
     pub created_at: Instant,
+    /// When the OIDC flow was started by the session-aware `/sessions`
+    /// path, the session UUID — the callback uses this to update the
+    /// matching `IdpDatabase` session with the verified claims and
+    /// redirect the holder back. `None` for the standalone
+    /// `/auth/login/{provider}` flow.
+    pub session_id: Option<uuid::Uuid>,
 }
 
 impl StoredOidcState {
@@ -44,6 +50,24 @@ impl OidcStateStore {
     pub async fn insert(&self, entry: StoredOidcState) {
         let mut guard = self.inner.write().await;
         guard.insert(entry.state.clone(), entry);
+    }
+
+    /// Read the entry for `state` without removing it. Returns `None`
+    /// when the entry is missing or expired (expired rows are evicted
+    /// as a side-effect). Use when you need to inspect the entry
+    /// before deciding which code path consumes it.
+    pub async fn peek(&self, state: &str) -> Option<StoredOidcState> {
+        let now = Instant::now();
+        let mut guard = self.inner.write().await;
+        let expired = guard
+            .get(state)
+            .map(|e| e.is_expired(self.ttl, now))
+            .unwrap_or(false);
+        if expired {
+            guard.remove(state);
+            return None;
+        }
+        guard.get(state).cloned()
     }
 
     /// Pop the entry for `state`, removing it. Returns `None` when the entry
@@ -85,6 +109,7 @@ mod tests {
             nonce: "n".into(),
             provider_id: "p".into(),
             created_at: Instant::now(),
+            session_id: None,
         }
     }
 

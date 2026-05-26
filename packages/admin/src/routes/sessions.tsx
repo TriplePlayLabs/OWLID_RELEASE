@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
-import { Users, Search, Clock } from 'lucide-react'
+import { Users, Search, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 
 import {
@@ -13,8 +13,11 @@ import {
 import { Button } from '@owlid/ui/components/ui/button'
 import { Input } from '@owlid/ui/components/ui/input'
 import { Label } from '@owlid/ui/components/ui/label'
-import { Badge } from '@owlid/ui/components/ui/badge'
 import { useSession } from '~/hooks/use-issuer'
+import { PageHeader } from '~/components/PageHeader'
+import { CopyButton } from '~/components/CopyButton'
+import { StatusBadge } from '~/components/StatusBadge'
+import { RelativeTime } from '~/components/RelativeTime'
 
 export const Route = createFileRoute('/sessions')({
   component: SessionsPage,
@@ -35,17 +38,17 @@ function SessionsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Issuer Sessions</h1>
-        <p className="text-muted-foreground">Look up and inspect identity verification sessions</p>
-      </div>
+      <PageHeader
+        title="Issuer Sessions"
+        description="Look up and inspect identity-verification sessions"
+      />
 
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Search className="h-5 w-5" /> Session Lookup
           </CardTitle>
-          <CardDescription>Enter a session ID to inspect its status and data</CardDescription>
+          <CardDescription>Enter a session ID to inspect its status and state</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex gap-2">
@@ -58,16 +61,17 @@ function SessionsPage() {
             />
             <Button onClick={handleLookup} disabled={session.isFetching}>
               <Search className="mr-2 h-4 w-4" />
-              {session.isFetching ? 'Loading...' : 'Lookup'}
+              {session.isFetching ? 'Loading…' : 'Lookup'}
             </Button>
           </div>
         </CardContent>
       </Card>
 
-      {session.error && (
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-destructive text-sm">Session not found: {session.error.message}</p>
+      {session.isError && (
+        <Card className="border-destructive/30">
+          <CardContent className="flex items-center gap-3 pt-6">
+            <AlertTriangle className="h-5 w-5 text-destructive shrink-0" />
+            <p className="text-destructive text-sm">Session not found: {session.error?.message}</p>
           </CardContent>
         </Card>
       )}
@@ -81,47 +85,35 @@ function SessionsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-1">
-                <Label className="text-muted-foreground text-xs">Session ID</Label>
-                <p className="font-mono text-sm">{session.data.id}</p>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-muted-foreground text-xs">Status</Label>
-                <div>
-                  <SessionStatusBadge status={session.data.status} />
-                </div>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-muted-foreground text-xs">Provider</Label>
-                <p className="text-sm">{session.data.providerId}</p>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-muted-foreground text-xs">Flow Type</Label>
-                <p className="text-sm">{session.data.flowType}</p>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-muted-foreground text-xs">Expires At</Label>
-                <p className="text-sm flex items-center gap-1">
-                  <Clock className="h-3 w-3" />
-                  {new Date(session.data.expiresAt).toLocaleString()}
-                </p>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-muted-foreground text-xs">Verified At</Label>
-                <p className="text-sm">
-                  {session.data.verifiedAt
-                    ? new Date(session.data.verifiedAt).toLocaleString()
-                    : '—'}
-                </p>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-muted-foreground text-xs">Credential Issued</Label>
-                <p className="text-sm">{session.data.credentialIssued ? 'Yes' : 'No'}</p>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-muted-foreground text-xs">Expired</Label>
-                <p className="text-sm">{session.data.isExpired ? 'Yes' : 'No'}</p>
-              </div>
+              <Field label="Session ID">
+                <span className="font-mono text-sm">{session.data.id}</span>
+                <CopyButton value={session.data.id} label="Session ID" />
+              </Field>
+              <Field label="Status">
+                <StatusBadge status={session.data.status} />
+              </Field>
+              <Field label="Provider">
+                <span className="text-sm">{session.data.providerId}</span>
+              </Field>
+              <Field label="Flow Type">
+                <span className="text-sm">{session.data.flowType}</span>
+              </Field>
+              <Field label="Expires">
+                <span className="text-sm">
+                  <RelativeTime value={session.data.expiresAt} />
+                </span>
+              </Field>
+              <Field label="Verified">
+                <span className="text-sm">
+                  <RelativeTime value={session.data.verifiedAt} />
+                </span>
+              </Field>
+              <Field label="Credential Issued">
+                <span className="text-sm">{session.data.credentialIssued ? 'Yes' : 'No'}</span>
+              </Field>
+              <Field label="Expired">
+                <span className="text-sm">{session.data.isExpired ? 'Yes' : 'No'}</span>
+              </Field>
             </div>
 
             <div>
@@ -139,24 +131,11 @@ function SessionsPage() {
   )
 }
 
-function SessionStatusBadge({ status }: { status: string }) {
-  switch (status.toLowerCase()) {
-    case 'pending':
-      return <Badge variant="outline">Pending</Badge>
-    case 'verifying':
-    case 'in_progress':
-      return <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20">In Progress</Badge>
-    case 'verified':
-    case 'completed':
-      return (
-        <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
-          Completed
-        </Badge>
-      )
-    case 'failed':
-    case 'expired':
-      return <Badge variant="destructive">{status}</Badge>
-    default:
-      return <Badge variant="secondary">{status}</Badge>
-  }
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-muted-foreground text-xs">{label}</Label>
+      <div className="flex items-center gap-1">{children}</div>
+    </div>
+  )
 }

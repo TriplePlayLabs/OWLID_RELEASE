@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as VerifyRouteImport } from './routes/verify'
+import { Route as UsersRouteImport } from './routes/users'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SessionsRouteImport } from './routes/sessions'
 import { Route as RevocationsRouteImport } from './routes/revocations'
@@ -22,6 +23,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const VerifyRoute = VerifyRouteImport.update({
   id: '/verify',
   path: '/verify',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UsersRoute = UsersRouteImport.update({
+  id: '/users',
+  path: '/users',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -74,6 +80,7 @@ export interface FileRoutesByFullPath {
   '/revocations': typeof RevocationsRoute
   '/sessions': typeof SessionsRoute
   '/settings': typeof SettingsRoute
+  '/users': typeof UsersRoute
   '/verify': typeof VerifyRoute
 }
 export interface FileRoutesByTo {
@@ -85,6 +92,7 @@ export interface FileRoutesByTo {
   '/revocations': typeof RevocationsRoute
   '/sessions': typeof SessionsRoute
   '/settings': typeof SettingsRoute
+  '/users': typeof UsersRoute
   '/verify': typeof VerifyRoute
 }
 export interface FileRoutesById {
@@ -97,6 +105,7 @@ export interface FileRoutesById {
   '/revocations': typeof RevocationsRoute
   '/sessions': typeof SessionsRoute
   '/settings': typeof SettingsRoute
+  '/users': typeof UsersRoute
   '/verify': typeof VerifyRoute
 }
 export interface FileRouteTypes {
@@ -110,6 +119,7 @@ export interface FileRouteTypes {
     | '/revocations'
     | '/sessions'
     | '/settings'
+    | '/users'
     | '/verify'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -121,6 +131,7 @@ export interface FileRouteTypes {
     | '/revocations'
     | '/sessions'
     | '/settings'
+    | '/users'
     | '/verify'
   id:
     | '__root__'
@@ -132,6 +143,7 @@ export interface FileRouteTypes {
     | '/revocations'
     | '/sessions'
     | '/settings'
+    | '/users'
     | '/verify'
   fileRoutesById: FileRoutesById
 }
@@ -144,6 +156,7 @@ export interface RootRouteChildren {
   RevocationsRoute: typeof RevocationsRoute
   SessionsRoute: typeof SessionsRoute
   SettingsRoute: typeof SettingsRoute
+  UsersRoute: typeof UsersRoute
   VerifyRoute: typeof VerifyRoute
 }
 
@@ -154,6 +167,13 @@ declare module '@tanstack/react-router' {
       path: '/verify'
       fullPath: '/verify'
       preLoaderRoute: typeof VerifyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/users': {
+      id: '/users'
+      path: '/users'
+      fullPath: '/users'
+      preLoaderRoute: typeof UsersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -224,6 +244,7 @@ const rootRouteChildren: RootRouteChildren = {
   RevocationsRoute: RevocationsRoute,
   SessionsRoute: SessionsRoute,
   SettingsRoute: SettingsRoute,
+  UsersRoute: UsersRoute,
   VerifyRoute: VerifyRoute,
 }
 export const routeTree = rootRouteImport

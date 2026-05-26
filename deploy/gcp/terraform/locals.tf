@@ -8,15 +8,46 @@ locals {
   sql_connection   = "${var.project_id}:${var.region}:${var.sql_instance_name}"
   runtime_sa_email = "${var.runtime_sa_id}@${var.project_id}.iam.gserviceaccount.com"
 
-  # Cloud Run v2 URL pattern: https://<service>-<projectnum>.<region>.run.app
-  run_url = {
-    verification = "https://verification-${local.project_number}.${var.region}.run.app"
-    issuer       = "https://issuer-${local.project_number}.${var.region}.run.app"
-    sidecar      = "https://sidecar-${local.project_number}.${var.region}.run.app"
-    app          = "https://app-${local.project_number}.${var.region}.run.app"
-    admin        = "https://admin-${local.project_number}.${var.region}.run.app"
-    verifier     = "https://verifier-${local.project_number}.${var.region}.run.app"
+  # Cloud Run URL pattern is project-region specific. The hash + region-short
+  # suffix is stable for a given (project, region) — discovered after the
+  # first apply. Override `run_url_hash` in terraform.tfvars to match.
+  # (Cloud Run v2 also exposes <service>-<projnum>.<region>.run.app for some
+  # projects, but the hash form is universally available.)
+  run_url_suffix = "${var.run_url_hash}-${local.region_short}.a.run.app"
+
+  # Once domain mappings are live, services use their *.owlid.app URLs.
+  # Toggle var.use_custom_domain_urls = false to revert to .run.app form
+  # (e.g. before certs provision or for an internal-only deploy).
+  run_url = var.use_custom_domain_urls ? {
+    verification   = "https://api.${var.domain}"
+    issuer         = "https://issuer.${var.domain}"
+    sidecar        = "https://sidecar.${var.domain}"
+    "proof-server" = "https://proofs.${var.domain}"
+    app            = "https://wallet.${var.domain}"
+    admin          = "https://admin.${var.domain}"
+    verifier       = "https://verifier.${var.domain}"
+    docs           = "https://docs.${var.domain}"
+    } : {
+    verification   = "https://verification-${local.run_url_suffix}"
+    issuer         = "https://issuer-${local.run_url_suffix}"
+    sidecar        = "https://sidecar-${local.run_url_suffix}"
+    "proof-server" = "https://proof-server-${local.run_url_suffix}"
+    app            = "https://app-${local.run_url_suffix}"
+    admin          = "https://admin-${local.run_url_suffix}"
+    verifier       = "https://verifier-${local.run_url_suffix}"
+    docs           = "https://docs-${local.run_url_suffix}"
   }
+
+  # Map full GCP region IDs to the 2-char suffix Cloud Run uses in URLs.
+  region_short_map = {
+    "europe-west1"    = "ew"
+    "europe-west4"    = "ew4"
+    "us-central1"     = "uc"
+    "us-east1"        = "ue"
+    "asia-east1"      = "ae"
+    "asia-southeast1" = "as"
+  }
+  region_short = lookup(local.region_short_map, var.region, "ew")
 
   service_image = {
     for k, v in local.run_url : k => (

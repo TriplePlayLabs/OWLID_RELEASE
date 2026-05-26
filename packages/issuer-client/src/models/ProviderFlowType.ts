@@ -22,6 +22,7 @@ export enum ProviderFlowType {
   qr_polling = 'qr_polling',
   webhook_async = 'webhook_async',
   form_based = 'form_based',
+  oidc_redirect = 'oidc_redirect',
 }
 
 export function instanceOfProviderFlowType(value: any): boolean {

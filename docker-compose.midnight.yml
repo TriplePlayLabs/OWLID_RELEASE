@@ -63,12 +63,41 @@ services:
     environment:
       RUST_LOG: 'info'
       RUST_BACKTRACE: 'full'
+    # Upstream image is a Nix scratch layer with neither curl nor a
+    # shell on PATH, so docker compose has no portable way to probe it.
+    # Liveness is verified externally via `curl localhost:6300/version`
+    # from the host (or via the proxy/sidecar that forwards there).
+    networks:
+      - midnight-network
+
+  # CORS-injecting reverse proxy that the browser-based holder app calls
+  # when it's configured for the "proof server" provider. Opt-in via the
+  # `proof-proxy` profile: `docker compose --profile proof-proxy up`. The
+  # production Cloud Run service uses the same Dockerfile + Caddyfile.
+  proof-server-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proof-server
+    container_name: owlid-proof-server-proxy
+    profiles: ['proof-proxy']
+    depends_on:
+      proof-server:
+        condition: service_started
+    ports:
+      - '6301:8080'
+    environment:
+      PORT: '8080'
+      UPSTREAM_HOST: 'proof-server'
+      UPSTREAM_PORT: '6300'
+      # Override per .env to add origins. Default allows localhost + the
+      # two prod hostnames so dev mirrors prod CORS behavior.
+      CORS_ALLOWED_ORIGIN_REGEX: '${CORS_ALLOWED_ORIGIN_REGEX:-^https?://(localhost(:[0-9]+)?|.*\.sashoush\.dev|.*\.owlid\.app)$$}'
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:6300/version']
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:8080/version']
       interval: 10s
       timeout: 5s
-      retries: 30
-      start_period: 10s
+      retries: 10
+      start_period: 5s
     networks:
       - midnight-network
 

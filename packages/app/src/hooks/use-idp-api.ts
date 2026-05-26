@@ -5,49 +5,93 @@
  * Uses WebAuthn for hardware-backed security - no private keys stored.
  */
 
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  coseKeyToP256Hex,
+  KeyPair,
+  SdJwtVc,
+  buildCardShape,
   storage,
-  type StoredCredentialData,
-  type StoredCredential,
+  wrapHolderKey,
+  type VerifiedClaims,
+  type WalletCredential,
 } from '@owlid/sdk'
-import type { ProviderInfoExtended, CreateSessionResponse } from '@owlid/sdk/issuer'
+import type {
+  CompleteVerificationResponse,
+  CreateSessionResponse,
+  ProviderInfo,
+  VerifiedIdentityClaims,
+} from '@owlid/issuer-client'
+import { getCredentialsApi, getSessionsApi } from '@owlid/sdk/issuer'
 
-// The providers endpoint returns ProviderInfoExtended
-type ProviderInfo = ProviderInfoExtended
-import { providersApi, sessionsApi, credentialsApi, infoApi } from '~/lib/api'
+import { providersApi, sessionsApi, infoApi } from '~/lib/api'
 
-const PENDING_SESSION_KEY = 'owl_pending_session'
-const PENDING_SESSION_TOKEN_KEY = 'owl_pending_session_token'
-
-function bearerInit(token: string): RequestInit {
-  return { headers: { Authorization: `Bearer ${token}` } }
+function bearerHeaders(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}` }
 }
 
-/**
- * Extract issuer public key from credential
- */
-function extractIssuerPublicKey(credential: StoredCredential): string {
-  const attributes = credential.attributes as Record<string, unknown> | undefined
-  if (attributes?.issuerKey) {
-    return attributes.issuerKey as string
-  }
-  if (credential.issuerPublicKey) {
-    return credential.issuerPublicKey as string
-  }
-  const issuerPubKey = credential['issuer_public_key']
-  if (typeof issuerPubKey === 'string') {
-    return issuerPubKey
-  }
-  return ''
+function authedSessionsApi(token: string) {
+  return getSessionsApi({ headers: bearerHeaders(token) })
 }
 
-/** Sentinel error thrown when the user is being redirected to an external provider. Not a real failure. */
-export class RedirectingToProviderError extends Error {
-  constructor() {
-    super('Redirecting to provider...')
-    this.name = 'RedirectingToProviderError'
+function authedCredentialsApi(token: string) {
+  return getCredentialsApi({ headers: bearerHeaders(token) })
+}
+
+function isoDate(value: Date | string): string {
+  return value instanceof Date ? value.toISOString().substring(0, 10) : value
+}
+
+function isoDateTime(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value
+}
+
+function optionalIsoDate(value: Date | string | null | undefined): string | undefined {
+  if (!value) return undefined
+  return isoDate(value)
+}
+
+function optionalString(value: string | null | undefined): string | undefined {
+  return value ?? undefined
+}
+
+function toStoredClaims(claims: VerifiedIdentityClaims): VerifiedClaims {
+  return {
+    firstName: claims.firstName,
+    lastName: claims.lastName,
+    dateOfBirth: isoDate(claims.dateOfBirth),
+    placeOfBirth: claims.placeOfBirth,
+    nationality: claims.nationality,
+    gender: optionalString(claims.gender),
+    nationalId: claims.nationalId,
+    passportNumber: optionalString(claims.passportNumber),
+    driversLicense: optionalString(claims.driversLicense),
+    taxId: optionalString(claims.taxId),
+    documentType: optionalString(claims.documentType),
+    documentNumber: optionalString(claims.documentNumber),
+    issuingCountry: optionalString(claims.issuingCountry),
+    documentExpiry: optionalIsoDate(claims.documentExpiry),
+    documentIssueDate: optionalIsoDate(claims.documentIssueDate),
+    portraitImage: optionalString(claims.portraitImage),
+    streetAddress: claims.streetAddress,
+    city: claims.city,
+    postalCode: claims.postalCode,
+    country: claims.country,
+    isOver18: claims.isOver18,
+    isOver21: claims.isOver21,
+    isOver65: claims.isOver65,
+    isEuCitizen: claims.isEuCitizen,
+    isResident: claims.isResident,
+    verificationLevel: claims.verificationLevel,
+    verifiedAt: isoDateTime(claims.verifiedAt),
+    verifiedBy: claims.providerId,
+    verificationMethod: claims.verificationMethod,
+    email: optionalString(claims.email),
+    emailVerified: claims.emailVerified ?? undefined,
+    name: optionalString(claims.name),
+    pictureUrl: optionalString(claims.picture),
+    locale: optionalString(claims.locale),
+    hostedDomain: optionalString(claims.hostedDomain),
   }
 }
 
@@ -56,8 +100,69 @@ export const issuerQueryKeys = {
   all: ['issuer'] as const,
   providers: () => [...issuerQueryKeys.all, 'providers'] as const,
   session: (sessionId: string) => [...issuerQueryKeys.all, 'session', sessionId] as const,
+  completion: (sessionId: string) => [...issuerQueryKeys.session(sessionId), 'completion'] as const,
   claims: (sessionId: string) => [...issuerQueryKeys.all, 'claims', sessionId] as const,
   health: () => [...issuerQueryKeys.all, 'health'] as const,
+}
+
+interface ActiveRedirectSession {
+  session: CreateSessionResponse
+  sessionToken: string
+  popup: Window | null
+}
+
+async function issueAndStoreCredential(
+  sessionId: string,
+  sessionToken: string,
+  providerId: string,
+  claims: VerifiedIdentityClaims,
+): Promise<WalletCredential> {
+  const existingWebAuthn = await storage.loadWebAuthnCredential()
+  if (!existingWebAuthn) {
+    throw new Error('No WebAuthn credential found. Please register first.')
+  }
+
+  // Wallet-held Ed25519 `cnf` key — its public key is bound into the
+  // SD-JWT VC; its private seed signs the KB-JWT at presentation. The
+  // passkey (existingWebAuthn) stays only as the unlock / UV gate.
+  const holderKey = KeyPair.generate()
+  const holderPublicKeyHex = holderKey.publicKeyHex()
+
+  const issueResponse = await authedCredentialsApi(sessionToken).issueCredential({
+    id: sessionId,
+    issueCredentialRequest: { ownerPublicKey: holderPublicKeyHex, keyAlgorithm: 'ed25519' },
+  })
+
+  if (!issueResponse.success) {
+    throw new Error(issueResponse.error || 'Failed to issue credential')
+  }
+
+  const sdJwtVc = issueResponse.credential
+  const parsed = SdJwtVc.parse(sdJwtVc)
+  const verifiedClaims = toStoredClaims(claims)
+  // Holder-only unique-personhood witness — stored locally with the
+  // credential so the witness-on-device orchestrator can prove
+  // `attestUniquePersonhood`. Present only for document-verified /
+  // government-eID identities; never disclosed to a verifier.
+  if (issueResponse.personhoodSecretHex) {
+    verifiedClaims.personhoodSecret = issueResponse.personhoodSecretHex
+  }
+  const credential: WalletCredential = {
+    credentialId: parsed.credentialId(),
+    sdJwtVc,
+    issuer: parsed.peekIssuer(),
+    providerId,
+    issuedAt: new Date().toISOString(),
+    cardShape: buildCardShape(providerId, verifiedClaims),
+    verifiedClaims,
+    holderPublicKeyHex,
+  }
+
+  // Encrypt the Ed25519 holder seed with the passkey PRF before persisting —
+  // plaintext never touches storage; later use is gated by the passkey.
+  const wrapped = await wrapHolderKey(existingWebAuthn.credentialId, holderKey.toHex())
+  await storage.addCredential(credential, wrapped)
+  return credential
 }
 
 /**
@@ -103,144 +208,200 @@ export function useCreateSession() {
  *
  * Handles all provider flow types:
  * - form_based (mock): auto-verify with sample data
- * - webhook_async (Didit): redirect to external provider
- * - saml_redirect: redirect to external provider
- * - qr_polling: start polling flow
+ * - webhook_async (Didit): open hosted flow and poll the server session
  *
- * Flow: session -> verify (based on flow type) -> reuse existing WebAuthn -> issue
+ * Didit may hand off KYC to mobile from inside its hosted page. OwlID still
+ * keeps the bearer session token only in the original desktop tab; that tab
+ * polls the server session and performs credential issuance after verification.
  */
 export function useVerifyAndIssueWithWebAuthn() {
-  return useMutation<StoredCredentialData, Error, { providerId: string; username: string }>({
-    onSuccess: (data) => {
-      // Don't process redirect sentinels
-      if ('redirected' in data) return
-    },
-    mutationFn: async ({ providerId }) => {
+  const [activeRedirect, setActiveRedirect] = useState<ActiveRedirectSession | null>(null)
+  const queryClient = useQueryClient()
+
+  const startVerification = useMutation<
+    WalletCredential | undefined,
+    Error,
+    { providerId: string; username: string; popup?: Window | null }
+  >({
+    mutationFn: async ({ providerId, popup }) => {
       // Step 1: Get existing WebAuthn credential (created during registration)
       const existingWebAuthn = await storage.loadWebAuthnCredential()
       if (!existingWebAuthn) {
+        popup?.close()
         throw new Error('No WebAuthn credential found. Please register first.')
       }
 
       // Step 2: Create session
-      const session = await sessionsApi.createSession({
-        createSessionRequest: { providerId },
-      })
-      const sessionAuth = bearerInit(session.sessionToken)
+      let session: CreateSessionResponse
+      try {
+        session = await sessionsApi.createSession({
+          createSessionRequest: { providerId },
+        })
+      } catch (error) {
+        popup?.close()
+        throw error
+      }
 
       // Step 3: Handle verification based on flow type
-      let claims
+      let claims: VerifiedIdentityClaims
       const flowType = session.flowType
 
-      if (flowType === 'webhook_async' || flowType === 'saml_redirect') {
-        // Redirect flows - redirect to external provider
+      // Both Didit (webhook_async) and OIDC providers (oidc_redirect)
+      // hand off to an external URL and complete server-side; the holder
+      // just needs to open the URL and poll /sessions/{id}/complete.
+      if (flowType === 'webhook_async' || flowType === 'oidc_redirect') {
         const redirectUrl = session.url
         if (!redirectUrl) {
+          popup?.close()
           throw new Error('No redirect URL provided by provider')
         }
 
-        // Store session info + bearer for the post-redirect callback page.
-        sessionStorage.setItem(PENDING_SESSION_KEY, session.sessionId)
-        sessionStorage.setItem(PENDING_SESSION_TOKEN_KEY, session.sessionToken)
+        const provWindow = popup ?? window.open('', '_blank', 'popup,width=520,height=760')
+        if (!provWindow || provWindow.closed) {
+          throw new Error(
+            'Could not open the verification window. Allow popups for this site and try again.',
+          )
+        }
+        provWindow.location.href = redirectUrl
 
-        // Redirect - this will navigate away from the page
-        window.location.href = redirectUrl
-
-        // Return a sentinel that indicates redirect happened (not an error)
-        return { redirected: true } as unknown as StoredCredentialData
-      } else {
-        // Form-based (mock) providers - auto-verify
-        claims = await sessionsApi.autoVerify({ id: session.sessionId }, sessionAuth)
+        setActiveRedirect({
+          session,
+          sessionToken: session.sessionToken,
+          popup: provWindow,
+        })
+        return undefined
       }
 
-      // Step 4: Convert existing COSE public key to P-256 hex for credential issuance
-      const ownerPublicKeyHex = coseKeyToP256Hex(existingWebAuthn.publicKey)
+      if (flowType !== 'form_based') {
+        popup?.close()
+        throw new Error(`Provider flow ${flowType} is not supported by this holder flow yet.`)
+      }
+      popup?.close()
 
-      // Step 5: Issue credential with P-256 owner public key
-      const issueResponse = await credentialsApi.issueCredential(
-        {
-          id: session.sessionId,
-          issueCredentialRequest: { ownerPublicKey: ownerPublicKeyHex, keyAlgorithm: 'p256' },
-        },
-        sessionAuth,
+      claims = await authedSessionsApi(session.sessionToken).autoVerify({ id: session.sessionId })
+      return issueAndStoreCredential(
+        session.sessionId,
+        session.sessionToken,
+        session.providerId,
+        claims,
       )
-
-      if (!issueResponse.success) {
-        throw new Error(issueResponse.error || 'Failed to issue credential')
-      }
-
-      // Step 6: Build and save credential data
-      const credentialData: StoredCredentialData = {
-        credential: issueResponse.credential,
-        ownerPublicKey: ownerPublicKeyHex,
-        webauthnCredentialId: existingWebAuthn.credentialId,
-        issuerPublicKey: extractIssuerPublicKey(issueResponse.credential),
-        verifiedClaims: claims,
-        sessionId: session.sessionId,
-        issuedAt: new Date().toISOString(),
-      }
-
-      await storage.saveCredentialData(credentialData)
-
-      return credentialData
+    },
+    onSuccess: (cred) => {
+      // Newly stored credential — refresh the wallet list immediately so
+      // the card appears without a manual page reload.
+      if (cred) queryClient.invalidateQueries({ queryKey: ['wallet'] })
     },
   })
-}
 
-/**
- * Complete credential issuance after redirect callback
- * Called from callback route after external provider verification
- */
-export function useCompleteVerificationAfterCallback() {
-  return useMutation<StoredCredentialData, Error, { sessionId: string }>({
-    mutationFn: async ({ sessionId }) => {
-      const sessionToken = sessionStorage.getItem(PENDING_SESSION_TOKEN_KEY) ?? ''
-      sessionStorage.removeItem(PENDING_SESSION_KEY)
-      sessionStorage.removeItem(PENDING_SESSION_TOKEN_KEY)
-      if (!sessionToken) {
-        throw new Error('Pending session token missing — open the flow again from /create-identity')
+  const completion = useQuery<CompleteVerificationResponse, Error>({
+    queryKey: issuerQueryKeys.completion(activeRedirect?.session.sessionId ?? ''),
+    queryFn: () => {
+      if (!activeRedirect) {
+        throw new Error('No active verification session')
       }
-      const sessionAuth = bearerInit(sessionToken)
-
-      // Step 1: Get existing WebAuthn credential (created during registration)
-      const existingWebAuthn = await storage.loadWebAuthnCredential()
-      if (!existingWebAuthn) {
-        throw new Error('No WebAuthn credential found. Please register first.')
+      return authedSessionsApi(activeRedirect.sessionToken).completeVerification({
+        id: activeRedirect.session.sessionId,
+      })
+    },
+    enabled: !!activeRedirect,
+    refetchInterval: (query) => {
+      // A non-retryable HTTP error (e.g. 5xx from a broken provider) is
+      // terminal too — without this the UI would spin forever after the
+      // retry budget is exhausted.
+      if (query.state.error) return false
+      const data = query.state.data
+      if (!data) return 2000
+      if (data.status === 'verified' || data.status === 'failed' || data.status === 'expired') {
+        return false
       }
+      return Math.max((data.retryAfterSecs ?? 2) * 1000, 1000)
+    },
+    retry: 2,
+  })
 
-      // Step 2: Fetch claims from completed verification
-      const claims = await sessionsApi.getClaims({ id: sessionId }, sessionAuth)
-
-      // Step 3: Convert existing COSE public key to P-256 hex for credential issuance
-      const ownerPublicKeyHex = coseKeyToP256Hex(existingWebAuthn.publicKey)
-
-      // Step 4: Issue credential with P-256 owner public key
-      const issueResponse = await credentialsApi.issueCredential(
-        {
-          id: sessionId,
-          issueCredentialRequest: { ownerPublicKey: ownerPublicKeyHex, keyAlgorithm: 'p256' },
-        },
-        sessionAuth,
-      )
-
-      if (!issueResponse.success) {
-        throw new Error(issueResponse.error || 'Failed to issue credential')
-      }
-
-      // Step 5: Build and save credential data
-      const credentialData: StoredCredentialData = {
-        credential: issueResponse.credential,
-        ownerPublicKey: ownerPublicKeyHex,
-        webauthnCredentialId: existingWebAuthn.credentialId,
-        issuerPublicKey: extractIssuerPublicKey(issueResponse.credential),
-        verifiedClaims: claims,
-        sessionId: sessionId,
-        issuedAt: new Date().toISOString(),
-      }
-
-      await storage.saveCredentialData(credentialData)
-
-      return credentialData
+  const issueVerifiedSession = useMutation<
+    WalletCredential,
+    Error,
+    { session: ActiveRedirectSession; claims: VerifiedIdentityClaims }
+  >({
+    mutationFn: ({ session, claims }) =>
+      issueAndStoreCredential(
+        session.session.sessionId,
+        session.sessionToken,
+        session.session.providerId,
+        claims,
+      ),
+    onSuccess: (_, vars) => {
+      vars.session.popup?.close()
+      setActiveRedirect(null)
+      // Didit / OIDC issuance completes on a polling tick while the
+      // holder may already be looking at the wallet — invalidate so the
+      // new card shows up without a manual refresh.
+      queryClient.invalidateQueries({ queryKey: ['wallet'] })
     },
   })
+  const issueVerifiedSessionMutate = issueVerifiedSession.mutate
+
+  useEffect(() => {
+    const data = completion.data
+    if (
+      !activeRedirect ||
+      !data ||
+      data.status !== 'verified' ||
+      !data.claims ||
+      issueVerifiedSession.isPending ||
+      issueVerifiedSession.isSuccess
+    ) {
+      return
+    }
+
+    issueVerifiedSessionMutate({
+      session: activeRedirect,
+      claims: data.claims as VerifiedIdentityClaims,
+    })
+  }, [
+    activeRedirect,
+    completion.data,
+    issueVerifiedSession.isPending,
+    issueVerifiedSession.isSuccess,
+    issueVerifiedSessionMutate,
+  ])
+
+  const terminalStatus = completion.data?.status
+  const terminalError =
+    terminalStatus === 'failed' || terminalStatus === 'expired'
+      ? new Error(completion.data?.message || `Verification ${terminalStatus}`)
+      : null
+
+  return {
+    mutateAsync: startVerification.mutateAsync,
+    reset: () => {
+      activeRedirect?.popup?.close()
+      setActiveRedirect(null)
+      startVerification.reset()
+      issueVerifiedSession.reset()
+    },
+    data: issueVerifiedSession.data ?? startVerification.data,
+    credentialData: issueVerifiedSession.data ?? startVerification.data,
+    error:
+      startVerification.error ?? completion.error ?? issueVerifiedSession.error ?? terminalError,
+    isError:
+      startVerification.isError ||
+      completion.isError ||
+      issueVerifiedSession.isError ||
+      terminalError !== null,
+    isPending:
+      startVerification.isPending ||
+      completion.isFetching ||
+      issueVerifiedSession.isPending ||
+      (!!activeRedirect && !terminalError),
+    // Only the final issuance counts as success. startVerification merely
+    // opened the redirect session — treating it as success here would render
+    // "Card added" even when the provider later declines.
+    isSuccess: issueVerifiedSession.isSuccess,
+    isRedirecting: !!activeRedirect && !issueVerifiedSession.data,
+    statusMessage: activeRedirect
+      ? "Complete verification in Didit. You can use Didit's mobile handoff; keep this tab open."
+      : undefined,
+  }
 }

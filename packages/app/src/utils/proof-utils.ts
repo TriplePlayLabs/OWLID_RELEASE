@@ -1,5 +1,5 @@
 import { Calendar, BadgeCheck, MapPin, Globe, Shield } from 'lucide-react'
-import type { VerifiedClaims, PredicateRequest } from '@owlid/sdk'
+import type { VerifiedClaims } from '@owlid/sdk'
 import type { PredicateInfo } from '@owlid/sdk/verifier'
 import type { DerivedProof } from '~/types/proof'
 
@@ -77,7 +77,7 @@ function verificationLevelOrdinal(level: VerifiedClaims['verificationLevel'] | u
  * verified-claims sheet. Used purely for the green-checkmark UI; the actual
  * proof generation reads the registry's attribute/op/value.
  */
-function predicateResultFromClaims(predicateId: string, claims: VerifiedClaims): boolean {
+export function predicateResultFromClaims(predicateId: string, claims: VerifiedClaims): boolean {
   switch (predicateId) {
     case 'age:>=18':
       return !!claims.isOver18
@@ -101,9 +101,16 @@ function predicateResultFromClaims(predicateId: string, claims: VerifiedClaims):
 }
 
 /**
- * Filter the predicate registry to entries the holder can both prove (claim
- * present + result = true) and is permitted to prove (predicate id on the
- * credential's `availablePredicates` allowlist, when set).
+ * Filter the predicate registry to entries the holder can ACTUALLY
+ * prove right now — claim present, on the credential's
+ * `availablePredicates` allowlist (when set), AND evaluated to `true`
+ * against the verified claims.
+ *
+ * Predicates the holder cannot satisfy (e.g. `kyc:>=high` for a
+ * Google-only credential) are dropped so the passport screen does not
+ * advertise things that would silently fail at presentation time. The
+ * consent screen (verifier-requested) still surfaces unsatisfied items
+ * with a red "won't satisfy" marker — that is a different surface.
  */
 export function getAvailableProofs(
   claims: VerifiedClaims | null,
@@ -116,6 +123,7 @@ export function getAvailableProofs(
 
   return registry
     .filter((p) => allowed(p.id))
+    .filter((p) => predicateResultFromClaims(p.id, claims))
     .map((p) => {
       const display = PREDICATE_DISPLAY[p.id] ?? {
         icon: Shield,
@@ -125,7 +133,7 @@ export function getAvailableProofs(
         id: p.id,
         title: display.title ?? p.label,
         claim: p.label,
-        result: predicateResultFromClaims(p.id, claims),
+        result: true,
         icon: display.icon,
         sourceField: p.attribute,
         description: display.description,
@@ -134,20 +142,28 @@ export function getAvailableProofs(
 }
 
 /**
- * Build the wire-shape `PredicateRequest`s for a given predicate id by reading
- * the registry. Returns `[]` if the id is not in the registry.
+ * The standard SD-JWT VC claim names a predicate id maps to. The issuer
+ * pre-asserts these (ISO-18013-5 `age_over_NN` pattern, see
+ * `sd_jwt_bridge`); the holder selectively discloses them — no ZK on the
+ * wire. Returns `[]` for an unknown id.
  */
-export function getProofPredicates(
-  predicateId: string,
-  registry: PredicateInfo[] | undefined,
-): PredicateRequest[] {
-  const pred = registry?.find((p) => p.id === predicateId)
-  if (!pred) return []
-  return [
-    {
-      attribute: pred.attribute,
-      op: pred.op as PredicateRequest['op'],
-      value: pred.value,
-    },
-  ]
+export function disclosuresForPredicate(predicateId: string): string[] {
+  switch (predicateId) {
+    case 'age:>=18':
+      return ['age_over_18']
+    case 'age:>=21':
+      return ['age_over_21']
+    case 'age:>=65':
+      return ['age_over_65']
+    case 'nationality:in':
+      return ['nationality_in']
+    case 'residency:in':
+      return ['resident_in']
+    case 'kyc:>=basic':
+    case 'kyc:>=substantial':
+    case 'kyc:>=high':
+      return ['verification_level']
+    default:
+      return []
+  }
 }

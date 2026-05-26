@@ -1,7 +1,7 @@
-//! T-011: Challenge replay protection repository
-//!
-//! Stores hashed challenges to prevent the same challenge from being used twice.
+//! Challenge replay-protection repository. Stores hashed challenges
+//! so the same one cannot be used twice.
 
+#![allow(dead_code)] // intentional API surface / serde fields
 use crate::db::{DbPool, Result};
 
 pub struct ChallengeRepository {
@@ -73,11 +73,9 @@ impl ChallengeRepository {
 
     /// Clean up expired pending challenges
     pub async fn cleanup_pending(&self) -> Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM pending_challenges WHERE expires_at < NOW()",
-        )
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query("DELETE FROM pending_challenges WHERE expires_at < NOW()")
+            .execute(&self.pool)
+            .await?;
 
         Ok(result.rows_affected())
     }

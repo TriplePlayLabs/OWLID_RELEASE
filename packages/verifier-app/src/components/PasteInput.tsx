@@ -5,8 +5,18 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@owlid/ui/
 import { Textarea } from '@owlid/ui/components/ui/textarea'
 
 interface PasteInputProps {
-  onSubmit: (token: string) => void
+  onSubmit: (presentation: string) => void
   onCancel: () => void
+}
+
+// SD-JWT VC presentation shape: `<jwt>~<disclosure>~...~<kb-jwt>`.
+// Three base64url segments separated by `~`, ending in a KB-JWT.
+function isSdJwtVcPresentation(value: string): boolean {
+  const segments = value.split('~')
+  if (segments.length < 2) return false
+  return segments.every((s) =>
+    /^[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$|^[A-Za-z0-9_-]+$/.test(s),
+  )
 }
 
 export function PasteInput({ onSubmit, onCancel }: PasteInputProps) {
@@ -35,15 +45,15 @@ export function PasteInput({ onSubmit, onCancel }: PasteInputProps) {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmit()
   }
 
-  const isValid = value.trim().startsWith('OID1:')
+  const isValid = isSdJwtVcPresentation(value.trim())
   const hasContent = value.trim().length > 0
 
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between space-y-0">
         <CardTitle className="flex items-center gap-2">
-          <ClipboardPaste className="w-5 h-5 text-blue-400" />
-          Paste Token
+          <ClipboardPaste className="w-5 h-5 text-muted-foreground" />
+          Paste presentation
         </CardTitle>
         <Button variant="ghost" size="icon" onClick={onCancel} aria-label="Cancel">
           <X className="w-4 h-4" />
@@ -56,7 +66,7 @@ export function PasteInput({ onSubmit, onCancel }: PasteInputProps) {
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Paste compact token (OID1:...)"
+            placeholder="Paste SD-JWT VC presentation (<jwt>~<disclosure>~...~<kb-jwt>)"
             rows={5}
             className="font-mono"
           />
@@ -72,7 +82,9 @@ export function PasteInput({ onSubmit, onCancel }: PasteInputProps) {
           )}
         </div>
         {hasContent && !isValid && (
-          <p className="text-xs text-amber-400">Token should start with "OID1:" prefix</p>
+          <p className="text-xs text-amber-400">
+            Expected SD-JWT VC presentation: dot-separated JWT segments joined by <code>~</code>.
+          </p>
         )}
         <p className="text-xs text-muted-foreground">Press Cmd+Enter to verify</p>
       </CardContent>

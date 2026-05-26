@@ -6,17 +6,39 @@
 //! `start_verification` requests see the new state without a restart.
 
 use crate::admin_auth::AdminPrincipal;
-use owl_issuer_service::{db::ProviderSettingsRepository, ProviderRegistry};
 use axum::{
+    Json,
     extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
+use owl_issuer_service::{ProviderInfo, ProviderRegistry, db::ProviderSettingsRepository};
 use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+/// Operator-only listing of every registered provider, including disabled
+/// ones. Public `/providers` filters disabled out so holders never see them;
+/// admins need the full set to toggle state.
+#[utoipa::path(
+    get,
+    path = "/admin/providers",
+    operation_id = "listAllProviders",
+    responses(
+        (status = 200, description = "All registered providers (enabled + disabled)", body = Vec<ProviderInfo>),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("bearer" = [])),
+    tag = "admin"
+)]
+pub async fn list_all_providers(
+    State(state): State<ProviderAdminState>,
+    Extension(_principal): Extension<AdminPrincipal>,
+) -> Json<Vec<ProviderInfo>> {
+    let registry = state.registry.read().await;
+    Json(registry.list())
+}
 
 #[derive(Clone)]
 pub struct ProviderAdminState {
@@ -120,9 +142,7 @@ pub enum ProviderAdminError {
 impl IntoResponse for ProviderAdminError {
     fn into_response(self) -> axum::response::Response {
         let (status, msg) = match self {
-            ProviderAdminError::NotFound => {
-                (StatusCode::NOT_FOUND, "Unknown provider".to_string())
-            }
+            ProviderAdminError::NotFound => (StatusCode::NOT_FOUND, "Unknown provider".to_string()),
             ProviderAdminError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
         (status, Json(serde_json::json!({"error": msg}))).into_response()

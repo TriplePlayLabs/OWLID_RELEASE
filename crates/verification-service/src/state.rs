@@ -1,7 +1,10 @@
+#![allow(dead_code)] // intentional API surface / serde fields
 use crate::db::{
-    ApiKeyRepository, AuditRepository, ChallengeRepository, CredentialRepository, DbPool,
-    IssuerRepository, RevocationRepository, VerificationLogRepository,
+    ApiKeyRepository, AttestationRepository, AuditRepository, ChallengeRepository,
+    CredentialRepository, DbPool, IssuerRepository, RevocationRepository,
+    VerificationLogRepository,
 };
+use crate::did::DidResolver;
 use crate::midnight::MidnightSidecar;
 use crate::presentation::PresentationSessionStore;
 use crate::ws::RevocationBroadcaster;
@@ -25,32 +28,50 @@ pub struct AppState {
     /// Revocation repository
     pub revocations: Arc<RevocationRepository>,
 
+    /// Chain-attested predicate keys (mirrored via sidecar SSE)
+    pub attestations: Arc<AttestationRepository>,
+
     /// Verification log repository
     pub verification_logs: Arc<VerificationLogRepository>,
 
     /// Audit repository
     pub audit: Arc<AuditRepository>,
 
-    /// T-011: Challenge replay protection repository
+    /// Challenge replay protection repository
     pub challenges: Arc<ChallengeRepository>,
 
-    /// T-018: WebSocket revocation broadcaster
+    /// WebSocket revocation broadcaster
     pub broadcaster: Arc<RevocationBroadcaster>,
 
-    /// T-020: Prometheus metrics handle
+    /// Prometheus metrics handle
     pub metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
 
     /// Presentation session store (in-memory, 5 min TTL)
     pub presentations: Arc<PresentationSessionStore>,
 
-    /// Midnight sidecar client (None if MIDNIGHT_ENABLED=false)
-    pub midnight: Option<Arc<MidnightSidecar>>,
+    /// Midnight sidecar client. Required — the service refuses to start
+    /// without a reachable sidecar.
+    pub midnight: Arc<MidnightSidecar>,
+
+    /// Pluggable DID resolver registry — `did:web` (Midnight-anchored),
+    /// `did:key`, `did:jwk`, plus a stub for future `did:midnight`.
+    pub did_resolver: Arc<DidResolver>,
 
     /// Allowlist of WebAuthn `clientDataJSON.origin` values that are
     /// accepted on owner-signature verification. Empty = origin check
     /// disabled (dev/test only); production must populate via
     /// `WEBAUTHN_EXPECTED_ORIGINS`.
     pub webauthn_expected_origins: Vec<String>,
+
+    /// Externally-reachable URL of this verifier. Used to build the
+    /// OpenID4VP `request_uri` + `response_uri` external wallets
+    /// fetch. Defaults to `http://<host>:<port>`.
+    pub verification_public_url: String,
+
+    /// Midnight network id the sidecar runs against. Echoed verbatim
+    /// to clients via `GET /midnight/info` so the SDK can call
+    /// midnight-js `setNetworkId()` before any contract operation.
+    pub midnight_network_id: String,
 }
 
 impl AppState {
@@ -59,28 +80,29 @@ impl AppState {
         db_pool: DbPool,
         broadcaster: Arc<RevocationBroadcaster>,
         metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
-        midnight: Option<Arc<MidnightSidecar>>,
+        midnight: Arc<MidnightSidecar>,
         webauthn_expected_origins: Vec<String>,
+        verification_public_url: String,
+        midnight_network_id: String,
     ) -> Self {
         let api_keys = Arc::new(ApiKeyRepository::new(db_pool.clone()));
         let issuers = Arc::new(IssuerRepository::new(db_pool.clone()));
-        // T-014: Initialize credential repository with optional encryption at rest
+        // Optional AES-GCM at-rest encryption for credential data.
         let credentials = match std::env::var("ENCRYPTION_KEY") {
-            Ok(hex_key) => {
-                match owl_crypto::key_from_hex(&hex_key) {
-                    Ok(key) => {
-                        tracing::info!("Encryption at rest enabled for credential data");
-                        Arc::new(CredentialRepository::with_encryption(db_pool.clone(), key))
-                    }
-                    Err(e) => {
-                        tracing::warn!("Invalid ENCRYPTION_KEY ({}), storing plaintext", e);
-                        Arc::new(CredentialRepository::new(db_pool.clone()))
-                    }
+            Ok(hex_key) => match owl_crypto::key_from_hex(&hex_key) {
+                Ok(key) => {
+                    tracing::info!("Encryption at rest enabled for credential data");
+                    Arc::new(CredentialRepository::with_encryption(db_pool.clone(), key))
                 }
-            }
+                Err(e) => {
+                    tracing::warn!("Invalid ENCRYPTION_KEY ({}), storing plaintext", e);
+                    Arc::new(CredentialRepository::new(db_pool.clone()))
+                }
+            },
             Err(_) => Arc::new(CredentialRepository::new(db_pool.clone())),
         };
         let revocations = Arc::new(RevocationRepository::new(db_pool.clone()));
+        let attestations = Arc::new(AttestationRepository::new(db_pool.clone()));
         let verification_logs = Arc::new(VerificationLogRepository::new(db_pool.clone()));
         let audit = Arc::new(AuditRepository::new(db_pool.clone()));
         let challenges = Arc::new(ChallengeRepository::new(db_pool.clone()));
@@ -89,6 +111,10 @@ impl AppState {
         if let Err(e) = revocations.initialize_cache().await {
             tracing::warn!("Failed to initialize revocation cache: {}", e);
         }
+        // Prime attestation cache (sidecar SSE also replays a snapshot)
+        if let Err(e) = attestations.initialize_cache().await {
+            tracing::warn!("Failed to initialize attestation cache: {}", e);
+        }
 
         Self {
             db_pool,
@@ -96,6 +122,7 @@ impl AppState {
             issuers,
             credentials,
             revocations,
+            attestations,
             verification_logs,
             audit,
             challenges,
@@ -103,7 +130,10 @@ impl AppState {
             broadcaster,
             metrics_handle,
             midnight,
+            did_resolver: Arc::new(DidResolver::with_defaults()),
             webauthn_expected_origins,
+            verification_public_url,
+            midnight_network_id,
         }
     }
 }

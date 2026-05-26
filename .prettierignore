@@ -1,0 +1,10 @@
+# Vendored compactc output — kept byte-identical to the compiler so it
+# stays re-syncable from the sidecar (bun run sync:predicate-contracts).
+# Prettier only honors the root .prettierignore (lint-staged runs it from
+# the repo root), so the paths are anchored here. One vendored ABI per
+# predicate kind (per-extrinsic block-weight cap forces the split).
+packages/sdk/src/midnight/contracts/**/index.js
+packages/sdk/src/midnight/contracts/**/index.d.ts
+
+# Slidev deck — prettier rewrites `---` slide separators into `## headings`.
+presentation.md

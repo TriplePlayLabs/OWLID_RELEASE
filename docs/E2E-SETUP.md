@@ -195,22 +195,21 @@ curl -s http://localhost:3000/health | jq .
 
 | Variable               | Default                 | Description                 |
 | ---------------------- | ----------------------- | --------------------------- |
-| `MIDNIGHT_ENABLED`     | `false`                 | Enable Midnight integration |
-| `MIDNIGHT_SIDECAR_URL` | `http://localhost:3000` | Sidecar endpoint            |
+| `MIDNIGHT_SIDECAR_URL` | `http://localhost:3000` | Sidecar endpoint (required) |
 
 ## Just Commands Reference
 
-| Command                 | Description                                        |
-| ----------------------- | -------------------------------------------------- |
-| `just midnight-up`      | Start Midnight network containers                  |
-| `just midnight-down`    | Stop Midnight network                              |
-| `just midnight-reset`   | Stop + remove all chain data                       |
-| `just midnight-status`  | Check health of all Midnight services              |
-| `just midnight-logs`    | Tail Midnight container logs                       |
-| `just deploy-contracts` | Deploy 3 OwlID contracts to Midnight               |
-| `just dev-e2e`          | Start full stack (Midnight + DBs + services + app) |
-| `just dev-full`         | Start OwlID with sidecar (no Midnight network)     |
-| `just dev`              | Start OwlID without Midnight                       |
+| Command                 | Description                                                                                     |
+| ----------------------- | ----------------------------------------------------------------------------------------------- |
+| `just midnight-up`      | Start Midnight network containers                                                               |
+| `just midnight-down`    | Stop Midnight network                                                                           |
+| `just midnight-reset`   | Stop + remove all chain data                                                                    |
+| `just midnight-status`  | Check health of all Midnight services                                                           |
+| `just midnight-logs`    | Tail Midnight container logs                                                                    |
+| `just deploy-contracts` | Deploy the OwlID Compact contracts to Midnight (3 registries + 7 predicates)                    |
+| `just dev-e2e`          | Start full stack (Midnight + DBs + sidecar + services + app)                                    |
+| `just dev-full`         | Start the backends + all frontends with the sidecar (no Midnight devnet)                        |
+| `just dev`              | Start the services + app (the services need a reachable sidecar — see `dev-backend`/`dev-full`) |
 
 ## Troubleshooting
 

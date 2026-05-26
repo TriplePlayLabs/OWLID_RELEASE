@@ -7,7 +7,7 @@
 //! Run with: cargo test -p owl-issuer-service --test e2e_api -- --ignored --test-threads=1
 
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 struct TestServer {
     base_url: String,
@@ -148,10 +148,7 @@ async fn test_create_session_mock_bankid() {
 async fn test_create_session_unknown_provider_fails() {
     let server = TestServer::new().await;
     let resp = server
-        .post(
-            "/sessions",
-            &json!({"providerId": "nonexistent-provider"}),
-        )
+        .post("/sessions", &json!({"providerId": "nonexistent-provider"}))
         .await;
     assert!(
         resp.status() == 404 || resp.status() == 400,
@@ -207,10 +204,7 @@ async fn test_full_issuance_flow_mock_digid() {
 
     // 2. Auto-verify (simulates provider verification with sample data)
     let verify_resp = server
-        .post(
-            &format!("/sessions/{}/auto-verify", session_id),
-            &json!({}),
-        )
+        .post(&format!("/sessions/{}/auto-verify", session_id), &json!({}))
         .await;
     assert_eq!(verify_resp.status(), 200, "Auto-verify should succeed");
     let claims: Value = verify_resp.json().await.unwrap();
@@ -250,9 +244,9 @@ async fn test_full_issuance_flow_mock_digid() {
         "Should return credential object"
     );
     assert!(
-        issue_body["credential"]["root_hash"].is_string()
-            || issue_body["credential"]["rootHash"].is_string(),
-        "Credential should have root_hash"
+        issue_body["credential"]["credential_id"].is_string()
+            || issue_body["credential"]["credentialId"].is_string(),
+        "Credential should have credential_id"
     );
 }
 
@@ -270,14 +264,14 @@ async fn test_full_issuance_flow_mock_bankid() {
 
     // 2. Auto-verify
     let verify_resp = server
-        .post(
-            &format!("/sessions/{}/auto-verify", session_id),
-            &json!({}),
-        )
+        .post(&format!("/sessions/{}/auto-verify", session_id), &json!({}))
         .await;
     assert_eq!(verify_resp.status(), 200);
     let claims: Value = verify_resp.json().await.unwrap();
-    assert_eq!(claims["firstName"], "Erik", "BankID mock should return Erik");
+    assert_eq!(
+        claims["firstName"], "Erik",
+        "BankID mock should return Erik"
+    );
     assert_eq!(claims["nationality"], "Swedish");
 
     // 3. Issue credential
@@ -352,142 +346,17 @@ async fn test_get_claims_before_verify_fails() {
 }
 
 // ==========================================================================
-// Cross-Service E2E: Issue on Issuer -> Verify on Verification Service
+// OIDC login endpoint
 // ==========================================================================
 
 #[tokio::test]
 #[ignore]
-async fn test_cross_service_issue_then_verify() {
-    let issuer_url = std::env::var("ISSUER_SERVICE_URL")
-        .unwrap_or_else(|_| "http://localhost:8001".to_string());
-    let verify_url = std::env::var("VERIFICATION_SERVICE_URL")
-        .unwrap_or_else(|_| "http://localhost:8000".to_string());
-    let client = Client::new();
-    let api_key = "dev_key_12345678901234567890123456789012";
-
-    // Check both services
-    let h1 = client
-        .get(format!("{}/health", issuer_url))
-        .send()
-        .await;
-    let h2 = client
-        .get(format!("{}/health", verify_url))
-        .send()
-        .await;
-    if h1.is_err() || h2.is_err() {
-        eprintln!("Skipping cross-service test: both services must be running");
-        return;
-    }
-
-    // 1. Get issuer info (public key)
-    let info: Value = client
-        .get(format!("{}/issuer-info", issuer_url))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let issuer_pk = info["publicKey"].as_str().unwrap();
-
-    // 2. Register issuer on verification service
-    client
-        .post(format!("{}/trusted-issuers", verify_url))
-        .header("X-API-Key", api_key)
-        .json(&json!({"public_key": issuer_pk, "name": "Cross-Service Test Issuer"}))
-        .send()
-        .await
-        .unwrap();
-
-    // 3. Issue credential via issuer service
-    let session: Value = client
-        .post(format!("{}/sessions", issuer_url))
-        .json(&json!({"providerId": "mock-digid"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let sid = session["sessionId"].as_str().unwrap();
-
-    client
-        .post(format!(
-            "{}/sessions/{}/auto-verify",
-            issuer_url, sid
-        ))
-        .json(&json!({}))
-        .send()
-        .await
-        .unwrap();
-
-    let owner = owl_crypto::KeyPair::generate();
-    let issue_body: Value = client
-        .post(format!("{}/sessions/{}/issue", issuer_url, sid))
-        .json(&json!({"ownerPublicKey": owner.public_key().to_hex(), "keyAlgorithm": "ed25519"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    assert_eq!(issue_body["success"], true, "Issuance should succeed");
-
-    // 4. Build token from issued credential
-    let credential = &issue_body["credential"];
-    let proof_doc_json = serde_json::to_string(credential).unwrap();
-    let mut proof_doc: owl_proof_system::ProofDocument =
-        serde_json::from_str(&proof_doc_json).unwrap();
-
-    let challenge = format!("cross_svc_{}", uuid::Uuid::new_v4());
-    let request = owl_proof_system::ProofRequest {
-        disclose: vec!["firstName".to_string()],
-        predicates: vec![],
-        trusted_issuers: vec![issuer_pk.to_string()],
-        challenge: challenge.clone(),
-    };
-
-    let token =
-        owl_proof_system::Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
-    let compact = token.to_compact().unwrap();
-
-    // 5. Verify on verification service
-    let verify_resp: Value = client
-        .post(format!("{}/verify", verify_url))
-        .header("X-API-Key", api_key)
-        .json(&json!({"token": compact, "challenge": challenge}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    assert_eq!(
-        verify_resp["valid"], true,
-        "Cross-service verification should pass: {:?}",
-        verify_resp
-    );
-    assert_eq!(
-        verify_resp["subjects"]["firstName"], "Jan",
-        "Should disclose Jan from DigiD mock"
-    );
-}
-
-// ==========================================================================
-// T-017: OIDC login endpoint
-// ==========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_t017_oidc_login_unknown_provider() {
+async fn test_oidc_login_unknown_provider() {
     let server = TestServer::new().await;
     let resp = server.get("/auth/login/nonexistent").await;
-    // Should return 404 since provider doesn't exist
     assert!(
         resp.status() == 404 || resp.status() == 400,
-        "T-017: Unknown OIDC provider should return 404/400, got {}",
+        "Unknown OIDC provider should return 404/400, got {}",
         resp.status()
     );
 }

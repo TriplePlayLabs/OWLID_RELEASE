@@ -33,7 +33,9 @@ export interface AdminClientOptions {
 
 function buildHeaders(opts?: AdminClientOptions): Record<string, string> {
   const apiKey = opts?.apiKey ?? getApiKey()
-  return { ...opts?.headers, ...apiKeyHeaders(apiKey) }
+  // Caller's per-call headers override the API-key baseline (e.g. a
+  // per-session bearer used by session-protected routes).
+  return { ...apiKeyHeaders(apiKey), ...opts?.headers }
 }
 
 let _verificationConfig: VerificationConfiguration | null = null
@@ -177,8 +179,10 @@ export type {
   ChangePasswordResponse,
   MidnightStatus,
   SidecarHealth,
-  ToggleResponse,
   MetricsResponse,
+  AuditEventInfo,
+  AdminUserInfo,
+  CreateAdminUserRequest,
 } from './verification/models/index.js'
 
 export type { ProviderToggleResponse } from './issuer/models/index.js'

@@ -27,6 +27,15 @@
  *   6. Built-in localhost defaults (dev only — warns in prod)
  */
 
+/**
+ * Holder-device proving backend. `wasm` runs the zkir-v2 WASM prover
+ * in-process (witness never leaves the device — the default). `proof-server`
+ * delegates `proveTx` to a hosted Midnight proof server over HTTP; the
+ * preimage (private witness already consumed by circuit-exec) is sent over
+ * the wire, but only the proof comes back.
+ */
+export type ProvingMode = 'wasm' | 'proof-server'
+
 export interface RuntimeConfig {
   /** Verification service base URL (HTTP/HTTPS), e.g. `https://api.owlid.example.com`. */
   verificationUrl?: string
@@ -40,6 +49,18 @@ export interface RuntimeConfig {
    * hit a different host than HTTP (rare; e.g. an LB that splits the traffic).
    */
   wsBaseUrl?: string
+  /**
+   * Holder-device proving backend. Defaults to `wasm` (in-process) — the
+   * witness never leaves the device. Set to `proof-server` to delegate proof
+   * generation to a remote service (faster on low-power devices, but the
+   * unproven transaction crosses the network).
+   */
+  provingMode?: ProvingMode
+  /**
+   * Base URL of the Midnight proof server when `provingMode === 'proof-server'`.
+   * Ignored otherwise. Example: `https://proofs.owlid.app`.
+   */
+  proofServerUrl?: string
 }
 
 declare global {
@@ -66,6 +87,8 @@ export function getConfig(): Readonly<RuntimeConfig> {
     issuerUrl: getIssuerUrl(),
     apiKey: getApiKey(),
     wsBaseUrl: getWsBaseUrl(),
+    provingMode: getProvingMode(),
+    proofServerUrl: getProofServerUrl(),
   })
 }
 
@@ -179,6 +202,32 @@ export function getWsBaseUrl(override?: string): string {
  */
 export function toWsUrl(httpUrl: string): string {
   return httpUrl.replace(/^http(s?):/i, 'ws$1:')
+}
+
+/**
+ * Holder-device proving mode. Defaults to `wasm` (in-process, witness stays
+ * on device). Override via `configure({ provingMode })`,
+ * `window.__OWLID_CONFIG__.provingMode`, or `VITE_PROVING_MODE`.
+ */
+export function getProvingMode(override?: ProvingMode): ProvingMode {
+  if (override === 'wasm' || override === 'proof-server') return override
+  const fromMemory = readMemory('provingMode')
+  if (fromMemory === 'wasm' || fromMemory === 'proof-server') return fromMemory
+  const fromWindow = readWindow('provingMode')
+  if (fromWindow === 'wasm' || fromWindow === 'proof-server') return fromWindow
+  const fromMeta = readImportMeta('VITE_PROVING_MODE')
+  if (fromMeta === 'wasm' || fromMeta === 'proof-server') return fromMeta
+  const fromProc = readProcess('VITE_PROVING_MODE', 'OWLID_PROVING_MODE')
+  if (fromProc === 'wasm' || fromProc === 'proof-server') return fromProc
+  return 'wasm'
+}
+
+/**
+ * Hosted Midnight proof server URL. Required when `provingMode === 'proof-server'`;
+ * `undefined` (the default) means in-process WASM proving.
+ */
+export function getProofServerUrl(override?: string): string | undefined {
+  return resolve('proofServerUrl', 'VITE_PROOF_SERVER_URL', undefined, override) || undefined
 }
 
 /**

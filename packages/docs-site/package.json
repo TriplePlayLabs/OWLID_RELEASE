@@ -5,9 +5,6 @@
   "type": "module",
   "description": "OwlID marketing site and developer documentation (rspress).",
   "scripts": {
-    "sync-content": "bun scripts/sync-content.ts",
-    "predev": "bun run sync-content",
-    "prebuild": "bun run sync-content",
     "dev": "rspress dev --port 4001",
     "build": "rspress build",
     "preview": "rspress preview",

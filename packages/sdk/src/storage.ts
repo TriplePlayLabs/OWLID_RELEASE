@@ -1,8 +1,16 @@
 /**
- * Storage Types and Utilities
+ * Wallet storage — list of SD-JWT VC credentials, one per IdP.
  *
- * Platform-agnostic storage with adapter pattern.
- * Works with localStorage, AsyncStorage, or any custom backend.
+ * Layout (localStorage keys):
+ *   owl_wallet_index        JSON `string[]` of credentialIds (oldest first)
+ *   owl_wallet_cred:<id>    serialized {@link WalletCredential}
+ *   owl_wallet_key:<id>     PRF-wrapped Ed25519/P-256 holder seed (per cred)
+ *   owl_webauthn_credential  the wallet-global passkey (unlock gate)
+ *
+ * Holder keys are per-credential — every issuance mints a fresh `cnf`
+ * key so batch siblings and per-IdP credentials stay independently
+ * unlinkable on the wire. The single passkey unlocks each per-cred key
+ * via PRF derivation.
  */
 
 // ============================================================================
@@ -10,161 +18,148 @@
 // ============================================================================
 
 /**
- * WebAuthn credential stored locally
- * Private key never leaves the secure enclave - only credential ID and public key are stored
+ * WebAuthn passkey — the wallet-global unlock gate. One per wallet.
+ * Private key never leaves the secure enclave; only the credentialId +
+ * COSE public key are stored. The PRF extension on this credential
+ * derives the symmetric key that wraps every per-credential seed.
  */
 export interface StoredWebAuthnCredential {
-  /** Base64url-encoded credential ID */
   credentialId: string
-  /** Base64-encoded COSE public key */
   publicKey: string
-  /** Signature counter for replay protection */
   counter: number
-  /** Supported transports (e.g., 'internal', 'hybrid') */
   transports: string[]
 }
 
 /**
- * Proof document issued by the credential issuer
- */
-export interface Credential {
-  rootHash: string
-  tree: unknown
-  issuerSignature: string
-  issuerPublicKey: string
-  ownerPublicKey: string
-  issuedAt: string
-  attributes?: Record<string, unknown>
-  /** Allow additional properties from different issuers */
-  [key: string]: unknown
-}
-
-/**
- * Verified claims from identity provider
+ * Disclosed claims as the holder received them at issuance (unhashed).
+ * Optional fields are present only when the provider actually vouches
+ * for them — Google won't carry `birthDate`, Didit won't carry `hd`.
  */
 export interface VerifiedClaims {
-  firstName: string
-  lastName: string
-  dateOfBirth: string
-  placeOfBirth: string
-  nationality: string
+  firstName?: string
+  lastName?: string
+  dateOfBirth?: string
+  placeOfBirth?: string
+  nationality?: string
   gender?: string
-  nationalId: string
+  nationalId?: string
   passportNumber?: string
   driversLicense?: string
   taxId?: string
 
-  // Document information (from document-based verification like Didit, Onfido, Jumio)
-  /** Type of document used for verification (Passport, ID Card, Driver's License) */
   documentType?: string
-  /** Document number (generic - may be passport, ID, or driver's license) */
   documentNumber?: string
-  /** Country that issued the document (ISO 3166-1 alpha-2) */
   issuingCountry?: string
-  /** Document expiration date (YYYY-MM-DD) */
   documentExpiry?: string
-  /** Document issue date (YYYY-MM-DD) */
   documentIssueDate?: string
 
-  // Biometric data (for local display only, NOT in credential)
-  /** Portrait image from document/selfie (base64) - stored locally for passport display */
+  /** Portrait from a document scan. Local display only; never disclosed. */
   portraitImage?: string
 
-  streetAddress: string
-  city: string
-  postalCode: string
-  country: string
-  isOver18: boolean
-  isOver21: boolean
-  isOver65: boolean
-  isEuCitizen: boolean
-  isResident: boolean
-  verificationLevel: string
-  verifiedAt: string
-  verifiedBy: string
-  verificationMethod: string
+  /**
+   * Holder-only unique-personhood witness (32-byte hex), issuer-derived
+   * for document-verified / government-eID identities. Stored locally so
+   * the witness-on-device orchestrator can prove `attestUniquePersonhood`
+   * — it is NEVER an SD-JWT disclosure and never reaches a verifier.
+   */
+  personhoodSecret?: string
+
+  streetAddress?: string
+  city?: string
+  postalCode?: string
+  country?: string
+
+  isOver18?: boolean
+  isOver21?: boolean
+  isOver65?: boolean
+  isEuCitizen?: boolean
+  isResident?: boolean
+
+  /** OIDC account claims (Google / Apple / Microsoft / generic). */
+  email?: string
+  emailVerified?: boolean
+  name?: string
+  pictureUrl?: string
+  locale?: string
+  /** Google Workspace organisation domain (`hd` claim). */
+  hostedDomain?: string
+  /** Apple private email relay indicator. */
+  isPrivateEmail?: boolean
+  /** Provider-stable subject (Google `sub`, Apple `sub`, Microsoft `oid`). */
+  subject?: string
+
+  verificationLevel?: string
+  verifiedAt?: string
+  verifiedBy?: string
+  verificationMethod?: string
 }
 
 /**
- * Complete credential data stored locally
- * Uses WebAuthn for secure signing - private key stays in secure enclave
+ * Per-IdP card rendering shape. The kind drives which React component
+ * the wallet's UI picks; the payload carries provider-specific extras
+ * the component needs that don't fit in {@link VerifiedClaims}.
  */
-export interface StoredCredentialData {
-  credential: Credential
-  /** P-256 owner public key (hex) - used in credential */
-  ownerPublicKey: string
-  /** WebAuthn credential ID for signing */
-  webauthnCredentialId: string
-  issuerPublicKey: string
-  verifiedClaims: VerifiedClaims
-  sessionId: string
+export type CardShape =
+  | { kind: 'passport'; portraitImage?: string }
+  | { kind: 'google-account'; hostedDomain?: string }
+  | { kind: 'apple-id'; relayEmail?: boolean }
+  | { kind: 'generic-oidc'; brandName: string; logoUrl?: string }
+
+/**
+ * One credential in the wallet. Replaces the legacy single-cred
+ * `Credential + StoredCredentialData` pair.
+ */
+export interface WalletCredential {
+  /** Stable id (base64url(sha-256(issuer JWT))) — also the on-chain handle. */
+  credentialId: string
+  /** SD-JWT VC string in issuance form (`<JWT>~<disc>~…~`). */
+  sdJwtVc: string
+  /** Issuer `iss` claim (did:web URL). */
+  issuer: string
+  /** Provider that drove the IdP flow (`didit`, `google`, …). */
+  providerId: string
+  /** ISO timestamp of issuance. */
   issuedAt: string
-}
-
-/**
- * Identity data for passport display
- */
-export interface IdentityData {
-  firstName: string
-  lastName: string
-  birthDate: string
-  birthPlace: string
-  nationality: string
-  nationalId: string
-  passportNumber: string
-  taxId: string
-  creditScore: number
-  accountNumber: string
-  email: string
-  phone: string
-  address: string
-  occupation: string
-  employer: string
-  maritalStatus: string
-  /** Portrait image from verification (base64) - for passport photo display */
-  portraitImage?: string
+  /** ISO timestamp from the SD-JWT VC `exp` claim, when present. */
+  expiresAt?: string
+  /** Rendering shape for the per-IdP UI card. */
+  cardShape: CardShape
+  /** Disclosed claims as received at issuance (local-only). */
+  verifiedClaims: VerifiedClaims
+  /** Per-credential `cnf` public key (hex). The wrapped seed lives under
+   *  the `owl_wallet_key:<credentialId>` storage key. */
+  holderPublicKeyHex: string
+  /** Other batch-sibling credentialIds when issued via OID4VCI Batch.
+   *  Empty / undefined for non-batch credentials. */
+  batchSiblings?: string[]
 }
 
 // ============================================================================
-// Storage Keys
+// Storage keys
 // ============================================================================
 
 export const STORAGE_KEYS = {
-  ENCRYPTED_IDENTITY: 'owl_encrypted_identity',
-  CREDENTIAL_ID: 'owl_credential_id',
-  USERNAME: 'owl_username',
-  PROOF_CREDENTIAL: 'owl_proof_credential',
-  OWNER_PUBLIC_KEY: 'owl_owner_public_key',
+  WALLET_INDEX: 'owl_wallet_index',
+  WALLET_CRED_PREFIX: 'owl_wallet_cred:',
+  WALLET_KEY_PREFIX: 'owl_wallet_key:',
   WEBAUTHN_CREDENTIAL: 'owl_webauthn_credential',
-  ISSUER_PUBLIC_KEY: 'owl_issuer_public_key',
-  VERIFIED_CLAIMS: 'owl_verified_claims',
-  IDP_SESSION_ID: 'owl_idp_session_id',
+  USERNAME: 'owl_username',
 } as const
 
 // ============================================================================
-// Storage Adapter Interface
+// Storage adapter
 // ============================================================================
 
-/**
- * Platform-agnostic storage interface
- * Implement this for different environments (browser localStorage, React Native AsyncStorage, etc.)
- */
 export interface StorageAdapter {
   getItem(key: string): string | null | Promise<string | null>
   setItem(key: string, value: string): void | Promise<void>
   removeItem(key: string): void | Promise<void>
 }
 
-/**
- * Check if running in browser with localStorage available
- */
 function isBrowser(): boolean {
   return typeof window !== 'undefined' && typeof localStorage !== 'undefined'
 }
 
-/**
- * Browser localStorage adapter
- */
 export const browserStorageAdapter: StorageAdapter = {
   getItem: (key) => (isBrowser() ? localStorage.getItem(key) : null),
   setItem: (key, value) => {
@@ -176,17 +171,32 @@ export const browserStorageAdapter: StorageAdapter = {
 }
 
 // ============================================================================
-// Storage Manager
+// Card-shape inference
 // ============================================================================
 
-/**
- * Credential and identity storage manager
- * Works with any storage backend via adapter pattern
- */
+/** Map a provider id + disclosed claims to a {@link CardShape}.  */
+export function buildCardShape(providerId: string, claims: VerifiedClaims): CardShape {
+  const id = providerId.toLowerCase()
+  if (id === 'didit' || id.startsWith('mock-')) {
+    return { kind: 'passport', portraitImage: claims.portraitImage }
+  }
+  if (id === 'google') {
+    return { kind: 'google-account', hostedDomain: claims.hostedDomain }
+  }
+  if (id === 'apple') {
+    return { kind: 'apple-id', relayEmail: claims.isPrivateEmail }
+  }
+  return { kind: 'generic-oidc', brandName: providerId }
+}
+
+// ============================================================================
+// Storage manager
+// ============================================================================
+
 export class CredentialStorageManager {
   constructor(private storage: StorageAdapter = browserStorageAdapter) {}
 
-  // WebAuthn Credential
+  // WebAuthn passkey — wallet-global unlock gate.
 
   async saveWebAuthnCredential(cred: StoredWebAuthnCredential): Promise<void> {
     await this.storage.setItem(STORAGE_KEYS.WEBAUTHN_CREDENTIAL, JSON.stringify(cred))
@@ -206,129 +216,106 @@ export class CredentialStorageManager {
     return !!(await this.storage.getItem(STORAGE_KEYS.WEBAUTHN_CREDENTIAL))
   }
 
-  // Credential Data
+  // Username — wallet display label (not a credential).
 
-  async saveCredentialData(data: StoredCredentialData): Promise<void> {
+  async saveUsername(username: string): Promise<void> {
+    await this.storage.setItem(STORAGE_KEYS.USERNAME, username)
+  }
+
+  async loadUsername(): Promise<string | null> {
+    return await this.storage.getItem(STORAGE_KEYS.USERNAME)
+  }
+
+  // Wallet credential list.
+
+  /** Append a credential + its PRF-wrapped seed to the wallet. */
+  async addCredential(credential: WalletCredential, wrappedKey: string): Promise<void> {
+    const ids = await this.readIndex()
+    if (!ids.includes(credential.credentialId)) {
+      ids.push(credential.credentialId)
+    }
     await Promise.all([
-      this.storage.setItem(STORAGE_KEYS.PROOF_CREDENTIAL, JSON.stringify(data.credential)),
-      this.storage.setItem(STORAGE_KEYS.OWNER_PUBLIC_KEY, data.ownerPublicKey || ''),
-      this.storage.setItem(STORAGE_KEYS.ISSUER_PUBLIC_KEY, data.issuerPublicKey || ''),
-      this.storage.setItem(STORAGE_KEYS.VERIFIED_CLAIMS, JSON.stringify(data.verifiedClaims)),
-      this.storage.setItem(STORAGE_KEYS.IDP_SESSION_ID, data.sessionId),
+      this.storage.setItem(
+        STORAGE_KEYS.WALLET_CRED_PREFIX + credential.credentialId,
+        JSON.stringify(credential),
+      ),
+      this.storage.setItem(STORAGE_KEYS.WALLET_KEY_PREFIX + credential.credentialId, wrappedKey),
+      this.storage.setItem(STORAGE_KEYS.WALLET_INDEX, JSON.stringify(ids)),
     ])
   }
 
-  async loadCredentialData(): Promise<StoredCredentialData | null> {
-    const [credentialJson, ownerPublicKey, webauthnJson, issuerPublicKey, claimsJson, sessionId] =
-      await Promise.all([
-        this.storage.getItem(STORAGE_KEYS.PROOF_CREDENTIAL),
-        this.storage.getItem(STORAGE_KEYS.OWNER_PUBLIC_KEY),
-        this.storage.getItem(STORAGE_KEYS.WEBAUTHN_CREDENTIAL),
-        this.storage.getItem(STORAGE_KEYS.ISSUER_PUBLIC_KEY),
-        this.storage.getItem(STORAGE_KEYS.VERIFIED_CLAIMS),
-        this.storage.getItem(STORAGE_KEYS.IDP_SESSION_ID),
+  /** All credentials in insertion order. */
+  async listCredentials(): Promise<WalletCredential[]> {
+    const ids = await this.readIndex()
+    const creds = await Promise.all(ids.map((id) => this.getCredential(id)))
+    return creds.filter((c): c is WalletCredential => c !== null)
+  }
+
+  async getCredential(credentialId: string): Promise<WalletCredential | null> {
+    const json = await this.storage.getItem(STORAGE_KEYS.WALLET_CRED_PREFIX + credentialId)
+    if (!json) return null
+    try {
+      return JSON.parse(json) as WalletCredential
+    } catch {
+      return null
+    }
+  }
+
+  async removeCredential(credentialId: string): Promise<void> {
+    const ids = (await this.readIndex()).filter((id) => id !== credentialId)
+    await Promise.all([
+      this.storage.removeItem(STORAGE_KEYS.WALLET_CRED_PREFIX + credentialId),
+      this.storage.removeItem(STORAGE_KEYS.WALLET_KEY_PREFIX + credentialId),
+      this.storage.setItem(STORAGE_KEYS.WALLET_INDEX, JSON.stringify(ids)),
+    ])
+  }
+
+  /** True iff the wallet contains at least one credential with both
+   *  its serialized blob AND its wrapped key on disk. */
+  async hasAnyCredential(): Promise<boolean> {
+    const ids = await this.readIndex()
+    for (const id of ids) {
+      const [cred, key] = await Promise.all([
+        this.storage.getItem(STORAGE_KEYS.WALLET_CRED_PREFIX + id),
+        this.storage.getItem(STORAGE_KEYS.WALLET_KEY_PREFIX + id),
       ])
-
-    if (!credentialJson) return null
-
-    const webauthnCred = webauthnJson
-      ? (JSON.parse(webauthnJson) as StoredWebAuthnCredential)
-      : null
-
-    // WebAuthn credential is required - no more legacy keypair fallback
-    if (!webauthnCred) return null
-
-    try {
-      return {
-        credential: JSON.parse(credentialJson) as Credential,
-        ownerPublicKey: ownerPublicKey || '',
-        webauthnCredentialId: webauthnCred.credentialId,
-        issuerPublicKey: issuerPublicKey || '',
-        verifiedClaims: claimsJson
-          ? (JSON.parse(claimsJson) as VerifiedClaims)
-          : ({} as VerifiedClaims),
-        sessionId: sessionId || '',
-        issuedAt: new Date().toISOString(),
-      }
-    } catch {
-      return null
+      if (cred && key) return true
     }
+    return false
   }
 
-  async hasStoredCredential(): Promise<boolean> {
-    const [credentialVal, webauthnVal] = await Promise.all([
-      this.storage.getItem(STORAGE_KEYS.PROOF_CREDENTIAL),
-      this.storage.getItem(STORAGE_KEYS.WEBAUTHN_CREDENTIAL),
-    ])
-    return !!credentialVal && !!webauthnVal
+  async getCredentialKeyWrapped(credentialId: string): Promise<string | null> {
+    return await this.storage.getItem(STORAGE_KEYS.WALLET_KEY_PREFIX + credentialId)
   }
 
-  async getStoredCredential(): Promise<Credential | null> {
-    const json = await this.storage.getItem(STORAGE_KEYS.PROOF_CREDENTIAL)
-    if (!json) return null
-    try {
-      return JSON.parse(json) as Credential
-    } catch {
-      return null
-    }
-  }
-
-  async getOwnerPublicKey(): Promise<string | null> {
-    return await this.storage.getItem(STORAGE_KEYS.OWNER_PUBLIC_KEY)
-  }
-
-  async getStoredClaims(): Promise<VerifiedClaims | null> {
-    const json = await this.storage.getItem(STORAGE_KEYS.VERIFIED_CLAIMS)
-    if (!json) return null
-    try {
-      return JSON.parse(json) as VerifiedClaims
-    } catch {
-      return null
-    }
-  }
-
-  // Identity
-
-  async saveIdentity(credentialId: string, username: string): Promise<void> {
-    await Promise.all([
-      this.storage.setItem(STORAGE_KEYS.CREDENTIAL_ID, credentialId),
-      this.storage.setItem(STORAGE_KEYS.USERNAME, username),
-    ])
-  }
-
-  async saveEncryptedIdentity(identityData: IdentityData): Promise<void> {
-    const encryptedBlob = btoa(JSON.stringify(identityData))
-    await this.storage.setItem(STORAGE_KEYS.ENCRYPTED_IDENTITY, encryptedBlob)
-  }
-
-  async loadStoredIdentity(): Promise<{
-    encryptedBlob: string | null
-    credentialId: string | null
-    username: string | null
-  }> {
-    const [encryptedBlob, credentialId, username] = await Promise.all([
-      this.storage.getItem(STORAGE_KEYS.ENCRYPTED_IDENTITY),
-      this.storage.getItem(STORAGE_KEYS.CREDENTIAL_ID),
-      this.storage.getItem(STORAGE_KEYS.USERNAME),
-    ])
-    return { encryptedBlob, credentialId, username }
-  }
-
-  async hasStoredIdentity(): Promise<boolean> {
-    const { encryptedBlob, credentialId, username } = await this.loadStoredIdentity()
-    return !!(encryptedBlob && credentialId && username)
-  }
-
-  decryptIdentity(encryptedBlob: string): IdentityData {
-    return JSON.parse(atob(encryptedBlob))
-  }
-
-  // Clear
-
+  /** Wipe every wallet key — including the passkey gate and username. */
   async clearAll(): Promise<void> {
-    await Promise.all(Object.values(STORAGE_KEYS).map((key) => this.storage.removeItem(key)))
+    const ids = await this.readIndex()
+    const perCred = ids.flatMap((id) => [
+      STORAGE_KEYS.WALLET_CRED_PREFIX + id,
+      STORAGE_KEYS.WALLET_KEY_PREFIX + id,
+    ])
+    await Promise.all(
+      [
+        STORAGE_KEYS.WALLET_INDEX,
+        STORAGE_KEYS.WEBAUTHN_CREDENTIAL,
+        STORAGE_KEYS.USERNAME,
+        ...perCred,
+      ].map((k) => this.storage.removeItem(k)),
+    )
+  }
+
+  private async readIndex(): Promise<string[]> {
+    const json = await this.storage.getItem(STORAGE_KEYS.WALLET_INDEX)
+    if (!json) return []
+    try {
+      const parsed = JSON.parse(json)
+      return Array.isArray(parsed) ? (parsed.filter((s) => typeof s === 'string') as string[]) : []
+    } catch {
+      return []
+    }
   }
 }
 
-/** Default storage manager instance using browser localStorage */
+/** Default storage manager using browser localStorage. */
 export const storage = new CredentialStorageManager()

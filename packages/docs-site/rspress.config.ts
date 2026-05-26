@@ -8,6 +8,7 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 export default defineConfig({
   root: path.join(here, 'docs'),
   plugins: [mermaidPlugin()],
+  globalStyles: path.join(here, 'theme/theme.css'),
   title: 'OwlID',
   description: 'Privacy-preserving digital identity built on Midnight.',
   logoText: 'OwlID',
@@ -19,6 +20,13 @@ export default defineConfig({
         icon: 'github',
         mode: 'link',
         content: 'https://github.com/owlid/owlid',
+      },
+      {
+        icon: {
+          svg: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>',
+        },
+        mode: 'link',
+        content: 'https://wallet.owlid.app',
       },
     ],
     nav: [
@@ -50,7 +58,7 @@ export default defineConfig({
           items: [
             { text: 'OwlVerifier', link: '/sdk/verifier' },
             { text: 'OwlIssuer', link: '/sdk/issuer' },
-            { text: 'Token primitives', link: '/sdk/native' },
+            { text: 'Token primitives', link: '/sdk/primitives' },
           ],
         },
         {

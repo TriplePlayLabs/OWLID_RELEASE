@@ -1,138 +1,159 @@
 # How OwlID works
 
-A short tour of the moving parts. Read this once before integrating — it makes the API choices in the SDK make sense.
+A design-level tour of OwlID's privacy model, trust anchoring, and data flow.
+For exact function signatures use the [SDK reference](/sdk/verifier); for raw
+routes see the [HTTP API](/api).
 
-## The problem
-
-Most identity systems force the user to disclose an entire document (passport, driver's license, KYC report) just to prove a single fact (over 18, EU resident, KYC-verified). The verifier ends up holding sensitive data they don't need; the user loses control of who sees what.
-
-OwlID lets a user prove specific facts about themselves without revealing the underlying document. Think "show me a green check that says 'over 18'", not "send me a photo of your passport".
-
-## Three actors
-
-```mermaid
-flowchart LR
-    Issuer(["Issuer"]) -->|"signs credential<br/>(once)"| Holder(["Holder"])
-    Holder -->|"presents token<br/>(per request)"| Verifier(["Verifier"])
-    Verifier -.->|verify| Owl[("OwlID platform")]
-    Owl -.->|"{ valid, subjects }"| Verifier
-
-    class Owl svc
-    classDef svc fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
-```
-
-- **Issuer** — vouches for facts about a user. Runs through OwlID's hosted issuance API after their KYC / IdP flow. Signs the user's credential once with an Ed25519 key registered on Midnight.
-- **Holder** — the end user, on their phone or browser. Stores credentials locally, signs proof tokens with a passkey for each verifier interaction. Hidden attributes never leave the device.
-- **Verifier** — any service that needs to confirm a fact. Calls one SDK method, receives `{ valid, subjects }`.
-
-## Three primitives
-
-```mermaid
-flowchart LR
-    doc["Document<br/>unsigned attributes"]
-    cred["Credential<br/>signed Merkle root +<br/>full attribute tree"]:::primary
-    token["Token<br/>selective-disclosure +<br/>ZK predicate proofs"]:::accent
-
-    doc -->|"issuer.issue()"| cred
-    cred -->|"credential.prove()"| token
-
-    classDef primary fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
-    classDef accent  fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
-```
-
-- **Document** — a flat object of attributes (`firstName`, `dateOfBirth`, `nationality`, …) the issuer wants to vouch for. Lives in memory only during issuance.
-- **Credential** — what the holder stores. The full attribute set, structured as a salted Merkle tree, with the issuer's signature over the root. One credential per (issuer, user) pair.
-- **Token** — a single-use proof built from a credential for one specific verifier request. Discloses some attributes and proves predicates over others. Bound to a verifier-supplied challenge.
-
-## Selective disclosure
-
-The credential's Merkle tree lets the holder reveal _some_ attributes while keeping the rest hashed.
-
-```mermaid
-flowchart TB
-    root["Root hash<br/>(signed by issuer)"]
-    h_fl["H(firstName ⊕ lastName)"]
-    h_in["H(isOver18 ⊕ nationalId)"]
-    fn["firstName: Jan"]:::show
-    ln["lastName: de Vries"]:::show
-    over["isOver18: true"]:::show
-    nid["nationalId: 1234…"]:::hide
-
-    root --> h_fl
-    root --> h_in
-    h_fl --> fn
-    h_fl --> ln
-    h_in --> over
-    h_in --> nid
-
-    classDef show fill:#dcfce7,stroke:#16a34a,color:#14532d
-    classDef hide fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-dasharray:4 2
-```
-
-Each leaf is salted at issuance, so the same attribute value across two different credentials produces unrelated leaves — proofs cannot be correlated.
-
-## Zero-knowledge predicates
-
-For "is over 18" or "nationality is in {NL, DE, FR}", the holder doesn't even need to disclose the leaf — they attach a Groth16 proof that the hidden value satisfies the predicate.
-
-| Predicate         | Operator         | Example                               |
-| ----------------- | ---------------- | ------------------------------------- |
-| Numeric threshold | `GreaterOrEqual` | `dateOfBirth ≥ 2008-01-01`            |
-| Set membership    | `InSet`          | `nationality ∈ "eu"` (registered set) |
-| KYC tier          | `GreaterOrEqual` | `kycLevel ≥ 2`                        |
-
-Set-membership predicates name a registered dataset (e.g. `"eu"`) instead of carrying a list. The verifier recomputes the canonical Merkle root of that dataset and pins the proof's public input against it — a holder cannot ship a hand-picked subset.
-
-The verifier learns whether the predicate holds. They never learn the actual value.
-
-## Token lifecycle
+OwlID lets a **holder** prove facts about themselves to a **verifier** without
+revealing the underlying documents. An **issuer** vouches for the holder's
+identity once; from then on the holder presents privacy-preserving proofs as
+often as they like, and the verifier confirms them against trust state
+anchored on the **Midnight** blockchain.
 
 ```mermaid
 sequenceDiagram
     autonumber
+    actor Issuer
     actor Holder
     actor Verifier
-    participant Owl as OwlID
-
-    Verifier->>Owl: mint challenge
-    Owl-->>Verifier: { challenge }
-    Verifier->>Holder: proof request<br/>(disclose, predicates, challenge)
-    Holder->>Holder: build Token bound to challenge<br/>(passkey signs payload hash)
-    Holder->>Verifier: Token (OID1:…)
-    Verifier->>Owl: verify(token, challenge)
-    Owl->>Owl: check signature, Merkle proofs,<br/>ZK proofs, expiry, revocation
-    Owl-->>Verifier: { valid, subjects }
+    participant Owl as OwlID platform
+    Issuer->>Holder: SD-JWT VC (signed credential, stored in the wallet)
+    Verifier->>Holder: request (which claims / predicates, + a nonce)
+    Holder->>Holder: select disclosures, build presentation, sign KB-JWT
+    Holder->>Verifier: SD-JWT VC presentation
+    Verifier->>Owl: verify(presentation, nonce)
+    Owl-->>Verifier: { valid, disclosed subjects }
 ```
 
-The challenge prevents replay. The token's TTL prevents long-tail reuse. The platform's revocation registry prevents using a credential that's been pulled.
+The verifier never sees hidden claims. The issuer never sees which claims the
+holder later discloses, or to whom. The holder controls every presentation.
 
-## Trust model
+## The credential — SD-JWT VC
 
-The verifier needs to know which issuers it trusts. OwlID anchors that on-chain so it works without a central directory:
+OwlID issues credentials as **SD-JWT VC** (`application/dc+sd-jwt`), an IETF
+standard. A credential is:
 
-- **Issuer registry** — every issuer's public key is published on Midnight when they sign up.
-- **Revocation registry** — credential root-hashes go on-chain when revoked. Verifiers see the change in real time.
-- **Identity registry** — issuer and verifier identities are addressable as `did:midnight:…`.
+- an **issuer-signed JWT** carrying salted SHA-256 hashes of each claim, the
+  holder's confirmation key (`cnf`), and a revocation pointer (`status`);
+- a set of **disclosures** — one `[salt, name, value]` triple per claim, held
+  by the wallet;
+- on presentation, a **key-binding JWT (KB-JWT)** the holder signs over the
+  verifier's nonce.
 
-Verifiers consume this through a single SDK call — they never run their own chain node.
+Because the credential is a published standard, any conformant verifier can
+read an OwlID presentation — OwlID is not a walled garden.
+
+## Selective disclosure
+
+The holder reveals only the claims a verifier asks for. Every other claim stays
+in the wallet as a salted hash inside the signed JWT — the verifier sees it
+exists but learns nothing about its value. Disclose `given_name` without
+`birthdate`, `nationalities` without `given_name`; each combination is the
+holder's choice, made fresh per presentation.
+
+## Predicates — proven on the device, in zero knowledge
+
+A **predicate** is a fact derived from a credential attribute without revealing
+the attribute: `age ≥ 18`, `kyc ≥ 2`, `nationality ∈ EU set`, verified
+residency or email, unique personhood.
+
+Predicates are **proven by the holder's wallet, on the device, in zero
+knowledge** — not asserted by the issuer and not recomputed by the verifier:
+
+```mermaid
+flowchart LR
+    A["Wallet derives a witness<br/>from the credential<br/>(age, KYC level, …)"]
+    B["Wallet generates a ZK proof<br/>on the device"]
+    C["Midnight verifies the proof<br/>and records an attestation"]
+    D["Verifier checks the<br/>on-chain attestation"]
+    A --> B --> C --> D
+```
+
+The witness — the actual birthdate, KYC level, nationality — is consumed inside
+the proof on the device and never leaves it. Only the proof and a one-way
+attestation key reach the chain. The wallet runs this transparently the first
+time a predicate is needed; the attestation is recorded once and reused across
+every later presentation, so there is no per-verification chain wait.
+
+Unique personhood adds sybil resistance: a per-campaign nullifier lets a
+verifier confirm "one human, one claim" without learning the holder's identity
+or linking them across campaigns.
+
+## Holder binding — passkey + wallet key
+
+The wallet holds an Ed25519 or P-256 **confirmation key** that signs each
+KB-JWT. A WebAuthn **passkey** is the unlock and user-verification gate and
+PRF-wraps the confirmation key at rest — the key is never exported and the
+passkey itself is never the JWS signer. A presentation is therefore bound both
+to the credential (`cnf`) and to a fresh per-request nonce, so a captured
+presentation cannot be replayed.
+
+## Trust anchored on Midnight
+
+Midnight is OwlID's **required trust core** — there is no version of OwlID that
+runs without it. Three on-chain Compact contracts hold the trust state, and the
+standards-shaped formats verifiers consume are projections of that state:
+
+| On-chain registry   | Holds                                | Projected to verifiers as           |
+| ------------------- | ------------------------------------ | ----------------------------------- |
+| Issuer registry     | Trusted issuer key set + status.     | `did:web` issuer identity.          |
+| Revocation registry | Per-credential revocation status.    | IETF Token Status List + live feed. |
+| Identity registry   | `sha-256(did.json)` document anchor. | did:webs tamper-evidence.           |
+
+A verification never depends on the issuer being online or on a central
+directory. The platform mirrors the on-chain registries and resolves every
+issuer `did:web` identifier against them: a presentation from an issuer whose
+key is not active on-chain is rejected, and a tampered DID document is
+rejected.
+
+## Revocation
+
+An issuer (or operator) can revoke, suspend, or reactivate a credential. The
+change is written to the on-chain revocation registry and projected as an IETF
+Token Status List. Verifiers can subscribe to a live feed and invalidate cached
+results the instant a credential's status changes. A verify call cross-checks
+the local mirror, the on-chain registry, and the signed status list.
+
+## Standards
+
+OwlID's whole public surface is built from published standards, so credentials
+and presentations interoperate beyond OwlID:
+
+- **SD-JWT VC** — the credential format.
+- **OpenID4VCI** — issuance, including Batch Credential issuance (one-time-use
+  credentials so colluding verifiers cannot correlate presentations).
+- **OpenID4VP** — presentation, with DCQL queries and `direct_post`.
+- **IETF Token Status List** — revocation.
+- **did:web / did:webs** — issuer identity and document-hash anchoring.
+
+Not in scope today: BBS-2023 unlinkable signatures, ISO mdoc, and
+eIDAS LoA-high / Trusted-List infrastructure.
 
 ## What each party sees
 
-| Party    | Sees                                              | Doesn't see                                  |
-| -------- | ------------------------------------------------- | -------------------------------------------- |
-| Issuer   | Full claim set at issuance time                   | Which verifiers the holder later presents to |
-| Holder   | Their own credential, every proof they generate   | n/a                                          |
-| Verifier | Disclosed attributes + predicate verdicts         | Hidden attributes; the credential itself     |
-| Platform | Hashed tokenIds, revocation state, audit metadata | Plaintext attributes                         |
+| Party    | Sees                                                                | Never sees                                               |
+| -------- | ------------------------------------------------------------------- | -------------------------------------------------------- |
+| Issuer   | The holder's verified identity, once, at issuance.                  | Which claims the holder later discloses, or to whom.     |
+| Holder   | Their own full credential and every claim in it.                    | —                                                        |
+| Verifier | Exactly the claims disclosed + the predicate results requested.     | Hidden claims; predicate witnesses; other presentations. |
+| Platform | Hashed identifiers, trust/revocation mirrors, non-PII audit events. | Raw claim values (not retained past the session TTL).    |
 
-PII never crosses the holder's device boundary. The platform stores hashes, not values.
+## Data & privacy
 
-## What the SDK gives you
+- **In the wallet** — the full SD-JWT VCs, disclosure salts, the PRF-wrapped
+  holder key, and predicate witnesses. Rich personal data lives only here.
+- **On the platform** — hashed credential identifiers, the trust/revocation
+  mirrors, non-PII audit events. No raw claim values; encrypted at rest.
+- **On Midnight** — cryptographic commitments only: issuer keys, revocation
+  slots, document hashes, predicate attestation keys. No PII ever reaches the
+  chain.
 
-- `OwlVerifier` — server-side: `verify`, `mintChallenge`, `requestPresentation` (one-call QR flow), `subscribeRevocations`.
-- `OwlIssuer` — server-side: `startSession`, `submitClaims`, `issue`.
-- Token primitives — holder-side: `Credential`, `Token`, `KeyPair`. Token generation runs entirely on the holder's device.
-- WebAuthn helpers — `registerCredential`, `signTokenWithPasskey`. The private key never leaves the secure enclave.
-- Presentation helpers — `respondToPresentation` for one-call QR scan flows.
+OwlID is built for data minimization: there is very little personal data to
+erase because the platform mostly stores hashes. Right-to-erasure is primarily
+a local wallet delete; server-side records are erasable on request.
 
-[Quickstart](/quickstart) shows the smallest working example for each persona. The [SDK reference](/sdk/verifier) has every method.
+## Next
+
+- [Quickstart](/quickstart) — issue, hold, and verify in a few snippets.
+- [SDK reference](/sdk/verifier) — every class and method.
+- [Real-world scenarios](/examples/scenarios) — age gates, KYC, ticketing, and more.

@@ -39,7 +39,13 @@ function buildConfig(opts?: IssuerClientOptions): Configuration {
   const apiKey = opts?.apiKey ?? getApiKey()
   return new Configuration({
     basePath: getIssuerUrl(opts?.basePath),
-    headers: { ...opts?.headers, ...apiKeyHeaders(apiKey) },
+    // Spread order: API-key baseline FIRST, caller's per-call headers
+    // LAST so they override. The session-bearer flow (per-session
+    // `Authorization: Bearer <session_token>` on `/sessions/{id}/*`)
+    // would otherwise be silently clobbered by the global API-key
+    // bearer and every protected call would 401 with "Session bearer
+    // token mismatch".
+    headers: { ...apiKeyHeaders(apiKey), ...opts?.headers },
     // SPA flows that share an admin session with the verification service
     // (e.g. the admin dashboard) need the cookie to ride along on issuer-
     // service calls too. `credentials: 'include'` is required for fetch to

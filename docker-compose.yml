@@ -42,6 +42,9 @@ services:
       - owl-network
 
   # Verification Service
+  # Midnight is required: this service exits 1 at startup if it cannot
+  # reach the sidecar at MIDNIGHT_SIDECAR_URL. The sidecar runs on the
+  # host via `bun run` in dev, so we point at host.docker.internal.
   verification-service:
     build:
       context: .
@@ -52,8 +55,12 @@ services:
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 8000
       RUST_LOG: info,owl_verification_service=debug
+      MIDNIGHT_SIDECAR_URL: ${MIDNIGHT_SIDECAR_URL:-http://host.docker.internal:3000}
+      MIDNIGHT_SIDECAR_API_KEY: ${MIDNIGHT_SIDECAR_API_KEY}
     ports:
       - '8000:8000'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     depends_on:
       postgres-verification:
         condition: service_healthy
@@ -61,6 +68,7 @@ services:
       - owl-network
 
   # Issuer Service
+  # Same fail-fast contract as verification-service above.
   issuer-service:
     build:
       context: .
@@ -71,8 +79,12 @@ services:
       ISSUER_HOST: 0.0.0.0
       ISSUER_PORT: 8001
       RUST_LOG: info,owl_issuer_service=debug
+      MIDNIGHT_SIDECAR_URL: ${MIDNIGHT_SIDECAR_URL:-http://host.docker.internal:3000}
+      MIDNIGHT_SIDECAR_API_KEY: ${MIDNIGHT_SIDECAR_API_KEY}
     ports:
       - '8001:8001'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     depends_on:
       postgres-issuer:
         condition: service_healthy

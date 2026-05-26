@@ -2,10 +2,10 @@
  * @owlid/sdk — TypeScript SDK for the OwlID platform.
  *
  * Public surface:
- *   - `OwlVerifier` — server-side client for verifying tokens
- *   - `OwlIssuer`   — server-side client for issuing credentials
- *   - Token primitives (`Credential`, `Token`, `KeyPair`) — holder-side crypto
- *   - WebAuthn helpers, encoding, storage, presentation protocol
+ *   - `OwlVerifier` — server-side client for verifying SD-JWT VC presentations
+ *   - `OwlIssuer`   — server-side client for issuing SD-JWT VC credentials
+ *   - Holder helpers (`presentSdJwtVc`, `KeyPair`, `SdJwtVc`, `verifySdJwt`)
+ *   - WebAuthn unlock/UV helpers, encoding, storage, presentation protocol
  */
 
 // =============================================================================
@@ -20,7 +20,7 @@ export {
   type RevocationEvent,
   type PresentationSession,
   type PresentationRequestOptions,
-} from './verifier.js'
+} from './verifier/index.js'
 
 export {
   OwlIssuer,
@@ -36,22 +36,47 @@ export {
   type ProviderInfo,
 } from './issuer.js'
 
+export { respondToPresentation, presentSdJwtVc, type RespondOptions } from './present.js'
+
 export {
-  respondToPresentation,
-  signToken,
-  signTokenWithPasskey,
-  type HolderSigner,
-  type PresentationConsentRequest,
-  type RespondOptions,
-  type SignTokenOptions,
-  type SignTokenWithPasskeyOptions,
-} from './holder.js'
+  OwlWallet,
+  matchDcqlAgainst,
+  type OwlWalletOptions,
+  type WalletPresentRequest,
+  type WalletPresentResult,
+  type DcqlMatchEntry,
+  type DcqlMatchSummary,
+  type UnwrapHolderKeyFn,
+} from './wallet.js'
+
+// Progress signal surfaced from `OwlWallet.present` so the holder app's
+// consent screen can show per-predicate "Generating proof…" /
+// "Submitting to Midnight…" copy instead of a silent ~20-30s pause on
+// the first presentation of a credential. The orchestrator itself
+// stays internal — only the event shape is public.
+export type { AttestProgress, EnsureResult } from './midnight/index.js'
+
+// Re-export DCQL request/response types from the generated verifier
+// client so SDK consumers don't have to import @owlid/verifier-client.
+export type {
+  DcqlRequest,
+  DcqlCredentialQuery,
+  DcqlMeta,
+  DcqlClaimQuery,
+  DcqlCredentialSet,
+  VerifyDcqlRequest,
+  VerifyDcqlResponse,
+  VerifyResponse,
+} from '@owlid/verifier-client'
 
 // =============================================================================
-// Configuration (advanced — most apps use OwlVerifier / OwlIssuer instead)
+// Configuration (advanced — most apps use OwlVerifier / OwlIssuer instead).
+// Re-exported from `@owlid/config`, the canonical home — direct imports
+// from `@owlid/config` are equivalent.
 // =============================================================================
 export {
   type RuntimeConfig,
+  type ProvingMode,
   configure,
   getConfig,
   getVerificationUrl,
@@ -59,22 +84,20 @@ export {
   getApiKey,
   apiKeyHeaders,
   getWsBaseUrl,
+  getProvingMode,
+  getProofServerUrl,
   toWsUrl,
   resolveWsUrl,
-} from './config.js'
+} from '@owlid/config'
 
 // =============================================================================
-// Native SDK (Rust/WASM cryptographic primitives)
+// Holder SD-JWT VC primitives (pure TS, browser + Node)
 // =============================================================================
-// Type-only re-exports so consumers can reference proof shapes without
-// pulling the WASM payload. Runtime classes and hash helpers live behind
-// the explicit `@owlid/sdk/native` subpath:
-//
-//     import { Token, blake3 } from '@owlid/sdk/native'
-//
-// Importing the subpath is what loads the WASM module. See the bundler
-// integration guide for the Vite / Webpack setup it expects.
-export type { ProofRequest, PredicateRequest, WebAuthnSignatureData } from '@owlid/native-sdk'
+// Implementation: `@noble/ed25519` + `@noble/hashes`. Bytes match
+// `owl_proof_system::sd_jwt`, so any verifier accepts presentations
+// minted here unchanged. No platform binaries, no WASM plumbing.
+export { KeyPair, PublicKey, SdJwtVc, verifySdJwt } from './sd-jwt.js'
+export type { KbInput } from './sd-jwt.js'
 
 // =============================================================================
 // Encoding utilities
@@ -104,38 +127,54 @@ export {
   authenticate,
   isWebAuthnSupported,
   isPlatformAuthenticatorAvailable,
+  wrapHolderKey,
+  unwrapHolderKey,
 } from './webauthn.js'
 
 // =============================================================================
-// Storage
+// Storage — multi-credential wallet
 // =============================================================================
 export {
   type StoredWebAuthnCredential,
-  type StoredCredentialData,
-  type Credential as StoredCredential,
+  type WalletCredential,
+  type CardShape,
   type VerifiedClaims,
-  type IdentityData,
   type StorageAdapter,
   STORAGE_KEYS,
   browserStorageAdapter,
   CredentialStorageManager,
+  buildCardShape,
   storage,
 } from './storage.js'
 
 // =============================================================================
-// Token types
+// Holder proof persistence + typed proof errors (sub-barrel)
 // =============================================================================
-export { type TokenResult, type PreparedTokenResult } from './tokens.js'
-
-// =============================================================================
-// Proof storage (IndexedDB)
-// =============================================================================
-export { type StoredProof, ProofStorageManager, proofStorage } from './proof-storage.js'
+export {
+  type StoredProof,
+  ProofStorageManager,
+  proofStorage,
+  type ProofErrorCode,
+  type ProofError,
+  parseProofError,
+  isPredicateNotSatisfied,
+} from './proofs/index.js'
 
 // =============================================================================
 // Reference data (kept in sync with the platform's issuance normalisation)
 // =============================================================================
 export { EU_ALPHA2 } from './eu-countries.js'
+export {
+  ALL_COUNTRIES,
+  EU_COUNTRIES,
+  COUNTRY_PRESETS,
+  countryByAlpha2,
+  countryName,
+  isAlpha2,
+  isEuCountry,
+  toAlpha2,
+  type Country,
+} from './countries.js'
 
 // =============================================================================
 // Presentation Protocol (ISO 18013-5 style)
@@ -144,25 +183,47 @@ export {
   type SessionEngagement,
   type PresentationRequest,
   type PresentationResponse,
-  type PresentationPredicate,
   type WsMessage,
   type WsMessageType,
   type WsError,
-  type PredicateNotSatisfiedPayload,
   type ProofFailedPayload,
-  PRESENTATION_PREDICATES,
   encodeSessionEngagement,
   decodeSessionEngagement,
   isPresentationEngagement,
-  isCompactToken,
+  sessionIdFromWsUrl,
+  isSdJwtVc,
 } from './presentation.js'
 
-// =============================================================================
-// Proof error parsing (typed errors crossing the native SDK FFI)
-// =============================================================================
 export {
-  type ProofErrorCode,
-  type ProofError,
-  parseProofError,
-  isPredicateNotSatisfied,
-} from './proof-errors.js'
+  owlCredentialQuery,
+  readOwlPredicate,
+  expectOwlPredicate,
+  type OwlPredicate,
+} from './owl-dcql.js'
+
+// =============================================================================
+// Declarative predicates — the ergonomic verifier surface
+// =============================================================================
+// Build a list of `Predicates.xxx(...)` calls instead of hand-writing
+// DCQL claim paths. `OwlVerifier.requestPredicates({ predicates })`
+// compiles them to the on-wire DCQL format, drives the QR + WebSocket
+// flow, and returns the verified result.
+export {
+  Predicates,
+  buildDcqlRequest,
+  OWL_DCQL_FORMAT,
+  type PredicateRequest,
+} from './predicates.js'
+
+// Holder-side wallet routing — `OwlWallet.present` consumes these
+// internally; exposed so a holder app can pre-flight what a DCQL
+// query would route to before prompting the user for consent.
+export { routeClaim, attestationCovers } from './midnight/routing.js'
+export type { RoutedPredicate, OwlAttestationRef } from './midnight/routing.js'
+
+// Note: the Midnight-specific helpers (proveAttestationUnsubmitted,
+// the in-process prover, snapshot encoding, the merkle tree builder,
+// the on-chain attestation key recipes, `ensureMidnightNetworkConfigured`)
+// stay internal under `./midnight/`. SDK consumers go through
+// `OwlVerifier` / `OwlWallet` / `OwlIssuer` and never import
+// `@midnight-ntwrk/*` types directly.

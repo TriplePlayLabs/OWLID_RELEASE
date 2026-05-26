@@ -1,5 +1,6 @@
 [
   { "type": "file", "name": "verifier", "label": "Verifier" },
   { "type": "file", "name": "issuer", "label": "Issuer" },
-  { "type": "file", "name": "holder", "label": "Holder app" }
+  { "type": "file", "name": "holder", "label": "Holder app" },
+  { "type": "file", "name": "bundler", "label": "Bundler setup" }
 ]

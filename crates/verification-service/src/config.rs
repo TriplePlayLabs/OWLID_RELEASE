@@ -49,14 +49,17 @@ pub struct Config {
     /// HTTP bind port. Defaults to `8000`.
     pub port: u16,
 
-    /// Whether the sidecar bridge is enabled. Defaults to `false`.
-    pub midnight_enabled: bool,
     /// Sidecar URL. Defaults to `http://midnight-sidecar:3000`.
     pub midnight_sidecar_url: String,
     /// Shared secret for sidecar `X-API-Key`. Optional but recommended.
     pub midnight_sidecar_api_key: Option<String>,
     /// Per-request timeout to sidecar in seconds.
     pub midnight_sidecar_timeout_secs: u64,
+    /// Midnight network id the sidecar binds to (`undeployed` for local
+    /// devnet, `preprod`/`mainnet` elsewhere). Surfaced verbatim via
+    /// `GET /midnight/info` so the SDK can call midnight-js
+    /// `setNetworkId()` before any contract operation.
+    pub midnight_network_id: String,
 
     /// HMAC signing key for admin JWTs. **Must** override the default in prod.
     pub admin_jwt_secret: String,
@@ -88,6 +91,10 @@ pub struct Config {
     /// the verifier on every relying-party assertion. Empty = origin is not
     /// checked server-side (relies on browser enforcement only).
     pub webauthn_expected_origins: Vec<String>,
+    /// Externally-reachable HTTPS URL of this verifier — used to build
+    /// the OpenID4VP 1.0 §5/§8 `request_uri` + `response_uri` that
+    /// external wallets fetch. Defaults to `http://<host>:<port>`.
+    pub verification_public_url: String,
 }
 
 #[derive(Debug)]
@@ -129,8 +136,8 @@ impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let mut errors = Vec::new();
 
-        let database_url = env_optional("VERIFICATION_DATABASE_URL")
-            .or_else(|| env_optional("DATABASE_URL"));
+        let database_url =
+            env_optional("VERIFICATION_DATABASE_URL").or_else(|| env_optional("DATABASE_URL"));
         if database_url.is_none() {
             errors.push("VERIFICATION_DATABASE_URL or DATABASE_URL must be set".into());
         }
@@ -144,15 +151,15 @@ impl Config {
             None => DEFAULT_PORT,
         };
 
-        let midnight_enabled = env_bool("MIDNIGHT_ENABLED", false);
         let midnight_sidecar_url = env_or("MIDNIGHT_SIDECAR_URL", DEFAULT_MIDNIGHT_SIDECAR_URL);
         let midnight_sidecar_api_key = env_optional("MIDNIGHT_SIDECAR_API_KEY");
         let midnight_sidecar_timeout_secs =
             env_parse("MIDNIGHT_SIDECAR_TIMEOUT", DEFAULT_MIDNIGHT_SIDECAR_TIMEOUT);
+        let midnight_network_id = env_or("MIDNIGHT_NETWORK_ID", "undeployed");
 
-        if midnight_enabled && midnight_sidecar_api_key.is_none() {
+        if midnight_sidecar_api_key.is_none() {
             tracing::warn!(
-                "MIDNIGHT_ENABLED=true but MIDNIGHT_SIDECAR_API_KEY is unset — sidecar requests will be rejected"
+                "MIDNIGHT_SIDECAR_API_KEY is unset — sidecar requests will be rejected"
             );
         }
         if let Some(ref k) = midnight_sidecar_api_key {
@@ -194,8 +201,10 @@ impl Config {
         let encryption_key = env_optional("ENCRYPTION_KEY");
 
         let rate_limit_enabled = env_bool("RATE_LIMIT_ENABLED", true);
-        let rate_limit_window_minutes =
-            env_parse("RATE_LIMIT_WINDOW_MINUTES", DEFAULT_RATE_LIMIT_WINDOW_MINUTES);
+        let rate_limit_window_minutes = env_parse(
+            "RATE_LIMIT_WINDOW_MINUTES",
+            DEFAULT_RATE_LIMIT_WINDOW_MINUTES,
+        );
         let rate_limit_max_requests =
             env_parse("RATE_LIMIT_MAX_REQUESTS", DEFAULT_RATE_LIMIT_MAX_REQUESTS);
 
@@ -205,15 +214,14 @@ impl Config {
         let tls_ca_cert_path = env_optional("TLS_CA_CERT_PATH");
 
         if tls_enabled && (tls_cert_path.is_none() || tls_key_path.is_none()) {
-            errors.push(
-                "TLS_ENABLED=true requires both TLS_CERT_PATH and TLS_KEY_PATH".into(),
-            );
+            errors.push("TLS_ENABLED=true requires both TLS_CERT_PATH and TLS_KEY_PATH".into());
         }
 
         let cors_allowed_origins = parse_csv("CORS_ALLOWED_ORIGINS");
         if is_prod && cors_allowed_origins.is_empty() {
             errors.push(
-                "APP_ENV=production requires CORS_ALLOWED_ORIGINS (comma-separated full URLs)".into(),
+                "APP_ENV=production requires CORS_ALLOWED_ORIGINS (comma-separated full URLs)"
+                    .into(),
             );
         }
 
@@ -224,6 +232,11 @@ impl Config {
             );
         }
 
+        let verification_public_url = env_or(
+            "VERIFICATION_PUBLIC_URL",
+            &format!("http://{host}:{port}"),
+        );
+
         if !errors.is_empty() {
             return Err(ConfigError(errors));
         }
@@ -232,10 +245,10 @@ impl Config {
             database_url: database_url.unwrap(),
             host,
             port,
-            midnight_enabled,
             midnight_sidecar_url,
             midnight_sidecar_api_key,
             midnight_sidecar_timeout_secs,
+            midnight_network_id,
             admin_jwt_secret,
             encryption_key,
             rate_limit_enabled,
@@ -248,6 +261,7 @@ impl Config {
             app_env,
             cors_allowed_origins,
             webauthn_expected_origins,
+            verification_public_url,
         })
     }
 }
@@ -267,15 +281,32 @@ impl fmt::Display for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "verification-service config:")?;
         writeln!(f, "  bind:                {}:{}", self.host, self.port)?;
-        writeln!(f, "  database:            {}", redact_db_url(&self.database_url))?;
-        writeln!(f, "  midnight enabled:    {}", self.midnight_enabled)?;
-        if self.midnight_enabled {
-            writeln!(f, "  midnight sidecar:    {}", self.midnight_sidecar_url)?;
-            writeln!(f, "  midnight api key:    {}", mask(self.midnight_sidecar_api_key.as_deref()))?;
-            writeln!(f, "  midnight timeout:    {}s", self.midnight_sidecar_timeout_secs)?;
-        }
-        writeln!(f, "  admin jwt secret:    {}", mask(Some(&self.admin_jwt_secret)))?;
-        writeln!(f, "  encryption key:      {}", mask(self.encryption_key.as_deref()))?;
+        writeln!(
+            f,
+            "  database:            {}",
+            redact_db_url(&self.database_url)
+        )?;
+        writeln!(f, "  midnight sidecar:    {}", self.midnight_sidecar_url)?;
+        writeln!(
+            f,
+            "  midnight api key:    {}",
+            mask(self.midnight_sidecar_api_key.as_deref())
+        )?;
+        writeln!(
+            f,
+            "  midnight timeout:    {}s",
+            self.midnight_sidecar_timeout_secs
+        )?;
+        writeln!(
+            f,
+            "  admin jwt secret:    {}",
+            mask(Some(&self.admin_jwt_secret))
+        )?;
+        writeln!(
+            f,
+            "  encryption key:      {}",
+            mask(self.encryption_key.as_deref())
+        )?;
         writeln!(
             f,
             "  rate limit:          enabled={} window={}m max={}",

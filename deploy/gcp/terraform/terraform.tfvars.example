@@ -27,3 +27,33 @@ extra_cors_origins = []
 # Midnight wiring (off until real chain endpoints are configured).
 midnight_auto_register_issuer = false
 midnight_sidecar_timeout_ms   = 30000
+
+# --- Midnight network -------------------------------------------------------
+# Switch the whole Cloud Run stack between networks by changing these vars.
+# Contract addresses are PUBLIC (on-chain) — safe to commit. Secrets live in
+# Secret Manager (mnemonic, sidecar API key, etc), never in tfvars.
+#
+# Local devnet (default):
+#   midnight_network_id    = "undeployed"
+#   wallet_source          = "seed"        # uses devnet genesis seed
+#
+# Midnight Preview testnet:
+#   midnight_network_id      = "preview"
+#   midnight_node_ws_url     = "wss://rpc.preview.midnight.network"
+#   midnight_indexer_uri     = "https://indexer.preview.midnight.network/api/v4/graphql"
+#   midnight_indexer_ws_uri  = "wss://indexer.preview.midnight.network/api/v4/graphql/ws"
+#   midnight_proof_server_uri = "https://proof-server.preview.midnight.network"
+#   wallet_source            = "mnemonic"  # populate midnight-wallet-mnemonic
+#                                          # secret via gcloud before applying
+#   midnight_issuer_registry_address       = "<paste from `bun run deploy` output>"
+#   midnight_revocation_registry_address   = "..."
+#   midnight_identity_registry_address     = "..."
+#   midnight_predicate_age_address         = "..."
+#   midnight_predicate_kyc_address         = "..."
+#   midnight_predicate_residency_address   = "..."
+#   midnight_predicate_email_address       = "..."
+#   midnight_predicate_nationality_address = "..."
+#   midnight_predicate_age_range_address   = "..."
+#   midnight_predicate_personhood_address  = "..."
+midnight_network_id  = "undeployed"
+wallet_source        = "seed"

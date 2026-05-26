@@ -1,8 +1,7 @@
-//! T-022: Schnorr-based Ring Signatures using curve25519-dalek
+//! Schnorr-based ring signatures over Curve25519.
 //!
-//! Implements ring signatures allowing a signer to prove membership in a group
-//! without revealing which member they are. Based on the Abe-Ohkubo-Suzuki (AOS)
-//! ring signature scheme using Curve25519.
+//! Lets a signer prove membership in a group without revealing which
+//! member they are (Abe-Ohkubo-Suzuki / AOS construction).
 
 use curve25519_dalek::{
     constants::ED25519_BASEPOINT_TABLE,

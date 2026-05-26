@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 
 const PREFIX: &str = "owlid";
 const SUFFIX_BYTES: usize = 32;
-const BASE62: &[u8; 62] =
-    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema, sqlx::Type,

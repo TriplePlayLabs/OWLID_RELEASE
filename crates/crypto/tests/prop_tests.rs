@@ -1,10 +1,9 @@
-//! T-021: Property-based tests for owl-crypto
+//! Property-based tests for owl-crypto.
 
 use owl_crypto::{hash_attribute, hash_attribute_salted, generate_salt};
-use owl_crypto::{KeyPair, MerkleTree, SignatureAlgorithm};
+use owl_crypto::{KeyPair, SignatureAlgorithm};
 use proptest::prelude::*;
 use serde_json::json;
-use std::collections::BTreeMap;
 
 // ============================================================================
 // Hash consistency properties
@@ -100,82 +99,3 @@ proptest! {
     }
 }
 
-// ============================================================================
-// Merkle tree properties
-// ============================================================================
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(20))]
-
-    /// Any BTreeMap produces a valid tree with verifiable proofs
-    #[test]
-    fn merkle_tree_any_attributes(
-        extra_keys in proptest::collection::vec("[a-z]{1,16}", 1..10),
-        extra_values in proptest::collection::vec(".*", 1..10),
-    ) {
-        let mut attrs = BTreeMap::new();
-        attrs.insert("issuerKey".to_string(), json!("issuer_pub_key"));
-        attrs.insert("ownerKey".to_string(), json!("owner_pub_key"));
-
-        for (k, v) in extra_keys.iter().zip(extra_values.iter()) {
-            attrs.insert(k.clone(), json!(v));
-        }
-
-        let tree = MerkleTree::from_attributes(&attrs);
-        let root = tree.root_hash();
-
-        // Root hash should be non-empty
-        prop_assert!(!root.is_empty());
-
-        // Generate proof for all keys
-        let keys: Vec<String> = attrs.keys().cloned().collect();
-        let proof = tree.generate_proof(&keys).unwrap();
-
-        // Proof should verify against original attributes
-        prop_assert!(proof.verify(&attrs));
-    }
-
-    /// Merkle tree root hash is deterministic for same input
-    #[test]
-    fn merkle_tree_deterministic(
-        keys in proptest::collection::vec("[a-z]{1,8}", 2..8),
-        values in proptest::collection::vec("[a-z]{1,16}", 2..8),
-    ) {
-        let mut attrs = BTreeMap::new();
-        attrs.insert("issuerKey".to_string(), json!("ik"));
-        attrs.insert("ownerKey".to_string(), json!("ok"));
-        for (k, v) in keys.iter().zip(values.iter()) {
-            attrs.insert(k.clone(), json!(v));
-        }
-
-        let tree1 = MerkleTree::from_attributes(&attrs);
-        let tree2 = MerkleTree::from_attributes(&attrs);
-        prop_assert_eq!(tree1.root_hash(), tree2.root_hash());
-    }
-
-    /// Modifying any attribute invalidates the proof
-    #[test]
-    fn merkle_tree_tamper_detection(
-        value1 in "[a-z]{1,16}",
-        value2 in "[A-Z]{1,16}",
-    ) {
-        prop_assume!(value1 != value2.to_lowercase());
-
-        let mut attrs = BTreeMap::new();
-        attrs.insert("issuerKey".to_string(), json!("ik"));
-        attrs.insert("ownerKey".to_string(), json!("ok"));
-        attrs.insert("attr".to_string(), json!(value1));
-
-        let tree = MerkleTree::from_attributes(&attrs);
-        let keys = vec!["issuerKey".to_string(), "ownerKey".to_string(), "attr".to_string()];
-        let proof = tree.generate_proof(&keys).unwrap();
-
-        // Original should verify
-        prop_assert!(proof.verify(&attrs));
-
-        // Tampered should fail
-        let mut tampered = attrs.clone();
-        tampered.insert("attr".to_string(), json!(value2));
-        prop_assert!(!proof.verify(&tampered));
-    }
-}

@@ -1,5 +1,15 @@
 import { useState } from 'react'
-import { Shield, Loader2, AlertCircle } from 'lucide-react'
+import { Bird, Loader2, AlertCircle } from 'lucide-react'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@owlid/ui/components/ui/card'
+import { Button } from '@owlid/ui/components/ui/button'
+import { Input } from '@owlid/ui/components/ui/input'
+import { Label } from '@owlid/ui/components/ui/label'
 import { useAuth } from '~/hooks/use-auth'
 
 export function LoginPage() {
@@ -7,77 +17,67 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const { loginMutation } = useAuth()
 
-  const handleSubmit = (e: React.FormEvent) => {
+  function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     loginMutation.mutate({ username, password })
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <div className="w-full max-w-sm space-y-6 p-8">
-        <div className="text-center space-y-2">
-          <Shield className="w-12 h-12 mx-auto text-primary" />
-          <h1 className="text-2xl font-bold">OwlID Admin</h1>
-          <p className="text-sm text-muted-foreground">
-            Sign in to manage the verification service
-          </p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {loginMutation.isError && (
-            <div className="flex items-center gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/20 text-sm text-destructive">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{loginMutation.error?.message || 'Login failed'}</span>
-            </div>
-          )}
-
-          <div className="space-y-2">
-            <label htmlFor="username" className="text-sm font-medium">
-              Username
-            </label>
-            <input
-              id="username"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="admin"
-              required
-              autoFocus
-              className="w-full px-3 py-2 rounded-md border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
+    <div className="min-h-screen flex items-center justify-center bg-background px-4">
+      <Card className="w-full max-w-sm">
+        <CardHeader className="space-y-2 text-center">
+          <div className="mx-auto flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+            <Bird className="size-6" />
           </div>
-
-          <div className="space-y-2">
-            <label htmlFor="password" className="text-sm font-medium">
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter password"
-              required
-              className="w-full px-3 py-2 rounded-md border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loginMutation.isPending || !username || !password}
-            className="w-full py-2 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          >
-            {loginMutation.isPending ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Signing in...
-              </>
-            ) : (
-              'Sign in'
+          <CardTitle>OwlID Admin</CardTitle>
+          <CardDescription>Sign in to manage the verification service</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {loginMutation.isError && (
+              <div className="flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+                <AlertCircle className="size-4 shrink-0" />
+                <span>{loginMutation.error?.message || 'Login failed'}</span>
+              </div>
             )}
-          </button>
-        </form>
-      </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="username">Username</Label>
+              <Input
+                id="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin"
+                required
+                autoFocus
+                autoComplete="username"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter password"
+                required
+                autoComplete="current-password"
+              />
+            </div>
+
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={loginMutation.isPending || !username || !password}
+            >
+              {loginMutation.isPending && <Loader2 className="size-4 animate-spin" />}
+              {loginMutation.isPending ? 'Signing in…' : 'Sign in'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   )
 }

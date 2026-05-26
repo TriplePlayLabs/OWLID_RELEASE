@@ -14,17 +14,11 @@
 
 import { mapValues } from '../runtime.js'
 /**
- * Verification failed
+ * Form: processing submission
  * @export
  * @interface FlowStateOneOf9
  */
 export interface FlowStateOneOf9 {
-  /**
-   *
-   * @type {string}
-   * @memberof FlowStateOneOf9
-   */
-  reason: string
   /**
    *
    * @type {string}
@@ -38,14 +32,13 @@ export interface FlowStateOneOf9 {
  * @enum {string}
  */
 export enum FlowStateOneOf9TypeEnum {
-  failed = 'failed',
+  form_processing = 'form_processing',
 }
 
 /**
  * Check if a given object implements the FlowStateOneOf9 interface.
  */
 export function instanceOfFlowStateOneOf9(value: object): value is FlowStateOneOf9 {
-  if (!('reason' in value) || value['reason'] === undefined) return false
   if (!('type' in value) || value['type'] === undefined) return false
   return true
 }
@@ -62,7 +55,6 @@ export function FlowStateOneOf9FromJSONTyped(
     return json
   }
   return {
-    reason: json['reason'],
     type: json['type'],
   }
 }
@@ -80,7 +72,6 @@ export function FlowStateOneOf9ToJSONTyped(
   }
 
   return {
-    reason: value['reason'],
     type: value['type'],
   }
 }

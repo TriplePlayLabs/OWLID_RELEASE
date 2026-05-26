@@ -4,17 +4,17 @@
 //! (`owlid_admin_token`). The same JWT is also returned in the response
 //! body for non-browser callers that prefer `Authorization: Bearer`.
 
+#![allow(dead_code)] // intentional API surface / serde fields
 use crate::api_key::{self, Environment, KeyType};
-use crate::db::ApiKeyRepository;
 use axum::{
+    Json,
     extract::{Path, Request, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
-    Json,
 };
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -27,7 +27,8 @@ const ADMIN_TOKEN_TTL_SECS: i64 = 86400;
 // ---------------------------------------------------------------------------
 
 fn jwt_secret() -> String {
-    std::env::var("ADMIN_JWT_SECRET").unwrap_or_else(|_| "owlid-admin-jwt-secret-change-me".to_string())
+    std::env::var("ADMIN_JWT_SECRET")
+        .unwrap_or_else(|_| "owlid-admin-jwt-secret-change-me".to_string())
 }
 
 fn jwt_validation() -> Validation {
@@ -88,7 +89,11 @@ pub fn validate_token(token: &str) -> Result<Claims, AdminError> {
 /// `admin_users` schema carries a per-user permission set, every admin
 /// account gets the full operator surface (admin + gdpr).
 fn default_admin_permissions() -> Vec<String> {
-    vec!["admin".to_string(), "gdpr".to_string(), "verify".to_string()]
+    vec![
+        "admin".to_string(),
+        "gdpr".to_string(),
+        "verify".to_string(),
+    ]
 }
 
 /// Domain attribute for the admin session cookie. The admin SPA may live
@@ -171,7 +176,9 @@ fn extract_admin_token(headers: &HeaderMap) -> Option<String> {
     if let Some(t) = read_token_from_cookies(headers) {
         return Some(t);
     }
-    let auth = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok())?;
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())?;
     auth.strip_prefix("Bearer ").map(|s| s.to_string())
 }
 
@@ -339,14 +346,26 @@ pub async fn login(
     // We compare against the stored hash a second time with the literal
     // "admin" plaintext — same hash matching means the row still carries
     // the migration's bootstrap value.
-    let must_change_default_password = bcrypt::verify(DEFAULT_ADMIN_PASSWORD, &user.2)
-        .unwrap_or(false);
+    let must_change_default_password =
+        bcrypt::verify(DEFAULT_ADMIN_PASSWORD, &user.2).unwrap_or(false);
     let body = LoginResponse {
         token: token.clone(),
         username: user.1,
         expires_in: ADMIN_TOKEN_TTL_SECS as u64,
         must_change_default_password,
     };
+
+    let _ = state
+        .audit
+        .log_event(
+            "admin_login".to_string(),
+            "admin_session".to_string(),
+            body.username.clone(),
+            Some(body.username.clone()),
+            &format!("Admin signed in: {}", body.username),
+            serde_json::json!({}),
+        )
+        .await;
 
     let mut response = (StatusCode::OK, Json(body)).into_response();
     response
@@ -419,7 +438,9 @@ pub async fn change_password(
     let current_ok = bcrypt::verify(&req.current_password, &user.2)
         .map_err(|e| AdminError::Internal(format!("Bcrypt error: {}", e)))?;
     if !current_ok {
-        return Err(AdminError::Unauthorized("Current password is incorrect".into()));
+        return Err(AdminError::Unauthorized(
+            "Current password is incorrect".into(),
+        ));
     }
 
     if req.new_password == req.current_password {
@@ -447,6 +468,18 @@ pub async fn change_password(
         .execute(&state.db_pool)
         .await
         .map_err(|e| AdminError::Internal(e.to_string()))?;
+
+    let _ = state
+        .audit
+        .log_event(
+            "admin_password_changed".to_string(),
+            "admin_session".to_string(),
+            user.1.clone(),
+            Some(user.1.clone()),
+            &format!("Password changed: {}", user.1),
+            serde_json::json!({}),
+        )
+        .await;
 
     Ok(Json(ChangePasswordResponse { username: user.1 }))
 }
@@ -569,9 +602,7 @@ pub async fn create_api_key(
     // Publishable keys are intended for browsers. Their only legitimate
     // permission is `verify`; refuse anything broader so an operator
     // cannot accidentally mint a browser-facing admin token.
-    if req.key_type == KeyType::Pk
-        && !req.permissions.iter().all(|p| p == "verify")
-    {
+    if req.key_type == KeyType::Pk && !req.permissions.iter().all(|p| p == "verify") {
         return Err(AdminError::BadRequest(
             "Publishable keys (pk_*) may only carry the `verify` permission".into(),
         ));
@@ -599,6 +630,23 @@ pub async fn create_api_key(
         )
         .await
         .map_err(|e| AdminError::Internal(e.to_string()))?;
+
+    let _ = state
+        .audit
+        .log_event(
+            "api_key_created".to_string(),
+            "api_key".to_string(),
+            row.id.to_string(),
+            Some("admin-dashboard".to_string()),
+            &format!("API key created: {}", row.name),
+            serde_json::json!({
+                "name": row.name,
+                "keyType": generated.key_type.as_str(),
+                "environment": generated.environment.as_str(),
+                "permissions": req.permissions,
+            }),
+        )
+        .await;
 
     Ok(Json(CreateApiKeyResponse {
         key: generated.raw,
@@ -629,8 +677,8 @@ pub async fn deactivate_api_key(
     State(state): State<crate::state::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| AdminError::BadRequest("Invalid UUID".to_string()))?;
+    let uuid =
+        Uuid::parse_str(&id).map_err(|_| AdminError::BadRequest("Invalid UUID".to_string()))?;
 
     let result = sqlx::query("UPDATE api_keys SET is_active = false WHERE id = $1")
         .bind(uuid)
@@ -642,7 +690,21 @@ pub async fn deactivate_api_key(
         return Err(AdminError::NotFound("API key not found".to_string()));
     }
 
-    Ok(Json(serde_json::json!({"success": true, "message": "API key deactivated"})))
+    let _ = state
+        .audit
+        .log_event(
+            "api_key_deactivated".to_string(),
+            "api_key".to_string(),
+            id.clone(),
+            Some("admin-dashboard".to_string()),
+            &format!("API key deactivated: {id}"),
+            serde_json::json!({}),
+        )
+        .await;
+
+    Ok(Json(
+        serde_json::json!({"success": true, "message": "API key deactivated"}),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +716,7 @@ pub enum AdminError {
     Unauthorized(String),
     BadRequest(String),
     NotFound(String),
+    Conflict(String),
     Internal(String),
 }
 
@@ -663,6 +726,7 @@ impl IntoResponse for AdminError {
             AdminError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
             AdminError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             AdminError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            AdminError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             AdminError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
         let body = serde_json::json!({"error": message});

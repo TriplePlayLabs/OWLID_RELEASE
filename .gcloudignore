@@ -1,0 +1,75 @@
+# Source upload filter for `gcloud builds submit`. Without this file, gcloud
+# auto-derives one from .gitignore — but our .gitignore excludes the
+# midnight-sidecar Compact output (`packages/midnight-sidecar/managed/`)
+# which the sidecar runtime needs to import. We want it shipped to Cloud
+# Build even though it's not tracked in git.
+
+.git/
+.gcloudignore
+__pycache__/
+
+# Rust target dir is huge; never ship.
+target/
+**/*.rs.bk
+*.pdb
+
+# Logs / OS / IDE
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node/Bun installs (regenerated inside Docker)
+node_modules/
+**/node_modules/
+bun.lock
+packages/*/.output/
+packages/*/dist/
+packages/*/.nuxt/
+packages/*/.nitro/
+packages/*/.cache/
+packages/*/.vinxi/
+.tanstack/
+
+# Native-sdk binaries — generated inside Dockerfile.native-sdk-builder.
+packages/native-sdk/*.node
+packages/native-sdk/*.wasm
+packages/native-sdk/*.wasi.cjs
+packages/native-sdk/*.wasi-browser.js
+packages/native-sdk/wasi-worker*.mjs
+packages/native-sdk/npm/
+
+# Groth16 keys — regenerated inside backend Dockerfiles via keygen.
+crates/zk-circuits/artifacts/
+
+# Secrets / env
+.env
+.env.local
+.env.*.local
+.env.prod
+.env.contracts
+accounts.json
+
+# Terraform state
+deploy/gcp/terraform/.terraform/
+deploy/gcp/terraform/.terraform.lock.hcl
+deploy/gcp/terraform/terraform.tfvars
+deploy/gcp/terraform/*.tfstate
+deploy/gcp/terraform/*.tfstate.*
+deploy/gcp/.env.gcp
+
+# Coverage / build outputs
+coverage/
+**/*.dylib
+**/*.dll
+
+# Midnight level-db (local devnet state)
+midnight-level-db/
+
+# We DO ship packages/midnight-sidecar/managed/ to Cloud Build even though
+# it's gitignored — the sidecar runtime imports those compiled Compact
+# artifacts. Re-generated locally with `bun run compact` in the sidecar dir.

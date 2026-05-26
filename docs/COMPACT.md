@@ -2,7 +2,14 @@
 
 > Reference notes for Midnight's Compact smart contract language. Compiled from official docs, GitHub repos, OpenZeppelin contracts, and community resources.
 >
-> **Toolchain target**: this repo pins Compact `0.31.0` (`compact update 0.31.0`). The version-changelog section below stops at 0.29 — review against the upstream changelog before relying on a specific feature.
+> **Authoritative spec**: the definitive language reference is the upstream
+> [Compact language reference](https://docs.midnight.network/compact/reference/compact-reference)
+> (source: `doc/compact-reference.mdx` in the compact repo). This document is
+> OwlID's _integration playbook_ — for syntax/semantics, defer to upstream.
+> The high-value, OwlID-specific material is the SDK wiring (§14), infra (§15),
+> testing (§21), and deployment (§22) sections.
+>
+> **Toolchain target**: this repo pins Compact `0.31.0` (`compact update 0.31.0`).
 
 ---
 
@@ -372,9 +379,18 @@ if (condition) {
 
 ### For Loops
 
+Compact has **no C-style `for`**. Iteration is either over a numeric range or
+over a vector/array. Bounds must be known at compile time (the circuit is
+unrolled); since 0.31 the range bounds may be generic parameters.
+
 ```compact
-// Loops must have compile-time-bounded iterations (for ZK circuit generation)
-for (const i = 0; i < 10; i++) {
+// Range iteration: start (inclusive) .. end (exclusive)
+for (const i of 0..10) {
+  // body — i takes 0, 1, ..., 9
+}
+
+// Iterate over a vector or array literal
+for (const x of myVector) {
   // body
 }
 ```
@@ -408,6 +424,11 @@ circuit persistentCommit<T>(value: T, rand: Bytes<32>): Bytes<32>;
 // For temporary values (not stored)
 circuit transientHash<T>(value: T): Field;
 circuit transientCommit<T>(value: T, rand: Field): Field;
+
+// keccak256 — same signature as persistentHash (added post-0.31.0).
+// Requires the experimental --feature-zkir-v3 flag in a circuit that
+// touches public ledger state; compiler error under the ZKIR v2 backend.
+circuit keccak256<T>(value: T): Bytes<32>;
 ```
 
 ### Maybe<T> Operations
@@ -504,7 +525,7 @@ constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>, isInit: B
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/midnightntwrk/compact/releases/latest/download/compact-installer.sh | sh
 source $HOME/.local/bin/env
-compact update 0.28.0
+compact update 0.31.0
 ```
 
 ### Compile a Contract
@@ -595,7 +616,7 @@ const root = ledgerState.commitmentTree.root()
 ### Requirements
 
 - **Node.js**: v22+
-- **Compact Toolchain**: 0.29.0 (latest)
+- **Compact Toolchain**: 0.31.0
 - **Docker**: For proof server
 - **TypeScript**: 5.8.3+
 
@@ -1215,6 +1236,27 @@ Anchors DIDs and Merkle root commitments on-chain.
 - **Privacy**: Only cryptographic commitments stored, never raw identity data
 - **Witnesses**: For providing private identity data during proof generation
 
+#### 4. `predicate_registry.compact`
+
+Chain-attested zero-knowledge predicates (age/kyc/nationality).
+
+- **Ledger**: `attestations: Set<Bytes<32>>` + `attestTree:
+HistoricMerkleTree`; owner-seeded `approvedNationality`; `attestCount`
+- **Circuits**: attestAgeGte, attestKycGte, attestNationalityIn,
+  seedNationality, isAttested
+- **Witnesses**: `ageValue`, `kycLevel`, `nationalityPath` (private;
+  asserted in-circuit, never disclosed)
+- **Verify model**: the Midnight node verifies the proof in consensus;
+  a session-independent key `persistentHash(tag‖rootHash‖param)` is
+  recorded only for a valid proof. The verifier recomputes the key
+  off-chain from the issuer-signed root and checks an SSE-mirrored set
+  (no inline ZK, no chain in the hot path).
+
+> All four contracts inherit the vendored OpenZeppelin Compact stdlib
+> (`contracts/lib`: Ownable/Pausable/Initializable). Holder predicate
+> proving runs on the device in-process (zkir-v2 WASM). See
+> [`MIDNIGHT.md`](./MIDNIGHT.md).
+
 ### Key Design Principles
 
 1. **Never store PII on-chain** — only Merkle root commitments and hashes
@@ -1230,9 +1272,9 @@ Anchors DIDs and Merkle root commitments on-chain.
 
 From real code analysis and compilation:
 
-- **No dynamic loops** — only constant-range iteration (`for i of 0..1023`)
-- **No Uint<256>** — maximum is `Uint<128>` due to circuit encoding limits
-- **No contract-to-contract calls** — contracts cannot call other contracts (yet)
+- **No dynamic loops** — only constant-range iteration (`for (const i of 0..1023)`); range bounds may be generic params since 0.31
+- **Max Uint is `Uint<0..2^248-1>`** — the language max is 2^248−1 (reduced from ~2^254 in 0.27). `Uint<128>` is an OwlID convention, not a language limit; `Uint<248>` etc. are valid
+- **No contract-to-contract calls** — contracts cannot call other contracts (yet); the `contract` keyword is reserved but the call path errors `cross-contract calls are not yet supported`
 - **No Map iteration** — cannot iterate over Map keys in-circuit
 - **No dynamic arrays** — fixed-size `Vector<N, T>` only
 - **Vector indexing** — only constant indices (`vector[0]`), not variable (`vector[i]`)
@@ -1303,7 +1345,7 @@ roleCommits.checkRoot(getPathRoot(path))
 
 ---
 
-## 20. Version Changelog (0.27 → 0.29)
+## 20. Version Changelog (0.27 → 0.31)
 
 ### Compact 0.27.0 (Language 0.19.0, Dec 2025)
 
@@ -1323,7 +1365,7 @@ roleCommits.checkRoot(getPathRoot(path))
 - **BREAKING**: `CurvePoint` → `NativePoint` (nominal type). Use `NativePointX`/`NativePointY` accessors
 - `constructNativePoint` circuit for building from coordinates
 
-### Compact 0.29.0 (Language 0.21.0, Feb 2026) — CURRENT
+### Compact 0.29.0 (Language 0.21.0, Feb 2026)
 
 - `contract-info.json` includes version strings + per-circuit proof-requirement flags
 - ARM Linux binary available
@@ -1332,12 +1374,29 @@ roleCommits.checkRoot(getPathRoot(path))
 - **Fix**: Exponential compile time for `MerkleTree.checkRoot` at high depth
 - **Fix**: Repeated witness disclosure analysis now correct, messages ordered by severity
 - **Fix**: `ChargedState` copy bug passing junk metadata to deployments
+- Last toolchain targeting **ledger v7**
 
-### Upcoming (post-0.29.0, unreleased)
+### Compact 0.30.0 (Language 0.22.0, runtime 0.15.0, Mar 2026)
 
-- `NativePoint` → `JubjubPoint` (new `Opaque<'JubjubPoint'>` type)
-- `ProvableCircuits<PS>` type distinguishes circuits with verifier keys from witness-only impure circuits
-- Module search path: `--compact-path` and `--trace-search` flags
+- **BREAKING**: targets **ledger v8** — contracts for a ledger-8 chain need 0.30+; ledger-7 chains must stay on 0.29
+- **BREAKING**: `NativePoint` → `JubjubPoint`
+- New compiler flags: `--ledger-version`, `--runtime-version`, `--compact-path`, `--trace-search`
+- New search order for `include`d files and file-imported modules
+- Compiler error to use `persistentHash` / `persistentCommit` on JS opaque values
+- Release notes shipped inside the release artifacts
+
+### Compact 0.31.0 (Language 0.23.0, runtime 0.16.0, Apr 2026) — CURRENT
+
+- Workarounds so operations in untaken conditional branches cannot cause erroneous proof failures (may increase circuit size)
+- `for` loop range bounds may now be generic parameters
+- `contract-info.json` now describes the public ledger-state layout (field name, index, exported, storage type, type args) — readable by language-agnostic tooling
+- Compact language reference fully revised, now matches the current language version
+- **BREAKING**: Compact runtime `convertBytesToUint` — `maxval` param type `number` → `bigint`
+
+### Post-0.31.0 (toolchain 0.31.10x point releases)
+
+- `keccak256` added to the standard library + runtime, same signature as `persistentHash`. Requires the experimental `--feature-zkir-v3` flag when used in a circuit that touches public ledger state; compiler error under the ZKIR v2 backend
+- `eval` and `arguments` reserved as future reserved words (JS strict-mode collision)
 
 ---
 

@@ -1,13 +1,7 @@
-//! T-020: Observability stack
-//!
 //! Prometheus metrics and request correlation IDs.
 
-use axum::{
-    extract::Request,
-    http::HeaderValue,
-    middleware::Next,
-    response::Response,
-};
+#![allow(dead_code)] // intentional API surface / serde fields
+use axum::{extract::Request, http::HeaderValue, middleware::Next, response::Response};
 use metrics::{counter, histogram};
 use std::time::Instant;
 use uuid::Uuid;
@@ -36,7 +30,8 @@ pub async fn correlation_and_metrics(request: Request, next: Next) -> Response {
     // Record metrics
     let status = response.status().as_u16().to_string();
     counter!("http_requests_total", "method" => method.clone(), "path" => path.clone(), "status" => status).increment(1);
-    histogram!("http_request_duration_seconds", "method" => method, "path" => path).record(duration.as_secs_f64());
+    histogram!("http_request_duration_seconds", "method" => method, "path" => path)
+        .record(duration.as_secs_f64());
 
     response
 }

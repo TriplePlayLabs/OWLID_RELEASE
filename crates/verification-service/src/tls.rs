@@ -1,7 +1,5 @@
-//! T-013: mTLS configuration for inter-service communication
-//!
-//! Provides TLS server configuration with optional mutual TLS (client cert verification).
-//! Enabled via `--features tls` or `TLS_ENABLED=true` env var.
+//! TLS server configuration with optional mutual TLS (client cert
+//! verification). Enabled via `--features tls` or `TLS_ENABLED=true`.
 //!
 //! Environment variables:
 //! - `TLS_CERT_PATH` - Path to server certificate PEM file
@@ -9,6 +7,7 @@
 //! - `TLS_CA_CERT_PATH` - Path to CA certificate PEM for client verification (mTLS)
 //! - `TLS_ENABLED` - Set to "true" to enable TLS
 
+#![allow(dead_code)] // intentional API surface / serde fields
 use std::path::Path;
 
 /// TLS configuration for the service

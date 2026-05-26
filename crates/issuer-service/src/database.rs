@@ -88,7 +88,11 @@ impl IdpDatabase {
     }
 
     /// Update session with full changes
-    pub async fn update_session(&self, id: Uuid, update_fn: impl FnOnce(&mut VerificationSession)) -> Result<()> {
+    pub async fn update_session(
+        &self,
+        id: Uuid,
+        update_fn: impl FnOnce(&mut VerificationSession),
+    ) -> Result<()> {
         let mut sessions = self.sessions.write().await;
         let session = sessions
             .get_mut(&id)
@@ -146,8 +150,8 @@ impl IdpDatabase {
     /// same write lock. Returns `Err(InvalidSessionState)` for any other
     /// state, which the handler must treat as a refusal to sign — without
     /// this, two concurrent `POST /sessions/{id}/issue` requests both pass
-    /// the gate and `Document::issue` mints distinct salts → distinct
-    /// `root_hash` values, so the unique constraint never collapses the
+    /// the gate and the issuer mints distinct credentials → distinct
+    /// `credential_id` values, so the unique constraint never collapses the
     /// duplicate.
     pub async fn try_claim_issuance(&self, id: Uuid) -> Result<()> {
         let mut sessions = self.sessions.write().await;
@@ -172,7 +176,10 @@ impl IdpDatabase {
     }
 
     /// Get sessions by flow type (for polling tasks)
-    pub async fn get_sessions_by_flow_type(&self, flow_type: ProviderFlowType) -> Vec<VerificationSession> {
+    pub async fn get_sessions_by_flow_type(
+        &self,
+        flow_type: ProviderFlowType,
+    ) -> Vec<VerificationSession> {
         let sessions = self.sessions.read().await;
         sessions
             .values()
@@ -228,7 +235,10 @@ impl IdpDatabase {
     }
 
     /// Find session by relay state (for SAML callbacks)
-    pub async fn find_session_by_relay_state(&self, relay_state: &str) -> Option<VerificationSession> {
+    pub async fn find_session_by_relay_state(
+        &self,
+        relay_state: &str,
+    ) -> Option<VerificationSession> {
         let sessions = self.sessions.read().await;
         sessions
             .values()
@@ -239,7 +249,10 @@ impl IdpDatabase {
     }
 
     /// Find session by external ID (for webhooks)
-    pub async fn find_session_by_external_id(&self, external_id: &str) -> Option<VerificationSession> {
+    pub async fn find_session_by_external_id(
+        &self,
+        external_id: &str,
+    ) -> Option<VerificationSession> {
         let sessions = self.sessions.read().await;
         sessions
             .values()
@@ -256,7 +269,11 @@ impl IdpDatabase {
     }
 
     /// Store verified claims for a session
-    pub async fn store_claims(&self, session_id: Uuid, claims: &VerifiedIdentityClaims) -> Result<()> {
+    pub async fn store_claims(
+        &self,
+        session_id: Uuid,
+        claims: &VerifiedIdentityClaims,
+    ) -> Result<()> {
         let mut claims_store = self.claims.write().await;
         claims_store.insert(session_id, claims.clone());
         Ok(())
@@ -399,10 +416,17 @@ mod tests {
             is_over_65: false,
             is_eu_citizen: true,
             is_resident: true,
+            resident_country: Some("NL".to_string()),
             verified_at: Utc::now(),
             verification_level: VerificationLevel::Substantial,
             provider_id: "mock-digid".to_string(),
+            name: None,
+            picture: None,
+            locale: None,
+            hosted_domain: None,
             verification_method: "simulated".to_string(),
+            email: None,
+            email_verified: None,
         };
 
         db.store_claims(session.id, &claims).await.unwrap();

@@ -3,6 +3,7 @@
 Step-by-step playbooks for every common deploy scenario. Keep this open during any production change.
 
 Use this with:
+
 - [README.md](README.md) — project overview, layout, prerequisites
 - [SECRETS.md](SECRETS.md) — secret storage + rotation
 - [ENV-WIRING.md](ENV-WIRING.md) — env-var sources + service dependencies
@@ -55,9 +56,11 @@ just gcp-bootstrap        # creates GCS state bucket + terraform init
 ```
 
 If the project already has resources from earlier manual `gcloud` work:
+
 ```sh
 just gcp-pre-tf-cleanup   # destructive: deletes manual SQL/secrets/SA/budget
 ```
+
 Then proceed.
 
 ```sh
@@ -99,6 +102,7 @@ just gcp-urls
 ```
 
 **Image tagging:** by default everything is tagged `latest`. For traceable deploys:
+
 ```sh
 TAG=$(git rev-parse --short HEAD)
 IMAGE_TAG=$TAG just gcp-build
@@ -111,21 +115,11 @@ The Terraform variable `image_tag` is read from `terraform.tfvars` or `-var`. Se
 
 ## 3. Scenarios
 
-### 3.0 Native SDK / WASM rebuild
+### 3.0 Groth16 proving-key rebuild
 
-`packages/native-sdk` is a Rust → napi-rs library that produces:
-- Linux `.node` binary (Node addon, used by SSR / tests)
-- Browser `.wasm` (loaded by frontends via `vite-plugin-wasm`)
-- JS bindings (`browser.js`, `index.mjs`, `npm/wasm32-wasi/owl-id.wasi-browser.js`)
+`@owlid/sdk` is pure TypeScript — there is no native binary or browser WASM in the public SDK any more. The Groth16 proving keys live with the **issuer-side** ZK compute (`crates/zk-circuits/`) and are rebuilt by `just generate-zk-keys` (`cargo run -p owl-zk-circuits --bin keygen --no-default-features --release`).
 
-`Dockerfile.native-sdk-builder` also runs **`just generate-zk-keys`**
-(`cargo run -p owl-zk-circuits --bin keygen --no-default-features --release`)
-before the napi build so the Groth16 proving keys at
-`crates/zk-circuits/artifacts/*.bin` exist. The `prover-keys-embedded`
-feature `include_bytes!`s them into the napi binary at compile time. The
-artifacts are `.dockerignore`'d (host copies are untracked + might be
-stale), so the image always regenerates them from deterministic dev
-seeds.
+The committed artifacts under `crates/zk-circuits/artifacts/*.bin` come from a deterministic dev seed. Production deploys must replace them with output from a Phase-2 MPC ceremony — see `crates/zk-circuits/CEREMONY.md`.
 
 These artifacts are **not in git** (`.gitignore` excludes `*.wasm`, `*.node`, etc.) so Cloud Build's source upload doesn't include them. Without a build step, frontends would ship empty stubs and crash on first WASM call.
 
@@ -140,6 +134,7 @@ These artifacts are **not in git** (`.gitignore` excludes `*.wasm`, `*.node`, et
 ```
 
 Frontend Dockerfiles consume the result via `--from=native-sdk` stage:
+
 ```dockerfile
 ARG NATIVE_SDK_IMAGE=europe-west1-docker.pkg.dev/owlid-491411/owlid/native-sdk-builder:latest
 FROM ${NATIVE_SDK_IMAGE} AS native-sdk
@@ -151,20 +146,21 @@ COPY --from=native-sdk /config     packages/config
 
 #### When to rebuild native-sdk-builder
 
-| Change | Rebuild needed? |
-|--------|----------------|
-| Rust source under `packages/native-sdk/src/` | yes |
-| `Cargo.toml` deps that affect native-sdk | yes |
-| `crates/proof-system`, `crates/zk-circuits`, `crates/crypto` (referenced by native-sdk) | yes |
-| `packages/sdk` TS source | yes (TS SDK is built in this stage) |
-| `packages/config` TS source | yes |
-| Anything else (frontend code, services, etc.) | no — pull cached `:latest` |
+| Change                                                                                  | Rebuild needed?                     |
+| --------------------------------------------------------------------------------------- | ----------------------------------- |
+| Rust source under `packages/native-sdk/src/`                                            | yes                                 |
+| `Cargo.toml` deps that affect native-sdk                                                | yes                                 |
+| `crates/proof-system`, `crates/zk-circuits`, `crates/crypto` (referenced by native-sdk) | yes                                 |
+| `packages/sdk` TS source                                                                | yes (TS SDK is built in this stage) |
+| `packages/config` TS source                                                             | yes                                 |
+| Anything else (frontend code, services, etc.)                                           | no — pull cached `:latest`          |
 
 #### Rebuild commands
 
 Full: `just gcp-build` runs phase 1 (native-sdk + backends parallel) → phase 2 (waits for native-sdk) → phase 3 (frontends parallel). About 10–15 min cold.
 
 Native-sdk only:
+
 ```sh
 gcloud builds submit \
   --project=owlid-491411 --region=europe-west1 \
@@ -173,6 +169,7 @@ gcloud builds submit \
 ```
 
 Then frontends (parallel):
+
 ```sh
 for svc in app admin verifier; do
   gcloud builds submit \
@@ -184,6 +181,7 @@ done
 ```
 
 Pin to a SHA (recommended for prod) so frontends + backends + native-sdk move atomically:
+
 ```sh
 TAG=$(git rev-parse --short HEAD)
 IMAGE_TAG=$TAG just gcp-build
@@ -246,7 +244,7 @@ gcloud builds submit \
 just gcp-apply
 ```
 
-When you wire real Midnight infra: edit `terraform/run.tf` `sidecar` env block, swap placeholder URLs (`MIDNIGHT_NODE_WS_URL`, `MIDNIGHT_INDEXER_URI`, etc.) for real endpoints, then `just gcp-apply`. Also flip `MIDNIGHT_ENABLED=true` on `verification` + `issuer` in the same file.
+When you wire real Midnight infra: edit `terraform/run.tf` `sidecar` env block, swap placeholder URLs (`MIDNIGHT_NODE_WS_URL`, `MIDNIGHT_INDEXER_URI`, etc.) for real endpoints, then `just gcp-apply`. Midnight is always-on — verification and issuer fail-fast if the sidecar is unreachable, so the sidecar must be healthy before either service rolls.
 
 ### 3.4 DB schema change (new migration)
 
@@ -265,6 +263,7 @@ just gcp-apply
 ```
 
 **Order matters** when the migration is non-backward-compatible (drop column, rename column):
+
 1. Deploy app version that tolerates both old + new schema
 2. Run migration
 3. Deploy app version that only uses new schema
@@ -276,6 +275,7 @@ For dev sandbox you can usually do (2) → (3) and accept brief errors.
 #### Plain value
 
 Edit `deploy/gcp/terraform/run.tf`. Find the service's `dynamic "env"` block:
+
 ```hcl
 dynamic "env" {
   for_each = {
@@ -297,6 +297,7 @@ just gcp-apply
 
 1. Create the secret resource in `terraform/secrets.tf`. Use `random_password` if generated, or a static string for known values.
 2. Add an `env { ... value_source.secret_key_ref { ... } }` block in the service in `run.tf`:
+
 ```hcl
 env {
   name = "MY_SECRET"
@@ -308,6 +309,7 @@ env {
   }
 }
 ```
+
 3. `just gcp-apply`
 
 ### 3.6 Add a new secret
@@ -315,6 +317,7 @@ env {
 For static / externally-supplied values (e.g. third-party API key):
 
 1. Add to `terraform/secrets.tf`:
+
 ```hcl
 locals {
   app_secrets = {
@@ -323,16 +326,20 @@ locals {
   }
 }
 ```
+
 2. `just gcp-apply` — TF creates the secret resource + version 1 with the placeholder.
 3. Replace the value (won't drift because of `lifecycle.ignore_changes`):
+
 ```sh
 printf '%s' "real-value-from-vendor" | \
   gcloud secrets versions add didit-api-key --data-file=- --project=owlid-491411
 ```
+
 4. Wire it into the service (see 3.5).
 5. `just gcp-apply` and `gcloud run services update <service>` to pick up `latest`.
 
 For TF-generated random values:
+
 ```hcl
 resource "random_password" "didit_webhook_secret" {
   length  = 64
@@ -356,6 +363,7 @@ locals {
 6. Add a `google_cloud_run_v2_service_iam_member` for `allUsers` if it should be public.
 7. Add an output in `terraform/outputs.tf`.
 8. Build:
+
 ```sh
 just gcp-build         # builds all (or submit only the new one)
 just gcp-apply
@@ -369,16 +377,18 @@ Once `gcloud domains registrations describe owlid.app --location=global` shows `
 2. `just gcp-apply` — TF creates 6 mappings + 6 CNAME records, requests Google-managed certs.
 3. Wait 5–30 min for DNS propagation + cert issuance.
 4. Optionally swap `local.run_url` in `terraform/locals.tf` for the user-facing URLs:
+
 ```hcl
 run_url = {
   verification = "https://api.owlid.app"
   issuer       = "https://issuer.owlid.app"
   sidecar      = "https://sidecar.owlid.app"
-  app          = "https://app.owlid.app"
+  app          = "https://wallet.owlid.app"
   admin        = "https://admin.owlid.app"
   verifier     = "https://verifier.owlid.app"
 }
 ```
+
 5. `just gcp-apply` again — frontends reload `/config.js` with the domain URLs.
 
 ---
@@ -405,6 +415,7 @@ curl -sS "$URL/admin/login" -H 'Content-Type: application/json' \
 ```
 
 Expected:
+
 - `/health` returns `200` with JSON `{"status": "ok"}` (or similar)
 - Frontend HTML 200 OK
 - Admin login returns a JWT
@@ -424,6 +435,7 @@ gcloud run services update-traffic verification \
 ```
 
 For an image rebuild rollback — re-tag a known-good image as `latest`:
+
 ```sh
 gcloud artifacts docker tags add \
   europe-west1-docker.pkg.dev/owlid-491411/owlid/verification@sha256:OLD_DIGEST \
@@ -435,30 +447,209 @@ For a TF state rollback — every `terraform apply` creates a new state generati
 
 ## 6. Common errors + fixes
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `PERMISSION_DENIED: setIamPolicy` | gcloud user is `Editor` not `Owner` | Have an org admin grant `roles/owner` |
-| `secretmanager.versions.access denied` | runtime SA missing `secretAccessor` | `terraform/iam.tf` should grant it; re-apply |
-| `Cloud Build SA missing storage.objects.get` | newer projects use compute SA, not cloudbuild SA, by default | bindings in `terraform/iam.tf::google_project_iam_member.cloudbuild` |
-| `Invalid Tier (db-f1-micro) for ENTERPRISE_PLUS` | Cloud SQL default edition rejects shared-core tier | `--edition=ENTERPRISE` (already set in TF) |
-| `unrecognized arguments: --location` on `gcloud domains` subcommands | newer CLI dropped the flag for some subcommands | drop `--location` |
-| `Workspace dependency "@owlid/X" not found` in Cloud Build | Dockerfile missing a `COPY packages/X/` for a workspace dep | add the COPY (see commits patching `Dockerfile.{app,admin,verifier}`) |
-| `Can't resolve 'tw-animate-css'` | a frontend package missing the dep in its `package.json` | add to `devDependencies`, run `bun install` |
-| `502 Bad Gateway` on Cloud Run after deploy | cold start | wait ~10s, retry |
-| `error: build step ... step exited with non-zero status: 1` (Cloud Build) | check the build log via `gcloud builds log <id> --region=europe-west1 --project=owlid-491411` | inspect, fix root cause |
+The following are real failures hit during the initial deploy, with fixes verified in this repo.
+
+| Error                                                                                                        | Cause                                                                                                                                                                                                              | Fix                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PERMISSION_DENIED: setIamPolicy`                                                                            | gcloud user is `Editor` not `Owner`                                                                                                                                                                                | Have an org admin grant `roles/owner`                                                                                                                                                                                                                                                                                |
+| `secretmanager.versions.access denied`                                                                       | runtime SA missing `secretAccessor`                                                                                                                                                                                | `terraform/iam.tf` should grant it; re-apply                                                                                                                                                                                                                                                                         |
+| `Cloud Build SA missing storage.objects.get`                                                                 | newer projects use compute SA, not cloudbuild SA, by default                                                                                                                                                       | bindings in `terraform/iam.tf::google_project_iam_member.cloudbuild`                                                                                                                                                                                                                                                 |
+| `Invalid Tier (db-f1-micro) for ENTERPRISE_PLUS`                                                             | Cloud SQL default edition rejects shared-core tier                                                                                                                                                                 | `--edition=ENTERPRISE` (already set in TF)                                                                                                                                                                                                                                                                           |
+| `unrecognized arguments: --location` on `gcloud domains` subcommands                                         | newer CLI dropped the flag for some subcommands                                                                                                                                                                    | drop `--location`                                                                                                                                                                                                                                                                                                    |
+| `Workspace dependency "@owlid/X" not found` in Cloud Build                                                   | Dockerfile missing a `COPY packages/X/` for a workspace dep                                                                                                                                                        | add the COPY (see commits patching `Dockerfile.{app,admin,verifier}`)                                                                                                                                                                                                                                                |
+| `Can't resolve 'tw-animate-css'`                                                                             | a frontend package missing the dep in its `package.json`                                                                                                                                                           | add to `devDependencies`, run `bun install`                                                                                                                                                                                                                                                                          |
+| `502 Bad Gateway` on Cloud Run after deploy                                                                  | cold start                                                                                                                                                                                                         | wait ~10s, retry                                                                                                                                                                                                                                                                                                     |
+| `error: build step ... step exited with non-zero status: 1` (Cloud Build)                                    | check the build log via `gcloud builds log <id> --region=europe-west1 --project=owlid-491411`                                                                                                                      | inspect, fix root cause                                                                                                                                                                                                                                                                                              |
+| `Error 400: One or more users named in the policy do not belong to a permitted customer` on Cloud Run IAM    | org policy `iam.allowedPolicyMemberDomains` rejects `allUsers`                                                                                                                                                     | Console: https://console.cloud.google.com/iam-admin/orgpolicies/iam-allowedPolicyMemberDomains?project=owlid-491411 → Manage Policy → Customize → Replace → Allow All. Then `terraform apply -var=public_run_services=true`                                                                                          |
+| `Error 403: ... requires a quota project ... SERVICE_DISABLED` on `billingbudgets.googleapis.com`            | ADC has no quota project set; provider hits a default Google-managed billing project                                                                                                                               | `gcloud auth application-default set-quota-project owlid-491411` AND `provider "google" { user_project_override = true; billing_project = var.project_id }` (already set in `providers.tf`)                                                                                                                          |
+| `error: error with configuration: empty host` (Rust services)                                                | `sqlx` rejects DSN with empty host between `@` and `/`                                                                                                                                                             | DSN must use a placeholder like `postgres://owl:PW@localhost/db?host=/cloudsql/...` (already fixed in `secrets.tf`)                                                                                                                                                                                                  |
+| `issuer private key must be hex: InvalidHexCharacter`                                                        | `random_password` produces alphanumeric, not hex                                                                                                                                                                   | use `random_id { byte_length = 32 }` and reference `.hex` (already fixed in `secrets.tf` for encryption-key, issuer-private-key, sidecar-api-key)                                                                                                                                                                    |
+| `Invalid value specified for memory. Total memory < 512 Mi is not supported with cpu always allocated`       | Cloud Run minimum is 512Mi when CPU is always-allocated                                                                                                                                                            | bump `containers.resources.limits.memory` to `"512Mi"` minimum                                                                                                                                                                                                                                                       |
+| `Cannot find module '../managed/issuer_registry/contract/index.js'` (sidecar)                                | Compact compile output is `.gitignore`'d so Cloud Build doesn't ship it                                                                                                                                            | `.gcloudignore` overrides `.gitignore` exclusion for `packages/midnight-sidecar/managed/`. Run `bun run compact` locally to regenerate after contract changes                                                                                                                                                        |
+| `Container failed to start and listen on the port defined provided by PORT` (Cloud Run health probe)         | Container crashed before binding (env mismatch, missing secret, bad migration, etc.)                                                                                                                               | `gcloud logging read 'resource.labels.service_name="<svc>" AND resource.labels.revision_name=~"<svc>-<NN>"' --limit=20 --format='value(textPayload)'` to see the actual panic                                                                                                                                        |
+| `gcloud run services update <svc>` returns "No configuration change requested"                               | newer gcloud refuses no-op updates                                                                                                                                                                                 | force a new revision with `--update-labels="rolled-at=$(date +%s)"`                                                                                                                                                                                                                                                  |
+| TLS handshake fails on `*.owlid.app`                                                                         | Google-managed cert still provisioning (5–30 min after CNAME validates)                                                                                                                                            | wait; check `gcloud beta run domain-mappings describe <subdomain.owlid.app> --region=europe-west1 --project=owlid-491411` for cert state                                                                                                                                                                             |
+| `gcloud sql instances` `PENDING_CREATE` for >25 min                                                          | rare, sometimes Cloud SQL queues create ops                                                                                                                                                                        | `gcloud sql operations describe <op-id> --project=owlid-491411`; if CANCELLED retry; if stuck contact GCP support                                                                                                                                                                                                    |
+| `gcloud auth application-default print-access-token` fails / 401                                             | ADC token expired (refresh token usually auto-renews; if not, manual re-auth)                                                                                                                                      | `gcloud auth application-default login`                                                                                                                                                                                                                                                                              |
+| `[@owlid/config] issuerUrl fell back to http://localhost:8001` in browser console (TanStack Start app/admin) | Client-side hydration re-runs `head()` and re-renders the inline `<script>window.__OWLID_CONFIG__ = ...</script>`. `process.env.*` is empty in the browser shim → emits all-empty values → clobbers what SSR wrote | Gate the script with `import.meta.env.SSR` so it renders server-only. Already applied in `packages/{app,admin}/src/routes/__root.tsx`                                                                                                                                                                                |
+| Verifier app says `Invalid or expired API key`, or `/config.js` exposes an `owlid_sk_*` value                | The public verifier SPA was wired to the service/admin `api-key-dev` secret instead of a browser-safe publishable key, or the publishable key was not bootstrapped into the verification DB                        | `verifier` Cloud Run must set `OWLID_API_KEY` from secret `verifier-api-key` (`owlid_pk_*`). `verification` Cloud Run must set `VERIFIER_API_KEY` from the same secret so startup inserts/keeps the DB row. Never put `api-key-dev` in frontend runtime config; `docker/runtime-config.sh` now refuses `owlid_sk_*`. |
+| `Failed to resolve module specifier "@owlid/native-sdk"` (browser console)                                   | Stale build still bundles a reference to the removed `@owlid/native-sdk` package                                                                                                                                   | `@owlid/native-sdk` was deleted when OwlID moved to pure-TS SD-JWT VC. Drop any stale `vite-plugin-wasm` / `vite-plugin-top-level-await` plugins and `ssr.external` / `build.rollupOptions.external` entries that name native-sdk, then rebuild                                                                      |
+| `gcloud organizations add-iam-policy-binding` permission denied at org level                                 | Project Owner alone can't grant org-level roles. Need a Workspace super-admin to bootstrap the first org-level role                                                                                                | Find the super-admin via https://admin.google.com → Admin roles → Super Admin. Have them grant `roles/orgpolicy.policyAdmin` (or `roles/resourcemanager.organizationAdmin`) at org level, then you can self-grant the rest                                                                                           |
+| TLS handshake error / `unexpected eof while reading` on a fresh `*.owlid.app` subdomain                      | Domain mapping shows ✔ (control plane Ready) but Google's edge CDN still propagating the cert across PoPs. Some PoPs serve, others drop the connection. Typical 5–20 min after `Ready=True`                        | wait; retry from another network/region to find PoPs that already have the cert; verify control-plane state via `gcloud beta run domain-mappings list --region=europe-west1` (✔ = Ready, … = pending)                                                                                                                |
+| `Error: Dead link found` (rspress build)                                                                     | A markdown link references a path outside the docs site root or to a non-existent doc                                                                                                                              | Fix the link — never disable `checkDeadLinks`. Convert to absolute URL if pointing at the GitHub repo, or remove the reference if it's a dev-only / internal-repo concept that shouldn't be in user-facing docs                                                                                                      |
+
+### Frontend SSR config injection — the right pattern
+
+TanStack Start runs `head()` BOTH server-side (for the SSR HTML) AND client-side (for hydration / route changes). If you put a runtime config inline-script in `head.scripts[].children`, it gets re-rendered on the client with empty values (the browser shim of `process.env` returns nothing). React diffs the `<head>`, sees the script changed, runs the new (empty) one, and clobbers `window.__OWLID_CONFIG__`.
+
+**Don't** rely on a runtime-written `/config.js` file either — Nitro v2 only serves files in `.output/public/` that existed at build time. A `runtime-config.sh` writing into the running container's `.output/public/` does NOT register with Nitro's storage manifest and ends up routed to TanStack's catch-all 404.
+
+**Do** gate the inline `<script>` on `import.meta.env.SSR`:
+
+```ts
+scripts: import.meta.env.SSR
+  ? [
+      {
+        children: `window.__OWLID_CONFIG__ = ${JSON.stringify({
+          verificationUrl: process.env.OWLID_VERIFICATION_URL || '',
+          // ...
+        })};`,
+      },
+    ]
+  : [],
+```
+
+Server emits the script. Client returns an empty array → no script in vdom → react has nothing to re-emit. The SSR-set `window.__OWLID_CONFIG__` survives the whole session.
+
+For a **pure-static SPA** (no SSR, like `verifier-app`), the simpler pattern works: nginx serves `/config.js` written at container start by `docker/runtime-config.sh`. No SSR re-render to fight with. Frontend config is public: only `owlid_pk_*` publishable keys are allowed there, and the script exits if `OWLID_API_KEY` / `VITE_API_KEY` starts with `owlid_sk_`.
+
+### What to do when a deploy partially fails
+
+1. **Check Cloud Run revision health first.** `gcloud run services list --region=europe-west1 --project=owlid-491411 --format='table(metadata.name,status.conditions[0].status,status.conditions[0].message)'` shows which service stalled.
+2. **Read its logs.** `gcloud logging read 'resource.labels.service_name="<svc>"' --limit=20 --project=owlid-491411 --format='value(textPayload,jsonPayload.message)'`. 90 % of the time the message is the real cause (panic with line, missing env, hex parse error, etc.).
+3. **Don't blame the platform.** GCP returns the actual root cause in error messages most of the time. Read them carefully.
+4. **For TF errors**, the message includes the resource block + line. Fix the HCL or the upstream value, then `terraform apply -auto-approve` again. TF re-reads state on every run; partial success is fine.
+5. **Force re-roll without TF**: `gcloud run services update <svc> --update-labels="rolled-at=$(date +%s)" --region=europe-west1 --project=owlid-491411` triggers a new revision, picks up `latest` secret versions.
+6. **Validate before apply**: `cd deploy/gcp/terraform && terraform fmt && terraform validate` catches HCL errors before they hit GCP. Run after every edit.
+7. **Don't `--no-verify` or skip hooks.** If a hook fails, fix the underlying issue (per repo CLAUDE.md rule).
 
 ## 7. Cost + scaling knobs
 
-| Knob | Where | Default | Effect |
-|------|-------|---------|--------|
-| Cloud Run `min_instance_count` | `terraform/run.tf` per service | `0` | `>= 1` removes cold-start, paid 24/7 |
-| Cloud Run `max_instance_count` | same | `2` (backends) / `2` (frontends) / `1` (sidecar) | autoscale ceiling |
-| Cloud Run CPU/memory | `containers.resources.limits` | `1` CPU / `512Mi` (`256Mi` frontends) | bump for memory-heavy work |
-| Cloud SQL tier | `terraform/variables.tf::sql_tier` | `db-f1-micro` (~€8/mo) | `db-custom-1-3840` for prod (~€40/mo) |
-| Cloud SQL backups | `terraform/sql.tf::backup_configuration.enabled` | `false` | `true` for prod |
-| Cloud SQL HA | `terraform/sql.tf::availability_type` | `ZONAL` | `REGIONAL` for prod (~2x cost) |
-| Budget cap | `terraform/budget.tf` | €300 | bump if you exceed during real load testing |
+| Knob                           | Where                                            | Default                                          | Effect                                      |
+| ------------------------------ | ------------------------------------------------ | ------------------------------------------------ | ------------------------------------------- |
+| Cloud Run `min_instance_count` | `terraform/run.tf` per service                   | `0`                                              | `>= 1` removes cold-start, paid 24/7        |
+| Cloud Run `max_instance_count` | same                                             | `2` (backends) / `2` (frontends) / `1` (sidecar) | autoscale ceiling                           |
+| Cloud Run CPU/memory           | `containers.resources.limits`                    | `1` CPU / `512Mi` (`256Mi` frontends)            | bump for memory-heavy work                  |
+| Cloud SQL tier                 | `terraform/variables.tf::sql_tier`               | `db-f1-micro` (~€8/mo)                           | `db-custom-1-3840` for prod (~€40/mo)       |
+| Cloud SQL backups              | `terraform/sql.tf::backup_configuration.enabled` | `false`                                          | `true` for prod                             |
+| Cloud SQL HA                   | `terraform/sql.tf::availability_type`            | `ZONAL`                                          | `REGIONAL` for prod (~2x cost)              |
+| Budget cap                     | `terraform/budget.tf`                            | €300                                             | bump if you exceed during real load testing |
 
 Idle cost (no traffic): ~€8–10/mo (Cloud SQL only — Cloud Run is free at min=0).
 
 Loaded cost depends on traffic. For typical dev usage (<1k req/day across all services): well under €15/mo. For production at thousands of QPS, plan separately.
+
+## 8. Logs + observability
+
+Cloud Run auto-pipes container `stdout`/`stderr` to **Cloud Logging**. No agent, no setup. Default 30-day retention.
+
+### Console
+
+https://console.cloud.google.com/logs/query?project=owlid-491411 — filter by resource type, service, severity, free-text.
+
+### gcloud cheatsheet
+
+```sh
+# Tail one service live
+gcloud beta logging tail \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="verification"' \
+  --project=owlid-491411
+
+# Last 50 lines of one service
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="issuer"' \
+  --limit=50 --project=owlid-491411 \
+  --format='value(timestamp,textPayload,jsonPayload.message)'
+
+# Errors only across all services in the last hour
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND severity>=ERROR' \
+  --limit=20 --freshness=1h --project=owlid-491411 \
+  --format='value(resource.labels.service_name,textPayload,jsonPayload.message)'
+
+# A specific revision (after a deploy)
+gcloud logging read \
+  'resource.labels.revision_name="verification-00004-f4g"' \
+  --limit=30 --project=owlid-491411
+
+# Cloud SQL slow queries / errors
+gcloud logging read \
+  'resource.type="cloudsql_database" AND resource.labels.database_id="owlid-491411:owlid-pg"' \
+  --limit=20 --project=owlid-491411
+
+# Cloud Build logs
+gcloud builds log <build-id> --region=europe-west1 --project=owlid-491411
+```
+
+Severity ladder: `DEBUG < INFO < NOTICE < WARNING < ERROR < CRITICAL < ALERT < EMERGENCY`. `severity>=ERROR` filters all error+ rows.
+
+### Useful aliases
+
+```sh
+alias owlid-logs='gcloud logging read "resource.type=\"cloud_run_revision\"" --limit=50 --project=owlid-491411 --freshness=1h --format="value(timestamp,resource.labels.service_name,textPayload,jsonPayload.message)"'
+alias owlid-err='gcloud logging read "resource.type=\"cloud_run_revision\" AND severity>=ERROR" --limit=20 --project=owlid-491411 --freshness=1h --format="value(timestamp,resource.labels.service_name,textPayload,jsonPayload.message)"'
+alias owlid-tail='gcloud beta logging tail "resource.type=\"cloud_run_revision\"" --project=owlid-491411'
+```
+
+### Structured (JSON) logs
+
+Rust services use the `tracing` crate. Set `RUST_LOG_FORMAT=json` in `terraform/run.tf` env block to emit JSON, then `jsonPayload.fields.user_id="..."` and similar key filters work in Cloud Logging.
+
+The Bun sidecar uses standard `console.log`/`console.error` — Cloud Run wraps them as text. For structured fields, log JSON strings; Cloud Logging will parse the `jsonPayload`.
+
+### Long-term retention / export
+
+Default 30 days. To extend or archive elsewhere:
+
+```sh
+# Dedicated bucket with 1-year retention (kept inside Cloud Logging)
+gcloud logging buckets create owlid-logs-archive \
+  --location=europe-west1 --retention-days=365 --project=owlid-491411
+
+# Or sink to BigQuery for SQL analytics
+gcloud logging sinks create owlid-bq-sink \
+  bigquery.googleapis.com/projects/owlid-491411/datasets/owlid_logs \
+  --log-filter='resource.type="cloud_run_revision"' \
+  --project=owlid-491411
+
+# Or sink to GCS (cheap cold storage)
+gcloud logging sinks create owlid-gcs-sink \
+  storage.googleapis.com/owlid-491411-log-archive \
+  --log-filter='resource.type="cloud_run_revision"' \
+  --project=owlid-491411
+```
+
+### Alerts on log patterns
+
+Console route is easiest: **Monitoring → Alerting → Create policy → Log Match condition**.
+
+Common dev policies worth setting:
+
+| Alert                                         | Filter                                                                                                       |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Any service emits `ERROR`+ for >5 events / 5m | `resource.type="cloud_run_revision" AND severity>=ERROR`                                                     |
+| Container start failure                       | `resource.type="cloud_run_revision" AND textPayload:"Container called exit"`                                 |
+| SQL connection refused                        | `textPayload:"connection refused" AND resource.labels.service_name=~"verification\|issuer"`                  |
+| Budget threshold reached                      | `protoPayload.serviceName="billingbudgets.googleapis.com"` — or just trust the email from the budget itself. |
+
+Channels: email is fastest to set up. Slack / PagerDuty integrations are first-class.
+
+### Log-based metrics (tracking custom events)
+
+If you want a chart of "credentials issued per hour":
+
+```sh
+gcloud logging metrics create credentials_issued \
+  --description="Issuer credential issuance" \
+  --log-filter='resource.labels.service_name="issuer" AND textPayload:"issued credential"' \
+  --project=owlid-491411
+```
+
+Then graph in **Monitoring → Metrics Explorer → log-based**.
+
+### Auditing access to secrets / IAM
+
+Cloud Audit Logs are separate from app logs but in the same console. Filter:
+
+```
+logName="projects/owlid-491411/logs/cloudaudit.googleapis.com%2Fdata_access"
+AND protoPayload.serviceName="secretmanager.googleapis.com"
+```
+
+Tracks every `secrets.versions.access` call, by which principal, on which secret. Useful when rotating to verify nobody else read the old version.
+
+### What logs are NOT collected
+
+- **Inside the database.** Cloud SQL writes its own slow-query / error log (querying it shown above), but row-level audit isn't on. Enable `cloudsql.enable_pgaudit` flag if needed.
+- **Browser-side errors from the SPA.** Wire a frontend error reporter (Sentry, GCP Error Reporting client) — not done yet.
+- **HTTP request logs.** Cloud Run captures _request metadata_ (method, path, status, duration, IP) under `resource.type="cloud_run_revision"` with `jsonPayload.requestMethod` etc — these come for free, no setup.

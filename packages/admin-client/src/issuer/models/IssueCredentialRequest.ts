@@ -20,6 +20,16 @@ import { mapValues } from '../runtime.js'
  */
 export interface IssueCredentialRequest {
   /**
+   * OpenID4VCI batch issuance for unlinkability: mint this many
+   * one-time-use SD-JWT VCs (same holder `cnf`, distinct issuer JWT ⇒
+   * distinct `credential_id`, each independently revocable). The
+   * holder presents each to at most one verifier so presentations
+   * cannot be correlated. Default 1; clamped to 1..=64.
+   * @type {number}
+   * @memberof IssueCredentialRequest
+   */
+  batchSize?: number | null
+  /**
    * Key algorithm: "p256" (WebAuthn default) or "ed25519"
    * @type {string}
    * @memberof IssueCredentialRequest
@@ -53,6 +63,7 @@ export function IssueCredentialRequestFromJSONTyped(
     return json
   }
   return {
+    batchSize: json['batchSize'] == null ? undefined : json['batchSize'],
     keyAlgorithm: json['keyAlgorithm'] == null ? undefined : json['keyAlgorithm'],
     ownerPublicKey: json['ownerPublicKey'],
   }
@@ -71,6 +82,7 @@ export function IssueCredentialRequestToJSONTyped(
   }
 
   return {
+    batchSize: value['batchSize'],
     keyAlgorithm: value['keyAlgorithm'],
     ownerPublicKey: value['ownerPublicKey'],
   }

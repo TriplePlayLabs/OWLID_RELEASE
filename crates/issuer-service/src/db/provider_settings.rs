@@ -25,11 +25,9 @@ impl ProviderSettingsRepository {
     /// Return every override row. Used at boot to seed the registry's
     /// disabled set.
     pub async fn list(&self) -> Result<Vec<ProviderSetting>, sqlx::Error> {
-        sqlx::query_as::<_, ProviderSetting>(
-            "SELECT provider_id, enabled FROM provider_settings",
-        )
-        .fetch_all(&self.pool)
-        .await
+        sqlx::query_as::<_, ProviderSetting>("SELECT provider_id, enabled FROM provider_settings")
+            .fetch_all(&self.pool)
+            .await
     }
 
     /// Upsert an override. `updated_by` is the principal who set it

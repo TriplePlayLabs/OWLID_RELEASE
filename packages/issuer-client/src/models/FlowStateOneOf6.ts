@@ -14,11 +14,18 @@
 
 import { mapValues } from '../runtime.js'
 /**
- * Form: waiting for user to submit form
+ * OIDC redirect: waiting for authorization-code callback. The
+ * `state` value is the CSRF parameter the provider echoes back.
  * @export
  * @interface FlowStateOneOf6
  */
 export interface FlowStateOneOf6 {
+  /**
+   *
+   * @type {string}
+   * @memberof FlowStateOneOf6
+   */
+  state: string
   /**
    *
    * @type {string}
@@ -32,13 +39,14 @@ export interface FlowStateOneOf6 {
  * @enum {string}
  */
 export enum FlowStateOneOf6TypeEnum {
-  form_pending = 'form_pending',
+  oidc_pending = 'oidc_pending',
 }
 
 /**
  * Check if a given object implements the FlowStateOneOf6 interface.
  */
 export function instanceOfFlowStateOneOf6(value: object): value is FlowStateOneOf6 {
+  if (!('state' in value) || value['state'] === undefined) return false
   if (!('type' in value) || value['type'] === undefined) return false
   return true
 }
@@ -55,6 +63,7 @@ export function FlowStateOneOf6FromJSONTyped(
     return json
   }
   return {
+    state: json['state'],
     type: json['type'],
   }
 }
@@ -72,6 +81,7 @@ export function FlowStateOneOf6ToJSONTyped(
   }
 
   return {
+    state: value['state'],
     type: value['type'],
   }
 }

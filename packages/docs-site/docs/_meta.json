@@ -4,6 +4,7 @@
   { "type": "file", "name": "quickstart", "label": "Quickstart" },
   { "type": "dir", "name": "integration", "label": "Integration" },
   { "type": "dir", "name": "sdk", "label": "SDK reference" },
+  { "type": "file", "name": "api", "label": "HTTP API" },
   { "type": "dir", "name": "architecture", "label": "Concepts" },
   { "type": "file", "name": "apps", "label": "Apps" },
   { "type": "dir", "name": "examples", "label": "Examples" }

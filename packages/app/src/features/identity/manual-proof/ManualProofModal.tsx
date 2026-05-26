@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import { Camera, Check, ClipboardPaste, Copy, Fingerprint, QrCode, ScanLine, X } from 'lucide-react'
-import { QRCodeSVG } from 'qrcode.react'
 import { Scanner } from '@yudiel/react-qr-scanner'
+import { OwlQrCode } from '~/components/identity/OwlQrCode'
 import { toast } from 'sonner'
 import { Button } from '@owlid/ui/components/ui/button'
 import { Checkbox } from '@owlid/ui/components/ui/checkbox'
@@ -235,8 +235,13 @@ function ManualProofModal(props: ModalRenderProps<Record<string, never>>) {
                       )}
                     </Button>
                   </div>
-                  <div className="bg-white p-3 rounded-md flex justify-center">
-                    <QRCodeSVG value={proof.qrData} size={220} />
+                  <div className="flex justify-center">
+                    <OwlQrCode
+                      value={proof.qrData}
+                      size={240}
+                      compact
+                      ariaLabel={`Manual proof QR: ${proof.claim}`}
+                    />
                   </div>
                   <details className="text-xs text-muted-foreground">
                     <summary className="cursor-pointer">Show as text</summary>

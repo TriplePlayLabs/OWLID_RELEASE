@@ -20,17 +20,37 @@ import { mapValues } from '../runtime.js'
  */
 export interface IssueCredentialResponse {
   /**
-   *
-   * @type {any}
+   * The issued credential: a standard SD-JWT VC (`application/dc+sd-jwt`).
+   * For a batch this is the first element of `credentials`.
+   * @type {string}
    * @memberof IssueCredentialResponse
    */
-  credential: any | null
+  credential: string
+  /**
+   * OpenID4VCI batch: all minted one-time-use SD-JWT VCs (length =
+   * effective batch size; `[credential]` when 1). Each has a distinct
+   * `credential_id` and is independently revocable.
+   * @type {Array<string>}
+   * @memberof IssueCredentialResponse
+   */
+  credentials: Array<string>
   /**
    *
    * @type {string}
    * @memberof IssueCredentialResponse
    */
   error?: string | null
+  /**
+   * Holder-only personhood secret (32-byte hex), HKDF-derived from
+   * the issuer's salt + the provider's stable subject identifier.
+   * Used as the private witness for `attestUniquePersonhood`.
+   * MUST be stored client-side wrapped by the passkey PRF and
+   * NEVER sent to a verifier — disclosing it breaks the
+   * per-(epoch, app) collision property.
+   * @type {string}
+   * @memberof IssueCredentialResponse
+   */
+  personhoodSecretHex?: string | null
   /**
    *
    * @type {boolean}
@@ -44,6 +64,7 @@ export interface IssueCredentialResponse {
  */
 export function instanceOfIssueCredentialResponse(value: object): value is IssueCredentialResponse {
   if (!('credential' in value) || value['credential'] === undefined) return false
+  if (!('credentials' in value) || value['credentials'] === undefined) return false
   if (!('success' in value) || value['success'] === undefined) return false
   return true
 }
@@ -61,7 +82,10 @@ export function IssueCredentialResponseFromJSONTyped(
   }
   return {
     credential: json['credential'],
+    credentials: json['credentials'],
     error: json['error'] == null ? undefined : json['error'],
+    personhoodSecretHex:
+      json['personhoodSecretHex'] == null ? undefined : json['personhoodSecretHex'],
     success: json['success'],
   }
 }
@@ -80,7 +104,9 @@ export function IssueCredentialResponseToJSONTyped(
 
   return {
     credential: value['credential'],
+    credentials: value['credentials'],
     error: value['error'],
+    personhoodSecretHex: value['personhoodSecretHex'],
     success: value['success'],
   }
 }

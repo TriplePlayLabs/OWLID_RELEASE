@@ -96,9 +96,7 @@ impl IntoResponse for SessionAuthError {
                 StatusCode::UNAUTHORIZED,
                 "Session bearer token mismatch".to_string(),
             ),
-            SessionAuthError::NotFound => {
-                (StatusCode::NOT_FOUND, "Session not found".to_string())
-            }
+            SessionAuthError::NotFound => (StatusCode::NOT_FOUND, "Session not found".to_string()),
         };
         (status, axum::Json(serde_json::json!({ "error": message }))).into_response()
     }

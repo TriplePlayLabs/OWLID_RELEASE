@@ -23,7 +23,8 @@ keys, troubleshooting), see [`RUNBOOK.md`](./RUNBOOK.md).
 | Postgres (issuer)    | 5433 | owlid-postgres-issuer       | Issuer DB                               |
 | Midnight node        | 9944 | owlid-midnight-node         | Substrate devnet (`CFG_PRESET=dev`)     |
 | Midnight indexer     | 8088 | owlid-midnight-indexer      | GraphQL chain indexer                   |
-| Proof server         | 6300 | owlid-proof-server          | ZK SNARK proving                        |
+| Proof server         | 6300 | owlid-proof-server          | ZK SNARK proving (sidecar + opt-in)     |
+| Proof server proxy   | 6301 | owlid-proof-server-proxy    | Browser CORS front (opt-in profile)     |
 | Prometheus           | 9090 | owlid-prometheus            | Metrics scraper                         |
 | Grafana              | 3001 | owlid-grafana               | Dashboards                              |
 
@@ -110,9 +111,48 @@ just compact-clean      # rm managed/
 just deploy-contracts
 ```
 
-Writes addresses into `.env` (vars: `MIDNIGHT_ISSUER_REGISTRY_ADDRESS`,
-`MIDNIGHT_REVOCATION_REGISTRY_ADDRESS`, `MIDNIGHT_IDENTITY_REGISTRY_ADDRESS`,
-`MIDNIGHT_OWNER_SECRET_KEY`).
+Writes addresses into `.env` — the three registries
+(`MIDNIGHT_ISSUER_REGISTRY_ADDRESS`, `MIDNIGHT_REVOCATION_REGISTRY_ADDRESS`,
+`MIDNIGHT_IDENTITY_REGISTRY_ADDRESS`) plus one per predicate kind
+(`MIDNIGHT_PREDICATE_{AGE,KYC,RESIDENCY,EMAIL,NATIONALITY,AGE_RANGE,PERSONHOOD}_ADDRESS`)
+and `MIDNIGHT_OWNER_SECRET_KEY`.
+
+Deploys ten Compact contracts, all via `MIDNIGHT_PROOF_SERVER_URI`
+(the docker proof server). Holder predicate proving defaults to in-process
+(zkir-v2 WASM) and needs no proof server; holders can opt into a hosted
+proof server from the app's `/settings` page (see "Holder Proving Backend"
+below). Midnight is a hard runtime requirement — both verification-service
+and issuer-service exit 1 on startup if the sidecar is unreachable. See the
+Midnight section of [`ARCHITECTURE.md`](./ARCHITECTURE.md) and
+[`MIDNIGHT.md`](./MIDNIGHT.md).
+
+### Holder Proving Backend (WASM vs hosted proof server)
+
+The holder app picks one of two providers at runtime:
+
+- **WASM (default)** — `@midnight-ntwrk/zkir-v2` runs the prover inside the
+  browser tab. The private witness never crosses the device boundary. Slower
+  on low-end devices because the proving keys load into WASM memory once
+  per session.
+- **Hosted proof server** — the SDK forwards the unproven preimage to a
+  remote `midnightntwrk/proof-server` instance via
+  `@midnight-ntwrk/midnight-js-http-client-proof-provider`. The witness is
+  already consumed by `createUnprovenCallTx` before this point, so only the
+  preimage and the resulting proof cross the network.
+
+Holders toggle this from `/settings` → Proving. The operator sets
+`OWLID_PROOF_SERVER_URL` (Cloud Run) / `VITE_PROOF_SERVER_URL` (Vite build)
+to suggest a default endpoint; the input box is pre-populated with it.
+
+For browser CORS the production proof server runs behind a tiny Caddy
+proxy (`Dockerfile.proof-server` + `docker/proof-server/Caddyfile`) that
+echoes `Access-Control-Allow-Origin` only for `*.owlid.app`, `*.sashoush.dev`,
+and `localhost`. Local dev can bring it up with:
+
+```bash
+docker compose -f docker-compose.midnight.yml --profile proof-proxy up
+# Proxy: http://localhost:6301  →  proof-server:6300
+```
 
 ---
 
@@ -173,8 +213,7 @@ Add `-v` to wipe Postgres + proof server SRS + Grafana volumes (irreversible).
 | ----------------------------- | ---------------------------------------------------------------- |
 | `VERIFICATION_DATABASE_URL`   | `postgres://owl:owl_dev@postgres-verification:5432/verification` |
 | `SERVER_HOST` / `SERVER_PORT` | `0.0.0.0` / `8000`                                               |
-| `MIDNIGHT_ENABLED`            | `true`                                                           |
-| `MIDNIGHT_SIDECAR_URL`        | `http://midnight-sidecar:3000`                                   |
+| `MIDNIGHT_SIDECAR_URL`        | `http://midnight-sidecar:3000` (required)                        |
 | `MIDNIGHT_SIDECAR_API_KEY`    | shared with sidecar                                              |
 | `ADMIN_JWT_SECRET`            | random per environment                                           |
 | `RATE_LIMIT_*`                | rate limit config                                                |
@@ -229,6 +268,7 @@ Configs live under `monitoring/`.
 | Midnight node | `:9944/health`                | none |
 | Indexer       | `:8088/api/v3/graphql` (POST) | none |
 | Proof server  | `:6300/version`               | none |
+| Proof proxy   | `:6301/version` (via Caddy)   | none |
 
 ---
 

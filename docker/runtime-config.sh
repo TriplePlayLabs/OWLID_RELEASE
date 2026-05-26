@@ -24,6 +24,13 @@ ISSUER_URL="${OWLID_ISSUER_URL:-${VITE_ISSUER_URL:-}}"
 API_KEY="${OWLID_API_KEY:-${VITE_API_KEY:-}}"
 WS_BASE_URL="${OWLID_WS_BASE_URL:-${VITE_WS_BASE_URL:-}}"
 
+case "$API_KEY" in
+  owlid_sk_*)
+    echo "refusing to write a secret OwlID API key into public runtime config" >&2
+    exit 1
+    ;;
+esac
+
 # JSON-escape: backslash, double-quote, control chars. Bare URLs are safe but
 # guard anyway so a stray quote in env doesn't break the script.
 escape() {

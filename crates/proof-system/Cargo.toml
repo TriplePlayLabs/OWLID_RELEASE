@@ -6,31 +6,15 @@ name              = "owl-proof-system"
 version.workspace = true
 
 [dependencies]
-base45.workspace     = true
-base64.workspace     = true
-chrono.workspace     = true
-ciborium.workspace   = true
-hex.workspace        = true
-hmac                 = "0.12"
-owl-crypto           = { path = "../crypto" }
-owl-zk-circuits      = { path = "../zk-circuits" }
-serde.workspace      = true
-serde_json.workspace = true
-sha2.workspace       = true
-thiserror.workspace  = true
-tracing.workspace    = true
-zstd                 = "0.13"
-
-[dev-dependencies]
-base45             = "3.2"
-brotli             = "8"
-ciborium           = "0.2"
-flate2             = "1.1"
-lz4_flex           = "0.11"
-proptest.workspace = true
-zstd               = "0.13"
-
-[[test]]
-harness = true
-name    = "compression_bench"
-path    = "benches/compression_bench.rs"
+base64.workspace          = true
+chrono.workspace          = true
+flate2                    = "1"
+hex.workspace             = true
+midnight-transient-crypto = "2.1.0"
+owl-crypto                = { path = "../crypto" }
+owl-zk-circuits           = { path = "../zk-circuits" }
+serde.workspace           = true
+serde_json.workspace      = true
+sha2.workspace            = true
+thiserror.workspace       = true
+tracing.workspace         = true

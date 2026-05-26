@@ -1,8 +1,8 @@
 import { Copy, Share2, ShieldCheck, X } from 'lucide-react'
-import { QRCodeSVG } from 'qrcode.react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import type { StoredProof } from '@owlid/sdk'
 import { Button } from '@owlid/ui/components/ui/button'
+import { OwlQrCode } from '~/components/identity/OwlQrCode'
 import { buildQrPayload, relativeTime } from '~/lib/proof-display'
 import { cn } from '@owlid/ui/lib/utils'
 
@@ -74,14 +74,11 @@ export function ProofQrDialog({ proof, onClose, onCopy, onShare }: ProofQrDialog
 
               {/* QR canvas */}
               <div className="px-5 pb-3">
-                <div className="relative rounded-xl bg-white p-5 flex items-center justify-center">
-                  <QRCodeSVG
-                    value={buildQrPayload(proof)}
-                    size={240}
-                    level="M"
-                    includeMargin={false}
-                  />
-                </div>
+                <OwlQrCode
+                  value={buildQrPayload(proof)}
+                  size={280}
+                  ariaLabel={`Proof QR: ${proof.claim}`}
+                />
                 <p className="mt-3 text-[11px] text-center text-muted-foreground/70 leading-relaxed">
                   Show this QR to the verifier. Bound to a one-shot challenge; expires per the
                   issuer's TTL.

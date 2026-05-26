@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * OwlID Verification Service
- * Token verification, trusted issuer management, and credential revocation
+ * SD-JWT VC presentation verification, trusted issuer management, and credential revocation
  *
  * The version of the OpenAPI document: 1.0.0
  *
@@ -13,6 +13,12 @@
  */
 
 import * as runtime from '../runtime.js'
+import type { MidnightInfoResponse } from '../models/index.js'
+import { MidnightInfoResponseFromJSON, MidnightInfoResponseToJSON } from '../models/index.js'
+
+export interface GetMidnightParamsRequest {
+  k: number
+}
 
 /**
  * MonitoringApi - interface
@@ -21,6 +27,45 @@ import * as runtime from '../runtime.js'
  * @interface MonitoringApiInterface
  */
 export interface MonitoringApiInterface {
+  /**
+   *
+   * @summary Midnight runtime config the browser/holder needs to bootstrap the in-process WASM prover + circuit-exec stack. Public — `networkId` is a deployment fact, not a secret. The SDK fetches this once per process and calls midnight-js `setNetworkId()` before the first predicate prove; otherwise `createUnprovenCallTx` aborts with \"Network ID has not been configured\".
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof MonitoringApiInterface
+   */
+  getMidnightInfoRaw(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<MidnightInfoResponse>>
+
+  /**
+   * Midnight runtime config the browser/holder needs to bootstrap the in-process WASM prover + circuit-exec stack. Public — `networkId` is a deployment fact, not a secret. The SDK fetches this once per process and calls midnight-js `setNetworkId()` before the first predicate prove; otherwise `createUnprovenCallTx` aborts with \"Network ID has not been configured\".
+   */
+  getMidnightInfo(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<MidnightInfoResponse>
+
+  /**
+   *
+   * @summary Proxy the size-keyed universal BLS SRS (`bls_midnight_2p{k}`) the in-process zkir-v2 prover needs. Mirrors the upstream filename pattern; bytes are content-addressed by `k` and immutable, so we hand the browser a long `Cache-Control` and let it pin the blob. Public — the SRS is public reference data.
+   * @param {number} k Power-of-two size class — wallet SDK calls with &#x60;k&#x60; in 12..18.
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof MonitoringApiInterface
+   */
+  getMidnightParamsRaw(
+    requestParameters: GetMidnightParamsRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<void>>
+
+  /**
+   * Proxy the size-keyed universal BLS SRS (`bls_midnight_2p{k}`) the in-process zkir-v2 prover needs. Mirrors the upstream filename pattern; bytes are content-addressed by `k` and immutable, so we hand the browser a long `Cache-Control` and let it pin the blob. Public — the SRS is public reference data.
+   */
+  getMidnightParams(
+    requestParameters: GetMidnightParamsRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<void>
+
   /**
    *
    * @summary Health check endpoint
@@ -42,6 +87,85 @@ export interface MonitoringApiInterface {
  *
  */
 export class MonitoringApi extends runtime.BaseAPI implements MonitoringApiInterface {
+  /**
+   * Midnight runtime config the browser/holder needs to bootstrap the in-process WASM prover + circuit-exec stack. Public — `networkId` is a deployment fact, not a secret. The SDK fetches this once per process and calls midnight-js `setNetworkId()` before the first predicate prove; otherwise `createUnprovenCallTx` aborts with \"Network ID has not been configured\".
+   */
+  async getMidnightInfoRaw(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<MidnightInfoResponse>> {
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    const response = await this.request(
+      {
+        path: `/midnight/info`,
+        method: 'GET',
+        headers: headerParameters,
+        query: queryParameters,
+      },
+      initOverrides,
+    )
+
+    return new runtime.JSONApiResponse(response, (jsonValue) =>
+      MidnightInfoResponseFromJSON(jsonValue),
+    )
+  }
+
+  /**
+   * Midnight runtime config the browser/holder needs to bootstrap the in-process WASM prover + circuit-exec stack. Public — `networkId` is a deployment fact, not a secret. The SDK fetches this once per process and calls midnight-js `setNetworkId()` before the first predicate prove; otherwise `createUnprovenCallTx` aborts with \"Network ID has not been configured\".
+   */
+  async getMidnightInfo(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<MidnightInfoResponse> {
+    const response = await this.getMidnightInfoRaw(initOverrides)
+    return await response.value()
+  }
+
+  /**
+   * Proxy the size-keyed universal BLS SRS (`bls_midnight_2p{k}`) the in-process zkir-v2 prover needs. Mirrors the upstream filename pattern; bytes are content-addressed by `k` and immutable, so we hand the browser a long `Cache-Control` and let it pin the blob. Public — the SRS is public reference data.
+   */
+  async getMidnightParamsRaw(
+    requestParameters: GetMidnightParamsRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<void>> {
+    if (requestParameters['k'] == null) {
+      throw new runtime.RequiredError(
+        'k',
+        'Required parameter "k" was null or undefined when calling getMidnightParams().',
+      )
+    }
+
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    const response = await this.request(
+      {
+        path: `/midnight/params/{k}`.replace(
+          `{${'k'}}`,
+          encodeURIComponent(String(requestParameters['k'])),
+        ),
+        method: 'GET',
+        headers: headerParameters,
+        query: queryParameters,
+      },
+      initOverrides,
+    )
+
+    return new runtime.VoidApiResponse(response)
+  }
+
+  /**
+   * Proxy the size-keyed universal BLS SRS (`bls_midnight_2p{k}`) the in-process zkir-v2 prover needs. Mirrors the upstream filename pattern; bytes are content-addressed by `k` and immutable, so we hand the browser a long `Cache-Control` and let it pin the blob. Public — the SRS is public reference data.
+   */
+  async getMidnightParams(
+    requestParameters: GetMidnightParamsRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<void> {
+    await this.getMidnightParamsRaw(requestParameters, initOverrides)
+  }
+
   /**
    * Health check endpoint
    */

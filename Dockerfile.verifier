@@ -1,22 +1,28 @@
 # Multi-stage build for OwlID Verifier App (static SPA)
 
-ARG NATIVE_SDK_IMAGE=europe-west1-docker.pkg.dev/owlid-491411/owlid/native-sdk-builder:latest
-FROM ${NATIVE_SDK_IMAGE} AS native-sdk
-
-FROM oven/bun:1 AS builder
+FROM oven/bun:1.3.14 AS builder
 WORKDIR /app
 
-COPY package.json bun.lock* ./
+# Node alongside Bun — `bun install` resolves the workspace; the
+# `vite build` runs under Node because vite-plugin-top-level-await
+# relies on Node's `Module.prototype.require`, absent in Bun.
+COPY --from=node:lts-slim /usr/local /usr/local
+
+# Every workspace manifest — so `bun install` resolves the full monorepo
+# dependency graph exactly as a local install does (transitive midnight
+# peers like @midnight-ntwrk/wallet-sdk-* need every manifest present).
+COPY package.json bun.lock* bunfig.toml ./
 COPY packages/verifier-app/package.json packages/verifier-app/
+COPY packages/app/package.json packages/app/
+COPY packages/admin/package.json packages/admin/
+COPY packages/docs-site/package.json packages/docs-site/
+COPY packages/midnight-sidecar/package.json packages/midnight-sidecar/
 COPY packages/sdk/package.json packages/sdk/
 COPY packages/verifier-client/package.json packages/verifier-client/
 COPY packages/issuer-client/package.json packages/issuer-client/
 COPY packages/admin-client/package.json packages/admin-client/
-COPY packages/native-sdk/package.json packages/native-sdk/
 COPY packages/config/package.json packages/config/
 COPY packages/ui/package.json packages/ui/
-
-COPY --from=native-sdk /native-sdk packages/native-sdk
 
 RUN bun install
 
@@ -39,7 +45,7 @@ RUN cd packages/config && bun run build \
     && cd ../issuer-client && bun run build \
     && cd ../admin-client && bun run build \
     && cd ../sdk && bun run build
-RUN cd packages/verifier-app && bun run build 2>&1
+RUN cd packages/verifier-app && npx --no-install vite build
 
 FROM nginx:alpine
 COPY --from=builder /app/packages/verifier-app/dist /usr/share/nginx/html

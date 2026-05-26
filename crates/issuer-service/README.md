@@ -18,24 +18,29 @@ The OpenAPI spec is the source of truth. The TypeScript clients in `packages/iss
 
 ## Routes
 
-| Method | Path                            | Tag         | Description                                  |
-| ------ | ------------------------------- | ----------- | -------------------------------------------- |
-| GET    | `/health`                       | info        | Liveness probe                               |
-| GET    | `/issuer-info`                  | info        | Returns issuer name + Ed25519 public key     |
-| GET    | `/providers`                    | providers   | List configured identity providers           |
-| POST   | `/sessions`                     | sessions    | Open a verification session                  |
-| GET    | `/sessions/{id}`                | sessions    | Read session state                           |
-| POST   | `/sessions/{id}/submit`         | sessions    | Submit identity (form-based providers)       |
-| GET    | `/sessions/{id}/claims`         | sessions    | Read verified identity claims                |
-| POST   | `/sessions/{id}/issue`          | credentials | Sign and return a credential (ProofDocument) |
-| POST   | `/sessions/{id}/auto-verify`    | sessions    | Mock provider shortcut                       |
-| POST   | `/sessions/{id}/complete`       | sessions    | Mark session complete (provider-driven)      |
-| POST   | `/callbacks/saml`               | callbacks   | SAML assertion callback                      |
-| POST   | `/callbacks/webhook/{provider}` | callbacks   | Provider webhook (Didit, etc.)               |
-| GET    | `/auth/login/{provider}`        | oidc        | OIDC authorize redirect                      |
-| GET    | `/auth/callback/{provider}`     | oidc        | OIDC token exchange + claim materialisation  |
-| GET    | `/auth/providers`               | oidc        | List configured OIDC providers               |
-| GET    | `/polling/{session_id}`         | polling     | Status polling for QR / webhook flows        |
+| Method | Path                                    | Tag         | Description                                   |
+| ------ | --------------------------------------- | ----------- | --------------------------------------------- |
+| GET    | `/health`                               | info        | Liveness probe                                |
+| GET    | `/issuer-info`                          | info        | Returns issuer name + Ed25519 public key      |
+| GET    | `/providers`                            | providers   | List configured identity providers            |
+| POST   | `/sessions`                             | sessions    | Open a verification session                   |
+| GET    | `/sessions/{id}`                        | sessions    | Read session state                            |
+| POST   | `/sessions/{id}/submit`                 | sessions    | Submit identity (form-based providers)        |
+| GET    | `/sessions/{id}/claims`                 | sessions    | Read verified identity claims                 |
+| POST   | `/sessions/{id}/issue`                  | credentials | Sign and return an SD-JWT VC credential       |
+| POST   | `/credential`                           | credentials | OpenID4VCI single / Batch credential endpoint |
+| POST   | `/token`                                | credentials | OpenID4VCI pre-authorized code → access token |
+| GET    | `/.well-known/openid-credential-issuer` | info        | OpenID4VCI issuer metadata                    |
+| GET    | `/.well-known/did.json`                 | info        | did:web document (CORS-public)                |
+| GET    | `/status/{id}`                          | status      | IETF Token Status List (`statuslist+jwt`)     |
+| POST   | `/sessions/{id}/auto-verify`            | sessions    | Mock provider shortcut                        |
+| POST   | `/sessions/{id}/complete`               | sessions    | Mark session complete (provider-driven)       |
+| POST   | `/callbacks/saml`                       | callbacks   | SAML assertion callback                       |
+| POST   | `/callbacks/webhook/{provider}`         | callbacks   | Provider webhook (Didit, etc.)                |
+| GET    | `/auth/login/{provider}`                | oidc        | OIDC authorize redirect                       |
+| GET    | `/auth/callback/{provider}`             | oidc        | OIDC token exchange + claim materialisation   |
+| GET    | `/auth/providers`                       | oidc        | List configured OIDC providers                |
+| GET    | `/polling/{session_id}`                 | polling     | Status polling for QR / webhook flows         |
 
 ---
 
@@ -57,9 +62,9 @@ sequenceDiagram
     Note over Svc,IdP: Provider drives auth (form, OIDC, SAML, or webhook)
     Svc->>IdP: verify
     IdP-->>Svc: claims
-    App->>Svc: POST /sessions/{id}/issue { ownerPublicKey }
-    Svc->>Svc: build Document<br/>sign Merkle root
-    Svc-->>App: ProofDocument JSON
+    App->>Svc: POST /sessions/{id}/issue { ownerPublicKey, keyAlgorithm }
+    Svc->>Svc: sign SD-JWT VC<br/>(JWT + per-claim disclosures + cnf + status)
+    Svc-->>App: { sdJwtVc, issuer (did:web), credentialId }
 ```
 
 ### Flow types
@@ -74,7 +79,7 @@ sequenceDiagram
 
 ### Issuance
 
-Once claims are verified, `POST /sessions/{id}/issue` builds a `Document` from the claims, signs the Merkle root with `ISSUER_PRIVATE_KEY`, and returns a `ProofDocument`. The holder stores it locally; the service does not retain a copy of the unhashed claims past the session TTL.
+Once claims are verified, `POST /sessions/{id}/issue` normalizes the claims into SD-JWT VC standard names (`given_name`, `family_name`, `birthdate`, `nationalities`, derived `age_over_NN`, `kyc_level`), signs an SD-JWT VC with `ISSUER_PRIVATE_KEY` (EdDSA), and returns `{ sdJwtVc, issuer, credentialId }`. The holder stores it locally; the service does not retain unhashed claim values past the session TTL.
 
 ```bash
 curl -X POST http://localhost:8001/sessions/<id>/issue \
@@ -85,7 +90,9 @@ curl -X POST http://localhost:8001/sessions/<id>/issue \
   }'
 ```
 
-`keyAlgorithm` accepts `p256` (WebAuthn / passkey holders) or `ed25519`. Owner public keys are hex-encoded SEC1 (P-256) or 32-byte raw (Ed25519).
+`keyAlgorithm` accepts `p256` (ES256 holder confirmation key) or `ed25519` (EdDSA holder confirmation key, default for wallet keys). Owner public keys are hex-encoded SEC1 (P-256) or 32-byte raw (Ed25519).
+
+For OpenID4VCI use `POST /credential` instead — same shape, with optional `batchSize: 1..=64` for Batch Credential issuance (multiple one-time-use credentials, each with a distinct `credential_id`, for multi-show unlinkability).
 
 ---
 
@@ -126,18 +133,22 @@ FOO_SCOPES=openid,profile,email                  # optional
 
 ## Configuration
 
-| Variable                             | Default                                              | Notes                                              |
-| ------------------------------------ | ---------------------------------------------------- | -------------------------------------------------- |
-| `ISSUER_DATABASE_URL`                | `postgres://owl:owl_dev@postgres-issuer:5432/issuer` | Required                                           |
-| `ISSUER_HOST`                        | `0.0.0.0`                                            |                                                    |
-| `ISSUER_PORT`                        | `8001`                                               |                                                    |
-| `ISSUER_PRIVATE_KEY`                 | (required for issuance)                              | 32-byte hex Ed25519 private key                    |
-| `APP_URL`                            | `http://localhost:5000`                              | Used as base for OIDC + webhook callback redirects |
-| `RUST_LOG`                           | `info`                                               |                                                    |
-| `MIDNIGHT_ENABLED`                   | `true`                                               | Auto-register the issuer on Midnight if true       |
-| `MIDNIGHT_AUTO_REGISTER_ISSUER`      | `false`                                              | Push issuer to on-chain registry on startup        |
-| `DIDIT_*`                            | (optional)                                           | See above                                          |
-| `OIDC_PROVIDERS` + per-provider vars | (optional)                                           | See above                                          |
+| Variable                             | Default                                              | Notes                                                     |
+| ------------------------------------ | ---------------------------------------------------- | --------------------------------------------------------- |
+| `ISSUER_DATABASE_URL`                | `postgres://owl:owl_dev@postgres-issuer:5432/issuer` | Required                                                  |
+| `ISSUER_HOST`                        | `0.0.0.0`                                            |                                                           |
+| `ISSUER_PORT`                        | `8001`                                               |                                                           |
+| `ISSUER_PRIVATE_KEY`                 | (required for issuance)                              | 32-byte hex Ed25519 private key                           |
+| `VERIFICATION_SERVICE_URL`           | `http://localhost:8000`                              | Verification service URL for trusted-issuer registration  |
+| `VERIFICATION_ADMIN_API_KEY`         | `API_KEY_DEV` if set                                 | Admin/service key used to register this issuer as trusted |
+| `APP_URL`                            | `http://localhost:5000`                              | Used as base for OIDC + webhook callback redirects        |
+| `RUST_LOG`                           | `info`                                               |                                                           |
+| `MIDNIGHT_SIDECAR_URL`               | `http://midnight-sidecar:3000`                       | Sidecar URL (required; service exits 1 if unreachable)    |
+| `MIDNIGHT_SIDECAR_API_KEY`           | (required)                                           | Shared secret with sidecar                                |
+| `MIDNIGHT_SIDECAR_TIMEOUT`           | `120`                                                | Per-request timeout in seconds                            |
+| `MIDNIGHT_AUTO_REGISTER_ISSUER`      | `false`                                              | Push issuer to on-chain registry on startup               |
+| `DIDIT_*`                            | (optional)                                           | See above                                                 |
+| `OIDC_PROVIDERS` + per-provider vars | (optional)                                           | See above                                                 |
 
 Full env reference: see `.env.example` at the repo root.
 

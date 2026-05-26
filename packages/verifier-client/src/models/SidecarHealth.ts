@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * OwlID Verification Service
- * Token verification, trusted issuer management, and credential revocation
+ * SD-JWT VC presentation verification, trusted issuer management, and credential revocation
  *
  * The version of the OpenAPI document: 1.0.0
  *
@@ -26,7 +26,7 @@ export interface SidecarHealth {
    */
   connected?: boolean | null
   /**
-   * Error message when reachable=false. Generic — no internal stack.
+   * Error message when `reachable` is false. Generic — no internal stack.
    * @type {string}
    * @memberof SidecarHealth
    */

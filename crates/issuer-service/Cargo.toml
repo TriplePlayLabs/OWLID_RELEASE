@@ -31,6 +31,7 @@ async-trait = "0.1"
 
 # Cryptographic libraries for webhook verification
 base64 = "0.22"
+hkdf   = "0.12"
 hmac   = "0.12"
 sha2   = "0.10"
 
@@ -69,3 +70,7 @@ owl-crypto           = { path = "../crypto" }
 serde_json.workspace = true
 tokio                = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid                 = { workspace = true, features = ["v4"] }
+
+[features]
+# Optional SQLite test backend for `IdpDatabase` (gated; see `database::sqlite`).
+sqlite = []

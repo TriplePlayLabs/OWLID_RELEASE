@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
-import { ScanSearch, CheckCircle2, XCircle } from 'lucide-react'
+import { ScanSearch, CheckCircle2, XCircle, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 
 import {
@@ -17,6 +17,7 @@ import { Label } from '@owlid/ui/components/ui/label'
 import { Badge } from '@owlid/ui/components/ui/badge'
 import { useVerifyToken } from '~/hooks/use-verification'
 import type { VerifyResponse } from '@owlid/verifier-client'
+import { PageHeader } from '~/components/PageHeader'
 
 export const Route = createFileRoute('/verify')({
   component: VerifyPage,
@@ -29,11 +30,11 @@ function VerifyPage() {
 
   function handleVerify() {
     if (!tokenStr.trim()) {
-      toast.error('Paste a token to verify')
+      toast.error('Paste an SD-JWT VC presentation to verify')
       return
     }
     verify.mutate(
-      { token: tokenStr.trim(), challenge },
+      { presentation: tokenStr.trim(), challenge },
       { onError: (err) => toast.error(err.message) },
     )
   }
@@ -42,12 +43,10 @@ function VerifyPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Verify Token</h1>
-        <p className="text-muted-foreground">
-          Verify a proof token against the verification service
-        </p>
-      </div>
+      <PageHeader
+        title="Verify Token"
+        description="Verify an SD-JWT VC presentation against the verification service"
+      />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
@@ -55,7 +54,7 @@ function VerifyPage() {
             <CardTitle className="flex items-center gap-2">
               <ScanSearch className="h-5 w-5" /> Token Input
             </CardTitle>
-            <CardDescription>Paste a compact proof token</CardDescription>
+            <CardDescription>Paste a compact SD-JWT VC presentation</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-2">
@@ -71,23 +70,28 @@ function VerifyPage() {
                   variant="outline"
                   size="sm"
                   onClick={() => setChallenge(crypto.randomUUID())}
+                  aria-label="Generate new challenge"
                 >
-                  New
+                  <RefreshCw className="h-4 w-4" />
                 </Button>
               </div>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="token">Token</Label>
+              <Label htmlFor="token">Presentation</Label>
               <Textarea
                 id="token"
-                className="font-mono text-xs min-h-[200px]"
-                placeholder="Paste the compact token string here"
+                className="font-mono text-xs min-h-[220px]"
+                placeholder="Paste the compact presentation string here"
                 value={tokenStr}
                 onChange={(e) => setTokenStr(e.target.value)}
               />
             </div>
-            <Button onClick={handleVerify} disabled={verify.isPending} className="w-full">
-              {verify.isPending ? 'Verifying...' : 'Verify'}
+            <Button
+              onClick={handleVerify}
+              disabled={verify.isPending || !tokenStr.trim()}
+              className="w-full"
+            >
+              {verify.isPending ? 'Verifying…' : 'Verify'}
             </Button>
           </CardContent>
         </Card>
@@ -95,27 +99,27 @@ function VerifyPage() {
         <Card>
           <CardHeader>
             <CardTitle>Result</CardTitle>
+            <CardDescription>Verification outcome and disclosed claims</CardDescription>
           </CardHeader>
           <CardContent>
             {!result && !verify.isPending && (
-              <p className="text-muted-foreground text-sm">Submit a token to see the result</p>
+              <p className="text-muted-foreground text-sm">
+                Submit a presentation to see the result
+              </p>
             )}
-
-            {verify.isPending && <p className="text-muted-foreground text-sm">Verifying...</p>}
+            {verify.isPending && <p className="text-muted-foreground text-sm">Verifying…</p>}
 
             {result && (
               <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  {result.valid ? (
-                    <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-base px-3 py-1">
-                      <CheckCircle2 className="mr-2 h-4 w-4" /> Valid
-                    </Badge>
-                  ) : (
-                    <Badge variant="destructive" className="text-base px-3 py-1">
-                      <XCircle className="mr-2 h-4 w-4" /> Invalid
-                    </Badge>
-                  )}
-                </div>
+                {result.valid ? (
+                  <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-base px-3 py-1">
+                    <CheckCircle2 className="mr-2 h-4 w-4" /> Valid
+                  </Badge>
+                ) : (
+                  <Badge variant="destructive" className="text-base px-3 py-1">
+                    <XCircle className="mr-2 h-4 w-4" /> Invalid
+                  </Badge>
+                )}
 
                 {result.error && (
                   <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3">
@@ -123,22 +127,33 @@ function VerifyPage() {
                   </div>
                 )}
 
-                {result.subjects &&
-                  typeof result.subjects === 'object' &&
-                  Object.keys(result.subjects).length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-medium mb-2">Disclosed Subjects</h4>
-                      <div className="rounded-lg border bg-muted/50 p-3">
-                        <pre className="text-xs overflow-auto whitespace-pre-wrap">
-                          {JSON.stringify(result.subjects, null, 2)}
-                        </pre>
-                      </div>
-                    </div>
-                  )}
+                <SubjectsView subjects={result.subjects} />
               </div>
             )}
           </CardContent>
         </Card>
+      </div>
+    </div>
+  )
+}
+
+function SubjectsView({ subjects }: { subjects: unknown }) {
+  if (!subjects || typeof subjects !== 'object') return null
+  const entries = Object.entries(subjects as Record<string, unknown>)
+  if (entries.length === 0) return null
+
+  return (
+    <div>
+      <h4 className="text-sm font-medium mb-2">Disclosed Claims</h4>
+      <div className="rounded-lg border divide-y">
+        {entries.map(([key, value]) => (
+          <div key={key} className="flex items-start justify-between gap-4 px-3 py-2">
+            <span className="text-xs font-medium text-muted-foreground">{key}</span>
+            <span className="text-xs font-mono text-right break-all">
+              {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   )

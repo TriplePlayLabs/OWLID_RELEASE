@@ -1,0 +1,65 @@
+// OwlID predicate contract — age ∈ [public minAge, public maxAge].
+// Attestation key recipe matches `owl_proof_system::attestation::age_range_key`.
+
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+import "./lib/access/Ownable" prefix Ownable_;
+import "./lib/security/Pausable" prefix Pausable_;
+
+export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
+
+witness ageValue(): Uint<16>;
+
+export ledger attestations: Set<Bytes<32>>;
+export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
+export ledger attestCount: Counter;
+
+constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>) {
+  Ownable_initialize(initialOwner);
+}
+
+circuit keyOf(tag: Bytes<32>, dRootHash: Bytes<32>, dParam: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([tag, dRootHash, dParam]);
+}
+
+circuit record(key: Bytes<32>): [] {
+  if (!attestations.member(key)) {
+    attestations.insert(key);
+    attestTree.insert(key);
+    attestCount.increment(1);
+  }
+}
+
+export circuit attestAgeRange(
+  rootHash: Bytes<32>,
+  minAge: Uint<16>,
+  maxAge: Uint<16>
+): [] {
+  Pausable_assertNotPaused();
+  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
+  assert(minAge <= maxAge, "min must be <= max");
+  const age = ageValue();
+  assert(age >= minAge, "age below minimum");
+  assert(age <= maxAge, "age above maximum");
+  const minBytes = disclose(minAge) as Field as Bytes<32>;
+  const maxBytes = disclose(maxAge) as Field as Bytes<32>;
+  const param = persistentHash<Vector<2, Bytes<32>>>([minBytes, maxBytes]);
+  record(keyOf(
+    pad(32, "owlid:attest:agerng:"),
+    disclose(rootHash),
+    param
+  ));
+}
+
+export circuit isAttested(key: Bytes<32>): Boolean {
+  return attestations.member(disclose(key));
+}
+
+export circuit pause(): [] { Ownable_assertOnlyOwner(); Pausable__pause(); }
+export circuit unpause(): [] { Ownable_assertOnlyOwner(); Pausable__unpause(); }
+export circuit transferOwnership(newOwner: Either<ZswapCoinPublicKey, ContractAddress>): [] {
+  Ownable_transferOwnership(newOwner);
+}
+export circuit owner(): Either<ZswapCoinPublicKey, ContractAddress> { return Ownable_owner(); }
+export circuit isPaused(): Boolean { return Pausable_isPaused(); }

@@ -9,11 +9,11 @@
 //!   GET /zk/{contract}/zkir/{circuit_id}.bzkir
 
 use axum::{
+    Router,
     extract::Path,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
-    Router,
 };
 use std::path::PathBuf;
 

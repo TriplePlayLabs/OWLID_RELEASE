@@ -6,9 +6,9 @@
  */
 
 import { useEffect } from 'react'
-import { QRCodeSVG } from 'qrcode.react'
 import { Loader2, CheckCircle, XCircle, Smartphone, RefreshCw } from 'lucide-react'
 import type { SessionStatus } from '@owlid/sdk/issuer'
+import { OwlQrCode } from '~/components/identity/OwlQrCode'
 
 interface QrCodeDisplayProps {
   /** QR code data to display */
@@ -103,20 +103,12 @@ export function QrCodeDisplay({
     <div className="flex flex-col items-center space-y-4">
       {/* QR Code Container */}
       <div className="relative">
-        {/* QR Code */}
         <div
-          className={`bg-white p-4 rounded-lg shadow-md transition-opacity duration-200 ${
+          className={`transition-opacity duration-200 ${
             showOverlay ? 'opacity-30' : 'opacity-100'
           }`}
         >
-          <QRCodeSVG
-            value={qrData}
-            size={size}
-            level="M"
-            includeMargin={false}
-            bgColor="#ffffff"
-            fgColor="#000000"
-          />
+          <OwlQrCode value={qrData} size={size} ariaLabel="Session QR" />
         </div>
 
         {/* Status Overlay */}

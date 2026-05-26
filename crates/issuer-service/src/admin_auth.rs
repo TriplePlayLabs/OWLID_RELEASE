@@ -10,14 +10,15 @@
 //! mutation through. We intentionally keep the surface narrow — the issuer
 //! service does not mint sessions.
 
+#![allow(dead_code)] // intentional API surface / serde fields
 use axum::{
+    Json,
     extract::Request,
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
-    Json,
 };
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use serde::Deserialize;
 
 const ADMIN_COOKIE_NAME: &str = "owlid_admin_token";
@@ -112,15 +113,11 @@ pub enum AdminAuthError {
 impl IntoResponse for AdminAuthError {
     fn into_response(self) -> Response {
         let (status, msg) = match self {
-            AdminAuthError::MissingSession => {
-                (StatusCode::UNAUTHORIZED, "Missing admin session")
-            }
+            AdminAuthError::MissingSession => (StatusCode::UNAUTHORIZED, "Missing admin session"),
             AdminAuthError::InvalidSession => {
                 (StatusCode::UNAUTHORIZED, "Invalid or expired admin session")
             }
-            AdminAuthError::Forbidden => {
-                (StatusCode::FORBIDDEN, "Admin permission required")
-            }
+            AdminAuthError::Forbidden => (StatusCode::FORBIDDEN, "Admin permission required"),
         };
         (status, Json(serde_json::json!({"error": msg}))).into_response()
     }

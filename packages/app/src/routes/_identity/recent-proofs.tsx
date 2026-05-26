@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMemo, useState } from 'react'
-import { ArrowLeft, Search, ShieldCheck, Trash2 } from 'lucide-react'
+import { Search, ShieldCheck, Trash2 } from 'lucide-react'
+import { BackLink } from '~/components/BackLink'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { proofStorage, type StoredProof } from '@owlid/sdk'
@@ -97,32 +98,24 @@ function RecentProofsPage() {
 
   return (
     <div className="w-full max-w-3xl mx-auto px-4 pt-6 md:pt-10 pb-16">
-      <div className="flex items-center justify-between gap-3 mb-6">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="-ml-2 text-muted-foreground hover:text-foreground"
-          onClick={() => navigate({ to: '/passport' })}
-        >
-          <ArrowLeft className="w-4 h-4 mr-2" /> Passport
-        </Button>
+      <BackLink to="/wallet" />
+      <header className="flex items-start justify-between gap-3 mb-6">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">Recent proofs</h1>
+          <p className="text-sm text-muted-foreground">
+            Cryptographic proofs minted on this device. Tap a row for QR, copy, or share.
+          </p>
+        </div>
         {items.length > 0 && (
           <Button
             variant="ghost"
             size="sm"
-            className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+            className="shrink-0 text-red-400 hover:text-red-300 hover:bg-red-500/10"
             onClick={handleClearAll}
           >
             <Trash2 className="w-4 h-4 mr-2" /> Clear all
           </Button>
         )}
-      </div>
-
-      <header className="space-y-1 mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Recent proofs</h1>
-        <p className="text-sm text-muted-foreground">
-          Cryptographic proofs minted on this device. Tap a row for QR, copy, or share.
-        </p>
       </header>
 
       {items.length > 0 && (
@@ -161,16 +154,16 @@ function RecentProofsPage() {
           </div>
           <p className="text-sm font-medium">No proofs yet</p>
           <p className="text-xs text-muted-foreground mt-1 max-w-xs">
-            Generate a proof from your passport. It will appear here so you can resend it without
-            re-authenticating.
+            Generate a proof from a credential in your wallet. It will appear here so you can resend
+            it without re-authenticating.
           </p>
           <Button
             variant="secondary"
             size="sm"
             className="mt-4"
-            onClick={() => navigate({ to: '/passport' })}
+            onClick={() => navigate({ to: '/wallet' })}
           >
-            Go to passport
+            Go to wallet
           </Button>
         </div>
       )}

@@ -2,6 +2,8 @@
 
 Zero-knowledge predicate circuits for OwlID. Groth16 proving system over the BLS12-381 curve via `arkworks`.
 
+These circuits are **issuer-side** compute (and historically holder-device attestation feeding the Midnight per-kind predicate contracts). The verifier reads results as standard SD-JWT VC claims (`age_over_NN`, `kyc_level`, `nationalities`) — it does not run a Groth16 verifier on the hot path.
+
 ## Circuits
 
 | Module        | Predicate          | Use case                                                      |
@@ -22,8 +24,6 @@ Proving + verifying keys are derived once per circuit on first use, cached behin
 
 ## Usage
 
-The circuits are normally driven from `owl-proof-system::zk` rather than directly. If you need to call them at the circuit level:
-
 ```rust
 use owl_zk_circuits::age_range;
 
@@ -32,7 +32,7 @@ let proof = age_range::prove(/* witness */ 1990, /* threshold */ 2008)?;
 let ok = age_range::verify(&proof, /* threshold */ 2008)?;
 ```
 
-See `crates/proof-system/src/zk.rs` for the production wrapper that routes proof requests to the right circuit and packages the proof bytes into a `Token`.
+Predicate canonical encoding + the on-chain attestation key derivation live in `crates/proof-system/src/{predicates,attestation,predicate_attestation}.rs`. The verifier recomputes the attestation key from the credential's issuer-signed claims and checks set membership against the SSE-mirrored projection of the per-kind Midnight predicate contracts.
 
 ## Tests
 

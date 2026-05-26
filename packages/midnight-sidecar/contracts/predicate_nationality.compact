@@ -1,0 +1,79 @@
+// OwlID predicate contract — nationality-in-witness-Merkle-set with per-verifier salting.
+//
+// Mirror of `predicate_residency.compact` — different witness
+// (`nationalityCode` vs `residentCountry`) and different domain tag.
+// See `predicate_residency.compact` for the design rationale.
+
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+import "./lib/access/Ownable" prefix Ownable_;
+import "./lib/security/Pausable" prefix Pausable_;
+
+export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
+
+witness nationalityCode(): Bytes<32>;
+witness verifierIdHash(): Bytes<32>;
+witness allowedCountryPath(): MerkleTreePath<8, Bytes<32>>;
+
+export ledger attestations: Set<Bytes<32>>;
+export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
+export ledger attestCount: Counter;
+
+constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>) {
+  Ownable_initialize(initialOwner);
+}
+
+circuit keyOf(tag: Bytes<32>, dRootHash: Bytes<32>, dParam: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([tag, dRootHash, dParam]);
+}
+
+circuit record(key: Bytes<32>): [] {
+  if (!attestations.member(key)) {
+    attestations.insert(key);
+    attestTree.insert(key);
+    attestCount.increment(1);
+  }
+}
+
+export circuit attestNationalityIn(
+  rootHash: Bytes<32>,
+  setHash:  Bytes<32>
+): [] {
+  Pausable_assertNotPaused();
+  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
+  assert(setHash  != pad(32, "") as Bytes<32>, "zero setHash");
+
+  const country = nationalityCode();
+  const vId     = verifierIdHash();
+  const path    = allowedCountryPath();
+
+  assert(country != pad(32, "") as Bytes<32>, "no nationality in credential");
+  assert(vId     != pad(32, "") as Bytes<32>, "missing verifierIdHash");
+  assert(path.leaf == country, "merkle path leaf != nationality");
+
+  const rootDigest = merkleTreePathRoot<8, Bytes<32>>(path);
+
+  const computed = persistentHash<Vector<2, Bytes<32>>>(
+    [disclose(vId), disclose(rootDigest.field) as Bytes<32>]
+  );
+  assert(setHash == computed, "setHash mismatch");
+
+  record(keyOf(
+    pad(32, "owlid:attest:nat:"),
+    disclose(rootHash),
+    disclose(setHash)
+  ));
+}
+
+export circuit isAttested(key: Bytes<32>): Boolean {
+  return attestations.member(disclose(key));
+}
+
+export circuit pause(): [] { Ownable_assertOnlyOwner(); Pausable__pause(); }
+export circuit unpause(): [] { Ownable_assertOnlyOwner(); Pausable__unpause(); }
+export circuit transferOwnership(newOwner: Either<ZswapCoinPublicKey, ContractAddress>): [] {
+  Ownable_transferOwnership(newOwner);
+}
+export circuit owner(): Either<ZswapCoinPublicKey, ContractAddress> { return Ownable_owner(); }
+export circuit isPaused(): Boolean { return Pausable_isPaused(); }

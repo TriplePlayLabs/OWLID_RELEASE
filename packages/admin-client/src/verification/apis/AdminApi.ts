@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * OwlID Verification Service
- * Token verification, trusted issuer management, and credential revocation
+ * SD-JWT VC presentation verification, trusted issuer management, and credential revocation
  *
  * The version of the OpenAPI document: 1.0.0
  *
@@ -14,31 +14,51 @@
 
 import * as runtime from '../runtime.js'
 import type {
+  AdminUserInfo,
   ApiKeyInfo,
+  AuditEventInfo,
+  CreateAdminUserRequest,
   CreateApiKeyRequest,
   CreateApiKeyResponse,
   MidnightStatus,
-  ToggleResponse,
 } from '../models/index.js'
 import {
+  AdminUserInfoFromJSON,
+  AdminUserInfoToJSON,
   ApiKeyInfoFromJSON,
   ApiKeyInfoToJSON,
+  AuditEventInfoFromJSON,
+  AuditEventInfoToJSON,
+  CreateAdminUserRequestFromJSON,
+  CreateAdminUserRequestToJSON,
   CreateApiKeyRequestFromJSON,
   CreateApiKeyRequestToJSON,
   CreateApiKeyResponseFromJSON,
   CreateApiKeyResponseToJSON,
   MidnightStatusFromJSON,
   MidnightStatusToJSON,
-  ToggleResponseFromJSON,
-  ToggleResponseToJSON,
 } from '../models/index.js'
+
+export interface CreateAdminUserOperationRequest {
+  createAdminUserRequest: CreateAdminUserRequest
+}
 
 export interface CreateApiKeyOperationRequest {
   createApiKeyRequest: CreateApiKeyRequest
 }
 
+export interface DeactivateAdminUserRequest {
+  id: string
+}
+
 export interface DeactivateApiKeyRequest {
   id: string
+}
+
+export interface ListAuditEventsRequest {
+  limit?: number | null
+  entityType?: string | null
+  eventType?: string | null
 }
 
 /**
@@ -48,6 +68,27 @@ export interface DeactivateApiKeyRequest {
  * @interface AdminApiInterface
  */
 export interface AdminApiInterface {
+  /**
+   *
+   * @summary Create a new admin dashboard account. The new account holds the same full operator surface as every other admin until per-user permissions land.
+   * @param {CreateAdminUserRequest} createAdminUserRequest
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof AdminApiInterface
+   */
+  createAdminUserRaw(
+    requestParameters: CreateAdminUserOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<AdminUserInfo>>
+
+  /**
+   * Create a new admin dashboard account. The new account holds the same full operator surface as every other admin until per-user permissions land.
+   */
+  createAdminUser(
+    requestParameters: CreateAdminUserOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<AdminUserInfo>
+
   /**
    *
    * @summary Create a new API key
@@ -68,6 +109,27 @@ export interface AdminApiInterface {
     requestParameters: CreateApiKeyOperationRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<CreateApiKeyResponse>
+
+  /**
+   *
+   * @summary Deactivate an admin account. Refuses to deactivate the caller\'s own account or the last remaining active account, so the dashboard can never be locked out.
+   * @param {string} id Admin user UUID
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof AdminApiInterface
+   */
+  deactivateAdminUserRaw(
+    requestParameters: DeactivateAdminUserRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<void>>
+
+  /**
+   * Deactivate an admin account. Refuses to deactivate the caller\'s own account or the last remaining active account, so the dashboard can never be locked out.
+   */
+  deactivateAdminUser(
+    requestParameters: DeactivateAdminUserRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<void>
 
   /**
    *
@@ -92,42 +154,6 @@ export interface AdminApiInterface {
 
   /**
    *
-   * @summary Disable the Midnight integration.
-   * @param {*} [options] Override http request option.
-   * @throws {RequiredError}
-   * @memberof AdminApiInterface
-   */
-  disableMidnightRaw(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<runtime.ApiResponse<ToggleResponse>>
-
-  /**
-   * Disable the Midnight integration.
-   */
-  disableMidnight(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<ToggleResponse>
-
-  /**
-   *
-   * @summary Enable the Midnight integration.
-   * @param {*} [options] Override http request option.
-   * @throws {RequiredError}
-   * @memberof AdminApiInterface
-   */
-  enableMidnightRaw(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<runtime.ApiResponse<ToggleResponse>>
-
-  /**
-   * Enable the Midnight integration.
-   */
-  enableMidnight(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<ToggleResponse>
-
-  /**
-   *
    * @summary Get current status of the Midnight integration.
    * @param {*} [options] Override http request option.
    * @throws {RequiredError}
@@ -146,6 +172,24 @@ export interface AdminApiInterface {
 
   /**
    *
+   * @summary List admin dashboard accounts.
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof AdminApiInterface
+   */
+  listAdminUsersRaw(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<Array<AdminUserInfo>>>
+
+  /**
+   * List admin dashboard accounts.
+   */
+  listAdminUsers(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<Array<AdminUserInfo>>
+
+  /**
+   *
    * @summary List all API keys
    * @param {*} [options] Override http request option.
    * @throws {RequiredError}
@@ -161,12 +205,80 @@ export interface AdminApiInterface {
   listApiKeys(
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<Array<ApiKeyInfo>>
+
+  /**
+   *
+   * @summary List recent audit events, newest first.
+   * @param {number} [limit] Max rows to return. Clamped to [1, 500]; defaults to 100.
+   * @param {string} [entityType] Filter to a single entity type (&#x60;issuer&#x60;, &#x60;revocation&#x60;, &#x60;api_key&#x60;, …).
+   * @param {string} [eventType] Filter to a single event type (&#x60;credential_revoked&#x60;, …).
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof AdminApiInterface
+   */
+  listAuditEventsRaw(
+    requestParameters: ListAuditEventsRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<Array<AuditEventInfo>>>
+
+  /**
+   * List recent audit events, newest first.
+   */
+  listAuditEvents(
+    requestParameters: ListAuditEventsRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<Array<AuditEventInfo>>
 }
 
 /**
  *
  */
 export class AdminApi extends runtime.BaseAPI implements AdminApiInterface {
+  /**
+   * Create a new admin dashboard account. The new account holds the same full operator surface as every other admin until per-user permissions land.
+   */
+  async createAdminUserRaw(
+    requestParameters: CreateAdminUserOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<AdminUserInfo>> {
+    if (requestParameters['createAdminUserRequest'] == null) {
+      throw new runtime.RequiredError(
+        'createAdminUserRequest',
+        'Required parameter "createAdminUserRequest" was null or undefined when calling createAdminUser().',
+      )
+    }
+
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    headerParameters['Content-Type'] = 'application/json'
+
+    const response = await this.request(
+      {
+        path: `/admin/users`,
+        method: 'POST',
+        headers: headerParameters,
+        query: queryParameters,
+        body: CreateAdminUserRequestToJSON(requestParameters['createAdminUserRequest']),
+      },
+      initOverrides,
+    )
+
+    return new runtime.JSONApiResponse(response, (jsonValue) => AdminUserInfoFromJSON(jsonValue))
+  }
+
+  /**
+   * Create a new admin dashboard account. The new account holds the same full operator surface as every other admin until per-user permissions land.
+   */
+  async createAdminUser(
+    requestParameters: CreateAdminUserOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<AdminUserInfo> {
+    const response = await this.createAdminUserRaw(requestParameters, initOverrides)
+    return await response.value()
+  }
+
   /**
    * Create a new API key
    */
@@ -215,6 +327,50 @@ export class AdminApi extends runtime.BaseAPI implements AdminApiInterface {
   }
 
   /**
+   * Deactivate an admin account. Refuses to deactivate the caller\'s own account or the last remaining active account, so the dashboard can never be locked out.
+   */
+  async deactivateAdminUserRaw(
+    requestParameters: DeactivateAdminUserRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<void>> {
+    if (requestParameters['id'] == null) {
+      throw new runtime.RequiredError(
+        'id',
+        'Required parameter "id" was null or undefined when calling deactivateAdminUser().',
+      )
+    }
+
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    const response = await this.request(
+      {
+        path: `/admin/users/{id}`.replace(
+          `{${'id'}}`,
+          encodeURIComponent(String(requestParameters['id'])),
+        ),
+        method: 'DELETE',
+        headers: headerParameters,
+        query: queryParameters,
+      },
+      initOverrides,
+    )
+
+    return new runtime.VoidApiResponse(response)
+  }
+
+  /**
+   * Deactivate an admin account. Refuses to deactivate the caller\'s own account or the last remaining active account, so the dashboard can never be locked out.
+   */
+  async deactivateAdminUser(
+    requestParameters: DeactivateAdminUserRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<void> {
+    await this.deactivateAdminUserRaw(requestParameters, initOverrides)
+  }
+
+  /**
    * Deactivate an API key
    */
   async deactivateApiKeyRaw(
@@ -259,72 +415,6 @@ export class AdminApi extends runtime.BaseAPI implements AdminApiInterface {
   }
 
   /**
-   * Disable the Midnight integration.
-   */
-  async disableMidnightRaw(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<runtime.ApiResponse<ToggleResponse>> {
-    const queryParameters: any = {}
-
-    const headerParameters: runtime.HTTPHeaders = {}
-
-    const response = await this.request(
-      {
-        path: `/admin/midnight/disable`,
-        method: 'POST',
-        headers: headerParameters,
-        query: queryParameters,
-      },
-      initOverrides,
-    )
-
-    return new runtime.JSONApiResponse(response, (jsonValue) => ToggleResponseFromJSON(jsonValue))
-  }
-
-  /**
-   * Disable the Midnight integration.
-   */
-  async disableMidnight(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<ToggleResponse> {
-    const response = await this.disableMidnightRaw(initOverrides)
-    return await response.value()
-  }
-
-  /**
-   * Enable the Midnight integration.
-   */
-  async enableMidnightRaw(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<runtime.ApiResponse<ToggleResponse>> {
-    const queryParameters: any = {}
-
-    const headerParameters: runtime.HTTPHeaders = {}
-
-    const response = await this.request(
-      {
-        path: `/admin/midnight/enable`,
-        method: 'POST',
-        headers: headerParameters,
-        query: queryParameters,
-      },
-      initOverrides,
-    )
-
-    return new runtime.JSONApiResponse(response, (jsonValue) => ToggleResponseFromJSON(jsonValue))
-  }
-
-  /**
-   * Enable the Midnight integration.
-   */
-  async enableMidnight(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<ToggleResponse> {
-    const response = await this.enableMidnightRaw(initOverrides)
-    return await response.value()
-  }
-
-  /**
    * Get current status of the Midnight integration.
    */
   async getMidnightStatusRaw(
@@ -358,6 +448,41 @@ export class AdminApi extends runtime.BaseAPI implements AdminApiInterface {
   }
 
   /**
+   * List admin dashboard accounts.
+   */
+  async listAdminUsersRaw(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<Array<AdminUserInfo>>> {
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    const response = await this.request(
+      {
+        path: `/admin/users`,
+        method: 'GET',
+        headers: headerParameters,
+        query: queryParameters,
+      },
+      initOverrides,
+    )
+
+    return new runtime.JSONApiResponse(response, (jsonValue) =>
+      jsonValue.map(AdminUserInfoFromJSON),
+    )
+  }
+
+  /**
+   * List admin dashboard accounts.
+   */
+  async listAdminUsers(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<Array<AdminUserInfo>> {
+    const response = await this.listAdminUsersRaw(initOverrides)
+    return await response.value()
+  }
+
+  /**
    * List all API keys
    */
   async listApiKeysRaw(
@@ -387,6 +512,55 @@ export class AdminApi extends runtime.BaseAPI implements AdminApiInterface {
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<Array<ApiKeyInfo>> {
     const response = await this.listApiKeysRaw(initOverrides)
+    return await response.value()
+  }
+
+  /**
+   * List recent audit events, newest first.
+   */
+  async listAuditEventsRaw(
+    requestParameters: ListAuditEventsRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<Array<AuditEventInfo>>> {
+    const queryParameters: any = {}
+
+    if (requestParameters['limit'] != null) {
+      queryParameters['limit'] = requestParameters['limit']
+    }
+
+    if (requestParameters['entityType'] != null) {
+      queryParameters['entityType'] = requestParameters['entityType']
+    }
+
+    if (requestParameters['eventType'] != null) {
+      queryParameters['eventType'] = requestParameters['eventType']
+    }
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    const response = await this.request(
+      {
+        path: `/admin/audit-events`,
+        method: 'GET',
+        headers: headerParameters,
+        query: queryParameters,
+      },
+      initOverrides,
+    )
+
+    return new runtime.JSONApiResponse(response, (jsonValue) =>
+      jsonValue.map(AuditEventInfoFromJSON),
+    )
+  }
+
+  /**
+   * List recent audit events, newest first.
+   */
+  async listAuditEvents(
+    requestParameters: ListAuditEventsRequest = {},
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<Array<AuditEventInfo>> {
+    const response = await this.listAuditEventsRaw(requestParameters, initOverrides)
     return await response.value()
   }
 }

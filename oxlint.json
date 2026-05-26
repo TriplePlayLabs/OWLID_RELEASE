@@ -8,7 +8,15 @@
     "prefer-const": "error",
     "no-debugger": "warn"
   },
-  "ignorePatterns": ["node_modules", "dist", ".output", "target", "*.gen.ts", "*.d.ts"],
+  "ignorePatterns": [
+    "node_modules",
+    "dist",
+    ".output",
+    "target",
+    "*.gen.ts",
+    "*.d.ts",
+    "**/midnight/contracts/**/index.js"
+  ],
   "overrides": [
     {
       "files": ["**/*.test.ts", "**/*.spec.ts", "__test__/**"],

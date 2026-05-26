@@ -12,14 +12,6 @@ const config = defineConfig({
   server: {
     allowedHosts: ['.trycloudflare.com', '.sashoush.dev'],
   },
-  ssr: {
-    external: [
-      '@owlid/native-sdk',
-      '@owlid/native-sdk-wasm32-wasi',
-      '@owlid/native-sdk-linux-x64-gnu',
-      '@napi-rs/wasm-runtime',
-    ],
-  },
   plugins: [
     devtools(),
     nitroV2Plugin(),

@@ -164,7 +164,6 @@ services:
       SERVER_HOST: '0.0.0.0'
       SERVER_PORT: '8000'
       RUST_LOG: ${RUST_LOG:-info}
-      MIDNIGHT_ENABLED: 'true'
       MIDNIGHT_SIDECAR_URL: http://midnight-sidecar:3000
       MIDNIGHT_SIDECAR_API_KEY: ${MIDNIGHT_SIDECAR_API_KEY}
       ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-change-me}
@@ -173,6 +172,8 @@ services:
       RATE_LIMIT_WINDOW_MINUTES: '1'
     depends_on:
       postgres-verification:
+        condition: service_healthy
+      midnight-sidecar:
         condition: service_healthy
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://localhost:8000/health || exit 1']
@@ -194,7 +195,6 @@ services:
       ISSUER_HOST: '0.0.0.0'
       ISSUER_PORT: '8001'
       RUST_LOG: ${RUST_LOG:-info}
-      MIDNIGHT_ENABLED: 'true'
       MIDNIGHT_SIDECAR_URL: http://midnight-sidecar:3000
       MIDNIGHT_SIDECAR_API_KEY: ${MIDNIGHT_SIDECAR_API_KEY}
       APP_URL: ${APP_URL:-https://owlid-app.sashoush.dev}
@@ -203,6 +203,8 @@ services:
       DIDIT_WEBHOOK_SECRET: ${DIDIT_WEBHOOK_SECRET:-}
     depends_on:
       postgres-issuer:
+        condition: service_healthy
+      midnight-sidecar:
         condition: service_healthy
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://localhost:8001/health || exit 1']

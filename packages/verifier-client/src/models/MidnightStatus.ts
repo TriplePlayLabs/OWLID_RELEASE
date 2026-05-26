@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * OwlID Verification Service
- * Token verification, trusted issuer management, and credential revocation
+ * SD-JWT VC presentation verification, trusted issuer management, and credential revocation
  *
  * The version of the OpenAPI document: 1.0.0
  *
@@ -28,20 +28,6 @@ import {
  */
 export interface MidnightStatus {
   /**
-   * Whether the service has a sidecar client at all (configured at boot).
-   * `false` means the service was started without a sidecar URL — the
-   * admin toggle is inert until the operator restarts with one.
-   * @type {boolean}
-   * @memberof MidnightStatus
-   */
-  configured: boolean
-  /**
-   * Runtime flag: true if the sidecar gate is open.
-   * @type {boolean}
-   * @memberof MidnightStatus
-   */
-  enabled: boolean
-  /**
    * Sidecar health probe outcome.
    * @type {SidecarHealth}
    * @memberof MidnightStatus
@@ -52,16 +38,15 @@ export interface MidnightStatus {
    * @type {string}
    * @memberof MidnightStatus
    */
-  sidecarUrl?: string | null
+  sidecarUrl: string
 }
 
 /**
  * Check if a given object implements the MidnightStatus interface.
  */
 export function instanceOfMidnightStatus(value: object): value is MidnightStatus {
-  if (!('configured' in value) || value['configured'] === undefined) return false
-  if (!('enabled' in value) || value['enabled'] === undefined) return false
   if (!('sidecar' in value) || value['sidecar'] === undefined) return false
+  if (!('sidecarUrl' in value) || value['sidecarUrl'] === undefined) return false
   return true
 }
 
@@ -77,10 +62,8 @@ export function MidnightStatusFromJSONTyped(
     return json
   }
   return {
-    configured: json['configured'],
-    enabled: json['enabled'],
     sidecar: SidecarHealthFromJSON(json['sidecar']),
-    sidecarUrl: json['sidecarUrl'] == null ? undefined : json['sidecarUrl'],
+    sidecarUrl: json['sidecarUrl'],
   }
 }
 
@@ -97,8 +80,6 @@ export function MidnightStatusToJSONTyped(
   }
 
   return {
-    configured: value['configured'],
-    enabled: value['enabled'],
     sidecar: SidecarHealthToJSON(value['sidecar']),
     sidecarUrl: value['sidecarUrl'],
   }

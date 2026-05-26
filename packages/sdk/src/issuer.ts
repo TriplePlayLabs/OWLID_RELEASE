@@ -26,9 +26,9 @@ import {
 } from '@owlid/issuer-client'
 // Predicate + circuit-data registry now lives on the verification service
 // (verifier-side concern). SDK consumers reach it via OwlVerifier.
-import { apiKeyHeaders } from './config.js'
+import { apiKeyHeaders } from '@owlid/config'
 
-const DEFAULT_BASE_URL = 'https://api.owlid.dev'
+const DEFAULT_BASE_URL = 'https://api.owlid.app'
 
 export interface OwlIssuerOptions {
   /** Owl API key issued from your account dashboard. Required. */
@@ -84,10 +84,10 @@ export interface IssuedClaims extends Record<string, unknown> {
   providerId: string
 }
 
-/** Issued credential — the signed Merkle-rooted ProofDocument. */
+/** Issued credential — a standard SD-JWT VC (`application/dc+sd-jwt`). */
 export interface IssuedCredential {
-  /** ProofDocument JSON. Send to the holder app to store. */
-  document: Record<string, unknown>
+  /** SD-JWT VC string (issuance form). Hand to the holder wallet to store. */
+  sdJwtVc: string
 }
 
 /** Public details about your issuer identity. */
@@ -168,11 +168,11 @@ export class OwlIssuer {
   }
 
   /**
-   * Issue a credential bound to the holder's public key.
+   * Issue an SD-JWT VC bound to the holder's confirmation key.
    *
-   * The session must be in `verified` state. The returned ProofDocument is
-   * the holder's to store — Owl does not retain unhashed claims past the
-   * session TTL.
+   * The session must be in `verified` state. The returned SD-JWT VC is
+   * the holder's to store — Owl does not retain unhashed claim values
+   * past the session TTL.
    */
   async issue(sessionId: string, holder: Holder): Promise<IssuedCredential> {
     const r = await this.#credentials.issueCredential({
@@ -185,7 +185,35 @@ export class OwlIssuer {
     if (!r.success) {
       throw new Error(r.error ?? 'Issuance failed')
     }
-    return { document: r.credential as Record<string, unknown> }
+    return { sdJwtVc: r.credential as string }
+  }
+
+  /**
+   * OpenID4VCI Batch Credential issuance for unlinkability — mint
+   * `batchSize` one-time-use SD-JWT VCs (1..=64). Each carries a
+   * distinct `credential_id` and is independently revocable on
+   * Midnight; the holder presents each to at most one verifier so two
+   * verifiers cannot correlate. The session must be in `verified`
+   * state. Same holder `cnf` across the batch.
+   */
+  async issueBatch(
+    sessionId: string,
+    holder: Holder,
+    batchSize: number,
+  ): Promise<IssuedCredential[]> {
+    const r = await this.#credentials.issueCredential({
+      id: sessionId,
+      issueCredentialRequest: {
+        ownerPublicKey: holder.publicKey,
+        keyAlgorithm: holder.algorithm ?? 'p256',
+        batchSize,
+      },
+    })
+    if (!r.success) {
+      throw new Error(r.error ?? 'Issuance failed')
+    }
+    const list = r.credentials ?? [r.credential as string]
+    return list.map((sdJwtVc) => ({ sdJwtVc }))
   }
 
   /** Poll a session until it terminates (verified, complete, expired). */

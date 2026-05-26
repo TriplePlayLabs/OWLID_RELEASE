@@ -4,6 +4,7 @@
 //! All chain operations are fire-and-forget with warning logs — if the sidecar
 //! is down, the service continues with DB-only.
 
+#![allow(dead_code)] // intentional API surface / serde fields
 use serde::Deserialize;
 
 // ============================================================================
@@ -11,27 +12,23 @@ use serde::Deserialize;
 // ============================================================================
 
 /// Midnight sidecar configuration, loaded from environment variables.
+/// Midnight is required —
 pub struct MidnightConfig {
     pub sidecar_url: String,
     pub api_key: Option<String>,
-    pub enabled: bool,
     pub timeout_secs: u64,
 }
 
 impl MidnightConfig {
-    /// Load from environment variables. Graceful when not set.
     pub fn from_env() -> Self {
         Self {
             sidecar_url: std::env::var("MIDNIGHT_SIDECAR_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),
             api_key: std::env::var("MIDNIGHT_SIDECAR_API_KEY").ok(),
-            enabled: std::env::var("MIDNIGHT_ENABLED")
-                .map(|v| v == "true" || v == "1")
-                .unwrap_or(false),
             timeout_secs: std::env::var("MIDNIGHT_SIDECAR_TIMEOUT")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(30),
+                .unwrap_or(120),
         }
     }
 }
@@ -47,9 +44,6 @@ pub enum MidnightError {
 
     #[error("Sidecar error: {0}")]
     Sidecar(String),
-
-    #[error("Midnight integration not enabled")]
-    NotEnabled,
 }
 
 // ============================================================================
@@ -83,10 +77,9 @@ pub struct HealthResponse {
 // Client
 // ============================================================================
 
-/// HTTP client for the Midnight sidecar service.
+/// HTTP client for the Midnight sidecar service. Required at startup.
 #[derive(Clone)]
 pub struct MidnightSidecar {
-    enabled: bool,
     base_url: String,
     http: reqwest::Client,
 }
@@ -110,14 +103,13 @@ impl MidnightSidecar {
             .expect("Failed to build HTTP client");
 
         Self {
-            enabled: config.enabled,
             base_url: config.sidecar_url.trim_end_matches('/').to_string(),
             http,
         }
     }
 
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     /// Check sidecar health.
@@ -137,11 +129,7 @@ impl MidnightSidecar {
     // ========================================================================
 
     /// Check if an issuer is trusted on-chain.
-    pub async fn is_issuer_trusted(&self, key_hash_hex: &str) -> Result<bool, MidnightError> {
-        if !self.enabled {
-            return Err(MidnightError::NotEnabled);
-        }
-        let resp: IssuerStatusResponse = self
+    pub async fn is_issuer_trusted(&self, key_hash_hex: &str) -> Result<bool, MidnightError> {        let resp: IssuerStatusResponse = self
             .http
             .get(format!(
                 "{}/api/issuers/{}/trusted",
@@ -162,11 +150,7 @@ impl MidnightSidecar {
         &self,
         public_key_hex: &str,
         name: &str,
-    ) -> Result<(), MidnightError> {
-        if !self.enabled {
-            return Err(MidnightError::NotEnabled);
-        }
-        let resp: SidecarResponse = self
+    ) -> Result<(), MidnightError> {        let resp: SidecarResponse = self
             .http
             .post(format!("{}/api/issuers/register", self.base_url))
             .json(&serde_json::json!({
@@ -193,11 +177,7 @@ impl MidnightSidecar {
         did_hash_hex: &str,
         commitment_hex: &str,
         issuer_key_hash_hex: &str,
-    ) -> Result<(), MidnightError> {
-        if !self.enabled {
-            return Err(MidnightError::NotEnabled);
-        }
-        let resp: SidecarResponse = self
+    ) -> Result<(), MidnightError> {        let resp: SidecarResponse = self
             .http
             .post(format!("{}/api/identities/register", self.base_url))
             .json(&serde_json::json!({

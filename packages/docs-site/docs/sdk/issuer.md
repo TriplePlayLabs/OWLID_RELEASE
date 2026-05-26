@@ -1,8 +1,6 @@
-<!-- AUTO-GENERATED — do not edit. Source: docs/sdk/issuer.md -->
-
 # OwlIssuer
 
-Server-side client for issuing OwlID credentials. Imported from `@owlid/sdk`.
+Server-side client for issuing OwlID SD-JWT VC credentials. Imported from `@owlid/sdk`.
 
 ```ts
 import { OwlIssuer } from '@owlid/sdk'
@@ -25,10 +23,13 @@ new OwlIssuer(options: OwlIssuerOptions)
 
 ### `info()`
 
-Read your issuer's public details (name + signing public key).
+Read your issuer's public details (display name + signing public key).
 
 ```ts
 const { name, publicKey } = await issuer.info()
+// IssuerInfo
+//   name:      string
+//   publicKey: string   // issuer signing public key, hex
 ```
 
 ### `listProviders()`
@@ -70,14 +71,14 @@ type SessionStart =
 
 ### `submitClaims(sessionId, claims)`
 
-Submit verified identity claims for form-based providers.
+Submit verified identity claims for form-based providers. Use SD-JWT VC standard claim names (`given_name`, `family_name`, `birthdate`, `nationalities`, …) where applicable.
 
 ```ts
 await issuer.submitClaims(session.id, {
-  firstName: 'Jan',
-  lastName: 'de Vries',
-  dateOfBirth: '1985-03-15',
-  nationality: 'NL',
+  given_name: 'Jan',
+  family_name: 'de Vries',
+  birthdate: '1985-03-15',
+  nationalities: ['NL'],
 })
 ```
 
@@ -110,15 +111,30 @@ while (snapshot.status === 'pending') {
 
 ### `issue(sessionId, holder)`
 
-Issue a credential bound to the holder's public key. Throws if the session is not in `verified` state or if issuance fails.
+Issue a single SD-JWT VC bound to the holder's confirmation key. Throws if the session is not in `verified` state or if issuance fails.
 
 ```ts
 const issued = await issuer.issue(session.id, {
-  publicKey: '04abc...',
-  algorithm: 'p256', // 'p256' for WebAuthn passkeys, 'ed25519' for raw keys
+  publicKey: '04abc...', // holder public key, hex
+  algorithm: 'ed25519', // 'ed25519' (wallet key) or 'p256' (ES256 cnf); defaults to 'p256'
 })
 // IssuedCredential
-//   document: Record<string, unknown>   // ProofDocument JSON, send to holder
+//   sdJwtVc: string   // application/dc+sd-jwt string, issuance form
+```
+
+The wallet derives the stable `credentialId` and the did:web `issuer` from the `sdJwtVc` string itself via [`SdJwtVc.parse()`](/sdk/primitives) — they are not separate fields on the response.
+
+### `issueBatch(sessionId, holder, batchSize)`
+
+Issue a batch of one-time-use SD-JWT VCs (OpenID4VCI Batch Credential endpoint). Each has a distinct `credential_id` and is independently revocable on Midnight — multiple presentations cannot be correlated by a colluding verifier pair.
+
+```ts
+const batch = await issuer.issueBatch(
+  session.id,
+  { publicKey: '04abc...', algorithm: 'ed25519' },
+  8, // batchSize, 1..=64
+)
+// batch: IssuedCredential[]
 ```
 
 The platform does not retain unhashed claims past the session TTL.
@@ -148,11 +164,13 @@ interface FormField {
 }
 
 interface Holder {
+  /** Holder public key, hex. */
   publicKey: string
+  /** Key algorithm. Defaults to `p256` (WebAuthn). */
   algorithm?: 'p256' | 'ed25519'
 }
 
 interface IssuedCredential {
-  document: Record<string, unknown>
+  sdJwtVc: string
 }
 ```

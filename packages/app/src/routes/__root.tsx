@@ -7,6 +7,8 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { TooltipProvider } from '@owlid/ui/components/ui/tooltip'
 import { ModalsPortal } from '@owlid/ui/modal'
 import { Toaster } from 'sonner'
+import { AppShell } from '~/components/AppShell'
+import { HydrationGate } from '~/components/LoadingScreen'
 
 import appCss from '../styles.css?url'
 
@@ -18,6 +20,35 @@ const queryClient = new QueryClient({
     },
   },
 })
+
+// `window.__OWLID_CONFIG__` typing is supplied by `@owlid/config`'s global
+// `declare global { interface Window { __OWLID_CONFIG__?: RuntimeConfig } }`.
+// Redeclaring it here with stricter required fields collides with that
+// module-augmented type. We just consume it.
+
+function runtimeConfigScript() {
+  const config =
+    typeof window === 'undefined'
+      ? {
+          verificationUrl: process.env.OWLID_VERIFICATION_URL || '',
+          issuerUrl: process.env.OWLID_ISSUER_URL || '',
+          apiKey: process.env.OWLID_API_KEY || '',
+          wsBaseUrl: process.env.OWLID_WS_BASE_URL || '',
+          // Operator-suggested proof-server URL — the holder still has to
+          // opt into proof-server mode from /settings; this is just the
+          // default value the input is pre-populated with.
+          proofServerUrl: process.env.OWLID_PROOF_SERVER_URL || '',
+        }
+      : window.__OWLID_CONFIG__ || {
+          verificationUrl: '',
+          issuerUrl: '',
+          apiKey: '',
+          wsBaseUrl: '',
+          proofServerUrl: '',
+        }
+
+  return `window.__OWLID_CONFIG__ = ${JSON.stringify(config)};`
+}
 
 function RootErrorComponent({ error, reset }: ErrorComponentProps) {
   return (
@@ -48,6 +79,10 @@ function RootErrorComponent({ error, reset }: ErrorComponentProps) {
 
 export const Route = createRootRoute({
   errorComponent: RootErrorComponent,
+  // Root-level layout: app chrome wraps every matched child route via
+  // the AppShell's <Outlet />. Keeps the shared header out of every
+  // page's body.
+  component: AppShell,
   head: () => ({
     meta: [
       {
@@ -109,11 +144,6 @@ export const Route = createRootRoute({
         href: 'https://fonts.googleapis.com/css2?family=Inter:wght@300..700&family=JetBrains+Mono:wght@400;500&display=swap',
       },
     ],
-    scripts: [
-      // Runtime config — see docker/runtime-config.sh. Loaded eagerly so
-      // window.__OWLID_CONFIG__ is in place before app code reads it.
-      { src: '/config.js' },
-    ],
   }),
 
   shellComponent: RootDocument,
@@ -124,12 +154,13 @@ function RootDocument({ children }: { children: React.ReactNode }) {
     <html lang="en" className="dark">
       <head>
         <HeadContent />
+        <script dangerouslySetInnerHTML={{ __html: runtimeConfigScript() }} />
       </head>
       <body className="bg-background text-foreground antialiased">
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
             <Toaster />
-            {children}
+            <HydrationGate>{children}</HydrationGate>
             <ModalsPortal />
             <ReactQueryDevtools initialIsOpen={false} />
             <TanStackDevtools

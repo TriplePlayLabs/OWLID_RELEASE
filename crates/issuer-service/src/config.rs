@@ -26,13 +26,19 @@ pub struct Config {
     /// and Didit callbacks.
     pub app_url: String,
 
+    /// Public-facing base URL of THIS issuer service. Drives the issuer
+    /// `did:web` identifier and the Token Status List `uri`.
+    pub issuer_public_url: String,
+
     /// Hex-encoded Ed25519 private key the issuer signs credentials with.
     /// Required for credential issuance to function.
     pub issuer_private_key: Option<String>,
 
-    /// Whether to call the sidecar's `registerIssuer` on startup.
-    pub midnight_auto_register_issuer: bool,
-    pub midnight_enabled: bool,
+    /// Verification service URL used to register the issuer public key as trusted.
+    pub verification_service_url: String,
+    /// Admin/service API key for verification-service issuer registry writes.
+    pub verification_admin_api_key: Option<String>,
+
     pub midnight_sidecar_url: String,
     pub midnight_sidecar_api_key: Option<String>,
     pub midnight_sidecar_timeout_secs: u64,
@@ -71,12 +77,6 @@ fn env_or(key: &str, default: &str) -> String {
     env_optional(key).unwrap_or_else(|| default.to_string())
 }
 
-fn env_bool(key: &str, default: bool) -> bool {
-    env_optional(key)
-        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(default)
-}
-
 fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
     env_optional(key)
         .and_then(|v| v.parse::<T>().ok())
@@ -87,8 +87,8 @@ impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let mut errors = Vec::new();
 
-        let database_url = env_optional("ISSUER_DATABASE_URL")
-            .or_else(|| env_optional("DATABASE_URL"));
+        let database_url =
+            env_optional("ISSUER_DATABASE_URL").or_else(|| env_optional("DATABASE_URL"));
         if database_url.is_none() {
             errors.push("ISSUER_DATABASE_URL or DATABASE_URL must be set".into());
         }
@@ -103,20 +103,22 @@ impl Config {
         };
 
         let app_url = env_or("APP_URL", DEFAULT_APP_URL);
+        let issuer_public_url = env_or("ISSUER_PUBLIC_URL", "http://localhost:8001");
 
-        let issuer_private_key = env_optional("ISSUER_PRIVATE_KEY")
-            .or_else(|| env_optional("IDP_ISSUER_PRIVATE_KEY"));
+        let issuer_private_key =
+            env_optional("ISSUER_PRIVATE_KEY").or_else(|| env_optional("IDP_ISSUER_PRIVATE_KEY"));
+        let verification_service_url = env_or("VERIFICATION_SERVICE_URL", "http://localhost:8000");
+        let verification_admin_api_key =
+            env_optional("VERIFICATION_ADMIN_API_KEY").or_else(|| env_optional("API_KEY_DEV"));
 
-        let midnight_auto_register_issuer = env_bool("MIDNIGHT_AUTO_REGISTER_ISSUER", false);
-        let midnight_enabled = env_bool("MIDNIGHT_ENABLED", false);
         let midnight_sidecar_url = env_or("MIDNIGHT_SIDECAR_URL", DEFAULT_MIDNIGHT_SIDECAR_URL);
         let midnight_sidecar_api_key = env_optional("MIDNIGHT_SIDECAR_API_KEY");
         let midnight_sidecar_timeout_secs =
             env_parse("MIDNIGHT_SIDECAR_TIMEOUT", DEFAULT_MIDNIGHT_SIDECAR_TIMEOUT);
 
-        if midnight_enabled && midnight_sidecar_api_key.is_none() {
+        if midnight_sidecar_api_key.is_none() {
             tracing::warn!(
-                "MIDNIGHT_ENABLED=true but MIDNIGHT_SIDECAR_API_KEY is unset — sidecar requests will be rejected"
+                "MIDNIGHT_SIDECAR_API_KEY is unset — sidecar requests will be rejected"
             );
         }
 
@@ -136,9 +138,10 @@ impl Config {
             host,
             port,
             app_url,
+            issuer_public_url,
             issuer_private_key,
-            midnight_auto_register_issuer,
-            midnight_enabled,
+            verification_service_url,
+            verification_admin_api_key,
             midnight_sidecar_url,
             midnight_sidecar_api_key,
             midnight_sidecar_timeout_secs,
@@ -155,21 +158,63 @@ impl fmt::Display for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "issuer-service config:")?;
         writeln!(f, "  bind:                {}:{}", self.host, self.port)?;
-        writeln!(f, "  database:            {}", redact_db_url(&self.database_url))?;
+        writeln!(
+            f,
+            "  database:            {}",
+            redact_db_url(&self.database_url)
+        )?;
         writeln!(f, "  app url:             {}", self.app_url)?;
-        writeln!(f, "  issuer private key:  {}", mask(self.issuer_private_key.as_deref()))?;
-        writeln!(f, "  midnight enabled:    {}", self.midnight_enabled)?;
-        if self.midnight_enabled {
-            writeln!(f, "  midnight sidecar:    {}", self.midnight_sidecar_url)?;
-            writeln!(f, "  midnight api key:    {}", mask(self.midnight_sidecar_api_key.as_deref()))?;
-            writeln!(f, "  midnight timeout:    {}s", self.midnight_sidecar_timeout_secs)?;
-            writeln!(f, "  midnight auto-reg:   {}", self.midnight_auto_register_issuer)?;
-        }
-        writeln!(f, "  didit api key:       {}", mask(self.didit_api_key.as_deref()))?;
-        writeln!(f, "  didit workflow:      {}", self.didit_workflow_id.as_deref().unwrap_or("<unset>"))?;
-        writeln!(f, "  didit base url:      {}", self.didit_base_url.as_deref().unwrap_or("<unset>"))?;
-        writeln!(f, "  didit webhook secret:{}", mask(self.didit_webhook_secret.as_deref()))?;
-        writeln!(f, "  oidc providers:      {}", self.oidc_providers.as_deref().unwrap_or("<unset>"))?;
+        writeln!(
+            f,
+            "  issuer private key:  {}",
+            mask(self.issuer_private_key.as_deref())
+        )?;
+        writeln!(
+            f,
+            "  verification url:    {}",
+            self.verification_service_url
+        )?;
+        writeln!(
+            f,
+            "  verification admin:  {}",
+            mask(self.verification_admin_api_key.as_deref())
+        )?;
+        writeln!(f, "  midnight sidecar:    {}", self.midnight_sidecar_url)?;
+        writeln!(
+            f,
+            "  midnight api key:    {}",
+            mask(self.midnight_sidecar_api_key.as_deref())
+        )?;
+        writeln!(
+            f,
+            "  midnight timeout:    {}s",
+            self.midnight_sidecar_timeout_secs
+        )?;
+        writeln!(
+            f,
+            "  didit api key:       {}",
+            mask(self.didit_api_key.as_deref())
+        )?;
+        writeln!(
+            f,
+            "  didit workflow:      {}",
+            self.didit_workflow_id.as_deref().unwrap_or("<unset>")
+        )?;
+        writeln!(
+            f,
+            "  didit base url:      {}",
+            self.didit_base_url.as_deref().unwrap_or("<unset>")
+        )?;
+        writeln!(
+            f,
+            "  didit webhook secret:{}",
+            mask(self.didit_webhook_secret.as_deref())
+        )?;
+        writeln!(
+            f,
+            "  oidc providers:      {}",
+            self.oidc_providers.as_deref().unwrap_or("<unset>")
+        )?;
         Ok(())
     }
 }

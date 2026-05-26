@@ -1,8 +1,12 @@
 /**
- * Revocation Registry REST routes
+ * Revocation Registry REST routes.
  *
- * rootHash: raw credential root hash (hex, used as-is in contract)
- * issuerPublicKey: raw issuer public key (hex, hashed by client with persistentHash)
+ * Body conventions:
+ *   rootHash         — raw credential root hash (hex, 32 bytes), used as-is on chain.
+ *   issuerPublicKey  — raw issuer Ed25519 public key (hex, 32 bytes); the
+ *                      sidecar hashes it once with persistentHash<Bytes<32>>
+ *                      before submitting, matching what the issuer registry
+ *                      stores. Pass the raw key, NOT a pre-hashed value.
  */
 
 import { Hono } from 'hono'
@@ -34,18 +38,35 @@ revocation.get('/:rootHash/revoked', async (c) => {
   }
 })
 
+/**
+ * GET /api/revocations/:rootHash/inclusion
+ * Submits a `proveRevocationInclusion` transaction whose witness pulls
+ * the Merkle path from the contract's `revokedTree`. Succeeds iff the
+ * root hash has been revoked at some point. Costs DUST.
+ */
+revocation.get('/:rootHash/inclusion', async (c) => {
+  const rootHash = c.req.param('rootHash')
+  try {
+    const client = getClient()
+    await client.proveRevocationInclusion(hexToBytes(rootHash))
+    return c.json({ rootHash, included: true })
+  } catch (e) {
+    return c.json({ rootHash, included: false, error: String(e) }, 200)
+  }
+})
+
 /** POST /api/revocations/revoke - Revoke a credential */
 revocation.post('/revoke', async (c) => {
   try {
     const body = await c.req.json<{
       rootHash: string
-      issuerKeyHash: string
+      issuerPublicKey: string
       reason: string
     }>()
     const client = getClient()
     await client.revokeCredential(
       hexToBytes(body.rootHash),
-      hexToBytes(body.issuerKeyHash),
+      hexToBytes(body.issuerPublicKey),
       body.reason,
     )
     return c.json({ success: true, message: 'Credential revoked on-chain' })
@@ -59,13 +80,13 @@ revocation.post('/suspend', async (c) => {
   try {
     const body = await c.req.json<{
       rootHash: string
-      issuerKeyHash: string
+      issuerPublicKey: string
       reason: string
     }>()
     const client = getClient()
     await client.suspendCredential(
       hexToBytes(body.rootHash),
-      hexToBytes(body.issuerKeyHash),
+      hexToBytes(body.issuerPublicKey),
       body.reason,
     )
     return c.json({ success: true, message: 'Credential suspended on-chain' })
@@ -78,9 +99,9 @@ revocation.post('/suspend', async (c) => {
 revocation.post('/:rootHash/reactivate', async (c) => {
   const rootHash = c.req.param('rootHash')
   try {
-    const body = await c.req.json<{ issuerKeyHash: string }>()
+    const body = await c.req.json<{ issuerPublicKey: string }>()
     const client = getClient()
-    await client.reactivateCredential(hexToBytes(rootHash), hexToBytes(body.issuerKeyHash))
+    await client.reactivateCredential(hexToBytes(rootHash), hexToBytes(body.issuerPublicKey))
     return c.json({ success: true, message: 'Credential reactivated on-chain' })
   } catch (e) {
     return c.json({ error: String(e) }, 500)

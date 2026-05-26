@@ -1,14 +1,26 @@
-use crate::db::{models::AuditEvent, DbPool, Result};
+#![allow(dead_code)] // intentional API surface / serde fields
+use crate::db::{DbPool, Result, models::AuditEvent};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
+use tokio::sync::broadcast;
 
 pub struct AuditRepository {
     pool: DbPool,
+    /// Live fan-out of every logged event. The `/ws/events` endpoint
+    /// subscribes here so the admin dashboard sees system activity in
+    /// real time without polling.
+    events_tx: broadcast::Sender<AuditEvent>,
 }
 
 impl AuditRepository {
     pub fn new(pool: DbPool) -> Self {
-        Self { pool }
+        let (events_tx, _) = broadcast::channel(256);
+        Self { pool, events_tx }
+    }
+
+    /// Subscribe to the live stream of audit events.
+    pub fn subscribe(&self) -> broadcast::Receiver<AuditEvent> {
+        self.events_tx.subscribe()
     }
 
     /// Hash action details for GDPR compliance
@@ -54,6 +66,9 @@ impl AuditRepository {
             actor = ?actor,
             "Audit event logged"
         );
+
+        // Fan out to live subscribers. Errors mean no listeners — fine.
+        let _ = self.events_tx.send(event.clone());
 
         Ok(event)
     }

@@ -13,8 +13,13 @@
  */
 
 import * as runtime from '../runtime.js'
-import type { ProviderToggleResponse } from '../models/index.js'
-import { ProviderToggleResponseFromJSON, ProviderToggleResponseToJSON } from '../models/index.js'
+import type { ProviderInfo, ProviderToggleResponse } from '../models/index.js'
+import {
+  ProviderInfoFromJSON,
+  ProviderInfoToJSON,
+  ProviderToggleResponseFromJSON,
+  ProviderToggleResponseToJSON,
+} from '../models/index.js'
 
 export interface DisableProviderRequest {
   id: string
@@ -72,6 +77,24 @@ export interface AdminApiInterface {
     requestParameters: EnableProviderRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<ProviderToggleResponse>
+
+  /**
+   *
+   * @summary Operator-only listing of every registered provider, including disabled ones. Public `/providers` filters disabled out so holders never see them; admins need the full set to toggle state.
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof AdminApiInterface
+   */
+  listAllProvidersRaw(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<Array<ProviderInfo>>>
+
+  /**
+   * Operator-only listing of every registered provider, including disabled ones. Public `/providers` filters disabled out so holders never see them; admins need the full set to toggle state.
+   */
+  listAllProviders(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<Array<ProviderInfo>>
 }
 
 /**
@@ -169,6 +192,39 @@ export class AdminApi extends runtime.BaseAPI implements AdminApiInterface {
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<ProviderToggleResponse> {
     const response = await this.enableProviderRaw(requestParameters, initOverrides)
+    return await response.value()
+  }
+
+  /**
+   * Operator-only listing of every registered provider, including disabled ones. Public `/providers` filters disabled out so holders never see them; admins need the full set to toggle state.
+   */
+  async listAllProvidersRaw(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<Array<ProviderInfo>>> {
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    const response = await this.request(
+      {
+        path: `/admin/providers`,
+        method: 'GET',
+        headers: headerParameters,
+        query: queryParameters,
+      },
+      initOverrides,
+    )
+
+    return new runtime.JSONApiResponse(response, (jsonValue) => jsonValue.map(ProviderInfoFromJSON))
+  }
+
+  /**
+   * Operator-only listing of every registered provider, including disabled ones. Public `/providers` filters disabled out so holders never see them; admins need the full set to toggle state.
+   */
+  async listAllProviders(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<Array<ProviderInfo>> {
+    const response = await this.listAllProvidersRaw(initOverrides)
     return await response.value()
   }
 }

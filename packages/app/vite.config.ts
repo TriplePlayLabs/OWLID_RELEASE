@@ -6,6 +6,18 @@ import viteReact from '@vitejs/plugin-react'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
 import tailwindcss from '@tailwindcss/vite'
 import wasm from 'vite-plugin-wasm'
+import topLevelAwait from 'vite-plugin-top-level-await'
+
+// @owlid/sdk re-exports the holder-device predicate primitives
+// (`predicate-proving`, `predicate-snapshot`, `predicate-assets`, …).
+// Those transitively import `@midnight-ntwrk/zkir-v2`,
+// `@midnight-ntwrk/ledger-v8`, `@midnight-ntwrk/compact-runtime`, and
+// `@midnight-ntwrk/compact-js`, each of which ships `.wasm` modules via
+// the ESM-integration-proposal pattern. Vite's default loader rejects
+// that with "ESM integration proposal for Wasm is not supported" —
+// vite-plugin-wasm + vite-plugin-top-level-await translate the imports.
+// Pre-bundling those packages corrupts the inlined WASM binding, so
+// they're excluded from the optimizer.
 
 const config = defineConfig({
   // Workspace-root .env (shared VITE_* across services + frontends).
@@ -15,20 +27,16 @@ const config = defineConfig({
     allowedHosts: ['.trycloudflare.com', '.sashoush.dev'],
   },
   plugins: [
-    wasm(),
-    // COOP/COEP headers for SharedArrayBuffer (required for WASM threads)
-    {
-      name: 'configure-response-headers',
-      configureServer: (server) => {
-        server.middlewares.use((_req, res, next) => {
-          res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
-          res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
-          next()
-        })
-      },
-    },
     devtools(),
-    nitroV2Plugin(),
+    nitroV2Plugin({
+      // Rollup runs `external` before plugins, so the WASM-bearing
+      // midnight packages never reach the SSR/Nitro builder either.
+      rollupConfig: {
+        external: (id: string) => /@midnight-ntwrk\/zkir-v2/.test(id),
+      },
+    }),
+    wasm(),
+    topLevelAwait(),
     viteTsConfigPaths({
       projects: ['./tsconfig.json'],
     }),
@@ -37,35 +45,19 @@ const config = defineConfig({
     viteReact(),
   ],
   optimizeDeps: {
-    exclude: [
-      '@owlid/sdk',
-      '@owlid/native-sdk',
-      '@owlid/native-sdk-wasm32-wasi',
-      '@napi-rs/wasm-runtime',
-    ],
+    // Only the packages with direct `.wasm` ESM imports are excluded —
+    // pre-bundling them corrupts the inlined wasm binding. The other
+    // midnight packages (compact-runtime, compact-js, ledger-v8) import
+    // CJS deps like `object-inspect` and MUST be pre-bundled so Vite
+    // can transform `import x from 'cjs-module'` into something the
+    // browser accepts.
+    exclude: ['@midnight-ntwrk/zkir-v2'],
   },
   ssr: {
-    // Externalize native modules — they can't run in SSR
-    external: [
-      '@owlid/native-sdk',
-      '@owlid/native-sdk-wasm32-wasi',
-      '@owlid/native-sdk-linux-x64-gnu',
-      '@napi-rs/wasm-runtime',
-    ],
-    // Let Vite bundle the SDK so it can tree-shake away native imports
-    // that aren't used in the SSR render path
-    noExternal: ['@owlid/sdk'],
+    external: ['@midnight-ntwrk/zkir-v2'],
   },
   build: {
     target: 'esnext',
-    rollupOptions: {
-      external: [
-        '@owlid/native-sdk',
-        '@owlid/native-sdk-wasm32-wasi',
-        '@owlid/native-sdk-linux-x64-gnu',
-        '@napi-rs/wasm-runtime',
-      ],
-    },
   },
 })
 

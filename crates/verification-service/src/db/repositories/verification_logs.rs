@@ -1,6 +1,7 @@
+#![allow(dead_code)] // intentional API surface / serde fields
 use crate::db::{
-    models::{VerificationLog, VerificationMetrics},
     DbPool, Result,
+    models::{VerificationLog, VerificationMetrics},
 };
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -74,7 +75,11 @@ impl VerificationLogRepository {
     }
 
     /// Get logs by verifier
-    pub async fn get_by_verifier(&self, verifier_id: &str, limit: i64) -> Result<Vec<VerificationLog>> {
+    pub async fn get_by_verifier(
+        &self,
+        verifier_id: &str,
+        limit: i64,
+    ) -> Result<Vec<VerificationLog>> {
         let logs = sqlx::query_as::<_, VerificationLog>(
             r#"
             SELECT * FROM verification_logs

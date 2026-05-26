@@ -1,5 +1,5 @@
 [
   { "type": "file", "name": "verifier", "label": "OwlVerifier" },
   { "type": "file", "name": "issuer", "label": "OwlIssuer" },
-  { "type": "file", "name": "native", "label": "Token primitives" }
+  { "type": "file", "name": "primitives", "label": "SD-JWT VC primitives" }
 ]

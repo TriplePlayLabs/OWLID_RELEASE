@@ -32,6 +32,15 @@ pub enum ProviderFlowType {
     ///
     /// Flow: User submits form → immediate verification
     FormBased,
+
+    /// Redirect → OIDC authorization-code callback (Google, Microsoft,
+    /// generic OpenID Connect providers).
+    ///
+    /// Flow: User redirected to provider's `authorization_endpoint` →
+    /// authenticates → provider redirects back to `/auth/callback/{provider}`
+    /// with `?code=...&state=...`. Handler exchanges code for tokens,
+    /// verifies the ID token against the provider's JWKS, returns claims.
+    OidcRedirect,
 }
 
 impl ProviderFlowType {
@@ -41,6 +50,7 @@ impl ProviderFlowType {
             Self::QrPolling => "qr_polling",
             Self::WebhookAsync => "webhook_async",
             Self::FormBased => "form_based",
+            Self::OidcRedirect => "oidc_redirect",
         }
     }
 }
@@ -112,8 +122,18 @@ impl Default for FormConfig {
                 FormField::new("postalCode", "Postal Code", FormFieldType::Text, true),
                 FormField::new("country", "Country", FormFieldType::Text, true),
                 FormField::new("gender", "Gender", FormFieldType::Text, false),
-                FormField::new("passportNumber", "Passport Number", FormFieldType::Text, false),
-                FormField::new("driversLicense", "Driver's License", FormFieldType::Text, false),
+                FormField::new(
+                    "passportNumber",
+                    "Passport Number",
+                    FormFieldType::Text,
+                    false,
+                ),
+                FormField::new(
+                    "driversLicense",
+                    "Driver's License",
+                    FormFieldType::Text,
+                    false,
+                ),
                 FormField::new("taxId", "Tax ID", FormFieldType::Text, false),
             ],
             instructions: None,
@@ -170,9 +190,7 @@ pub enum PollResult {
     },
 
     /// User started but hasn't completed (e.g., app opened)
-    UserInteracting {
-        message: String,
-    },
+    UserInteracting { message: String },
 
     /// Verification completed successfully
     Complete(RawProviderClaims),
@@ -269,6 +287,25 @@ pub trait DigitalIdentityProvider: Send + Sync {
     ) -> Result<RawProviderClaims> {
         Err(crate::error::IdpError::Internal(
             "Form submission not supported by this provider".to_string(),
+        ))
+    }
+
+    /// Handle OIDC authorization-code callback (for OidcRedirect providers).
+    ///
+    /// # Arguments
+    /// * `session_id` - The session ID resolved from the `state` parameter
+    /// * `code`       - The authorization code returned by the provider
+    /// * `state`      - The opaque `state` parameter (caller may have
+    ///                  already verified it; passed through for providers
+    ///                  that need it during token exchange)
+    async fn handle_oidc_callback(
+        &self,
+        _session_id: Uuid,
+        _code: &str,
+        _state: &str,
+    ) -> Result<RawProviderClaims> {
+        Err(crate::error::IdpError::Internal(
+            "OIDC callback not supported by this provider".to_string(),
         ))
     }
 

@@ -6,6 +6,7 @@ name              = "owl-verification-service"
 version.workspace = true
 
 [dependencies]
+base64.workspace = true
 # Internal dependencies
 owl-crypto       = { path = "../crypto" }
 owl-proof-system = { path = "../proof-system" }
@@ -50,8 +51,18 @@ chrono.workspace = true
 tracing.workspace            = true
 tracing-subscriber.workspace = true
 
-# HTTP client (for midnight sidecar)
-reqwest.workspace = true
+# HTTP client (for midnight sidecar) — `stream` enables Response::bytes_stream()
+# which the SSE consumer in sidecar_events.rs uses to tail /events.
+futures-util = "0.3"
+reqwest      = { workspace = true, features = ["stream"] }
+
+# DID resolver registry (did:key multibase / did:jwk JWK / did:web)
+async-trait.workspace = true
+bs58.workspace        = true
+p256.workspace        = true
+
+# OpenID4VP §8.2 direct_post body is `application/x-www-form-urlencoded`.
+serde_urlencoded = "0.7"
 
 # Error handling
 anyhow.workspace    = true
@@ -72,9 +83,12 @@ jsonwebtoken   = "9"
 rand.workspace = true
 
 [dev-dependencies]
+base64.workspace     = true
+hex.workspace        = true
 owl-crypto           = { path = "../crypto" }
 owl-proof-system     = { path = "../proof-system" }
 reqwest              = { workspace = true, features = ["json"] }
 serde_json.workspace = true
+sha2.workspace       = true
 tokio                = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid                 = { workspace = true, features = ["v4"] }

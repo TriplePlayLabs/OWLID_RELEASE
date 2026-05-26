@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { Menu, RotateCcw, History } from 'lucide-react'
+import { Menu, RotateCcw, History, Settings } from 'lucide-react'
 import Owl from '~/components/Owl'
 import {
   DropdownMenu,
@@ -39,6 +39,16 @@ export function AppHeader({ showMenu, onReset }: AppHeaderProps) {
                   <Link to="/recent-proofs" className="flex items-center">
                     <History className="w-4 h-4 mr-2" />
                     Recent proofs
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild className="cursor-pointer">
+                  <Link
+                    to="/settings"
+                    className="flex items-center"
+                    data-testid="menu-link-settings"
+                  >
+                    <Settings className="w-4 h-4 mr-2" />
+                    Settings
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator className="bg-white/10" />

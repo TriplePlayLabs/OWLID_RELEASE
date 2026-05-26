@@ -1,0 +1,1348 @@
+/* ============================================================
+   OwlID Docs — Design System
+   Dark · sharp · gold · Inter Tight + JetBrains Mono
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ============================================================
+   Design tokens
+   ============================================================ */
+
+:root {
+  --bg-0:      #07080B;
+  --bg-1:      #0B0D12;
+  --bg-2:      #11141B;
+  --surface-1: #161A23;
+  --surface-2: #1C2230;
+  --surface-3: #232A3A;
+
+  --text-0: #FFFFFF;
+  --text-1: #ECEEF3;
+  --text-2: #A6ADBB;
+  --text-3: #6B7384;
+  --text-4: #4A5163;
+
+  --line-1: rgba(255, 255, 255, 0.06);
+  --line-2: rgba(255, 255, 255, 0.10);
+  --line-3: rgba(255, 255, 255, 0.16);
+
+  --accent:      #EAB308;
+  --accent-hi:   #F5C72B;
+  --accent-lo:   #C29407;
+  --accent-ink:  #1A1402;
+  --accent-glow: rgba(234, 179, 8, 0.45);
+  --accent-soft: rgba(234, 179, 8, 0.08);
+
+  --success:      #3FD68C;
+  --success-bg:   rgba(63, 214, 140, 0.08);
+  --success-line: rgba(63, 214, 140, 0.28);
+  --danger:       #FF6B6B;
+  --danger-bg:    rgba(255, 107, 107, 0.08);
+  --danger-line:  rgba(255, 107, 107, 0.28);
+  --warn:         #FFB547;
+  --warn-bg:      rgba(255, 181, 71, 0.08);
+  --warn-line:    rgba(255, 181, 71, 0.28);
+  --info:         #4F8DFF;
+  --info-bg:      rgba(79, 141, 255, 0.08);
+  --info-line:    rgba(79, 141, 255, 0.28);
+
+  --owl-frame:     45 95% 42%;
+  --owl-frame-bg:  45 60% 12%;
+  --owl-body:      45 95% 55%;
+  --owl-body-deep: 45 95% 32%;
+  --owl-abdomen:   45 95% 22%;
+  --owl-feature:   45 90% 18%;
+  --owl-beak:      45 95% 62%;
+  --owl-eye-gold:  0 0% 100%;
+
+  --ease:     cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 160ms;
+  --dur:      260ms;
+
+  --nav-h:     58px;
+  --sidebar-w: 260px;
+  --toc-w:     240px;
+}
+
+/* ============================================================
+   rspress variable overrides
+   ============================================================ */
+
+:root,
+html,
+html.rp-dark,
+:where(html:not(.rp-dark)) {
+  color-scheme: dark;
+
+  --rp-c-bg:      var(--bg-0);
+  --rp-c-bg-soft: var(--surface-1);
+  --rp-c-bg-mute: var(--surface-2);
+  --rp-c-bg-alt:  var(--bg-1);
+  --rp-c-bg-dark: var(--bg-2);
+
+  --rp-c-brand:         var(--accent);
+  --rp-c-brand-light:   var(--accent-hi);
+  --rp-c-brand-lighter: var(--accent-soft);
+  --rp-c-brand-dark:    var(--accent-lo);
+  --rp-c-brand-darker:  #A07905;
+  --rp-c-brand-tint:    var(--accent-soft);
+
+  --rp-c-text-0: var(--text-0);
+  --rp-c-text-1: var(--text-1);
+  --rp-c-text-2: var(--text-2);
+  --rp-c-text-3: var(--text-3);
+  --rp-c-text-4: var(--text-4);
+  --rp-c-text:   var(--text-2);
+
+  --rp-c-text-code:        var(--accent-hi);
+  --rp-c-text-code-bg:     var(--surface-1);
+  --rp-c-text-code-border: var(--line-2);
+
+  --rp-c-divider:       var(--line-2);
+  --rp-c-divider-light: var(--line-1);
+  --rp-c-divider-dark:  var(--line-3);
+
+  /* Do NOT set --rp-c-link globally — it bleeds into sidebar links */
+
+  --rp-c-overview-group-bg:       var(--bg-2);
+  --rp-c-overview-group-bg-hover: var(--surface-1);
+  --rp-c-overview-group-border:   var(--line-2);
+
+  --rp-font-family-base: "Inter Tight", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --rp-font-family-mono: "JetBrains Mono", "SF Mono", "Menlo", monospace;
+
+  --rp-radius:       0px;
+  --rp-radius-small: 0px;
+  --rp-radius-large: 0px;
+
+  --rp-nav-height:         var(--nav-h);
+  --rp-sidebar-width:      var(--sidebar-w);
+  --rp-outline-width:      var(--toc-w);
+  --rp-content-padding-x:  clamp(20px, 4vw, 56px);
+  --rp-content-padding-y:  clamp(28px, 4vw, 56px);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+
+html {
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-family: var(--rp-font-family-base);
+  font-feature-settings: "ss01", "cv11", "cv02";
+  background:
+    radial-gradient(1200px 700px at 75% -10%, rgba(234, 179, 8, 0.09), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(234, 179, 8, 0.04), transparent 65%),
+    var(--bg-0);
+  background-attachment: fixed;
+  color: var(--text-2);
+  margin: 0;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 0%, black 0%, transparent 72%);
+  mask-image: radial-gradient(ellipse at 50% 0%, black 0%, transparent 72%);
+  z-index: 0;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Zero radius on all rectangular UI — but NOT via * which breaks rspress components */
+input, button, [role="button"],
+.rp-search-button,
+.rp-code-block, .rspress-code-block,
+.rp-prev-next-page__item,
+.rp-overview-group,
+.rp-badge {
+  border-radius: 0 !important;
+}
+
+/* ============================================================
+   Nav
+   ============================================================ */
+
+.rp-nav {
+  height: var(--nav-h) !important;
+  background: rgba(7, 8, 11, 0.88) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(20px) saturate(140%);
+  border-bottom: 1px solid var(--line-1) !important;
+  z-index: 100 !important;
+}
+
+.rp-nav__left {
+  align-items: center !important;
+  gap: 10px !important;
+}
+
+.rp-nav__title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+  color: var(--text-0);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rp-nav__title__link {
+  color: var(--text-0) !important;
+  text-decoration: none !important;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: none !important;
+}
+
+/* "DOCS" badge */
+.rp-nav__title__link::after {
+  content: "DOCS";
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--rp-font-family-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding: 2px 7px;
+  border: 1px solid rgba(234, 179, 8, 0.40);
+  background: rgba(234, 179, 8, 0.08);
+  line-height: 1.6;
+  border-radius: 0;
+}
+
+/* Nav links */
+.rp-nav-menu__item {
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  color: var(--text-2) !important;
+  transition: color var(--dur-fast) var(--ease) !important;
+  position: relative;
+  padding: 0 12px !important;
+}
+
+.rp-nav-menu__item:hover {
+  color: var(--text-1) !important;
+  background: transparent !important;
+}
+
+.rp-nav-menu__item--active {
+  color: var(--accent) !important;
+}
+
+.rp-nav-menu__item__container {
+  color: inherit !important;
+  text-decoration: none !important;
+  border-bottom: none !important;
+}
+
+/* Search */
+.rp-search-button {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid var(--line-2) !important;
+  color: var(--text-3) !important;
+  height: 34px !important;
+  min-width: 180px;
+  gap: 8px;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease) !important;
+}
+
+.rp-search-button:hover {
+  background: var(--surface-2) !important;
+  border-color: var(--line-3) !important;
+}
+
+.rp-search-button__word {
+  color: var(--text-3);
+  font-size: 13px;
+  font-family: var(--rp-font-family-base);
+}
+
+.rp-search-button__hotkey {
+  font-family: var(--rp-font-family-mono) !important;
+  font-size: 11px !important;
+  background: transparent !important;
+  border: 1px solid var(--line-2) !important;
+  color: var(--text-4) !important;
+  padding: 1px 5px !important;
+  border-radius: 0 !important;
+}
+
+/* Social / icon buttons */
+.rp-social-links__item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  background: transparent;
+  border: none !important;
+  border-radius: 0 !important;
+  color: var(--text-2);
+  cursor: pointer;
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.rp-social-links__item:hover {
+  color: var(--text-0);
+  background: transparent;
+}
+
+.rp-switch-appearance {
+  display: none !important;
+}
+
+.rp-nav__right {
+  gap: 12px !important;
+}
+
+/* ============================================================
+   Sidebar — matching the target screenshot exactly
+   ============================================================ */
+
+.rp-doc-layout__sidebar {
+  background: var(--bg-0) !important;
+  border-right: 1px solid var(--line-1) !important;
+  width: var(--sidebar-w) !important;
+  max-width: var(--sidebar-w) !important;
+  min-width: var(--sidebar-w) !important;
+  padding: 16px 0 60px !important;
+  top: var(--nav-h) !important;
+  max-height: calc(100vh - var(--nav-h)) !important;
+  overflow-y: auto !important;
+}
+
+/* Section group headers — GET STARTED, INTEGRATION, etc. */
+.rp-sidebar-item.rp-sidebar-group,
+.rspress-sidebar-group-header,
+[class*="sidebar-group"] {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.10em !important;
+  text-transform: uppercase !important;
+  color: var(--text-4) !important;
+  font-family: var(--rp-font-family-mono) !important;
+  padding: 16px 20px 6px !important;
+  margin: 0 !important;
+  cursor: default !important;
+  background: transparent !important;
+  border: none !important;
+  border-left: none !important;
+  border-radius: 0 !important;
+}
+
+/* Sidebar item base */
+.rp-sidebar-item {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 10px !important;
+  padding: 6px 20px !important;
+  font-size: 13.5px !important;
+  font-weight: 400 !important;
+  color: var(--text-2) !important;
+  text-decoration: none !important;
+  border: none !important;
+  border-left: 3px solid transparent !important;
+  border-radius: 0 !important;
+  width: 100%;
+  position: relative;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease) !important;
+}
+
+/* Replace rspress's absolute tree line with an inline square bullet.
+   rspress targets .rp-sidebar-item--group-item:before with position:absolute;
+   we override it to be a static flex item (the ■ bullet). */
+.rp-sidebar-item--group-item::before {
+  content: "" !important;
+  display: inline-block !important;
+  position: static !important;
+  top: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  width: 5px !important;
+  height: 5px !important;
+  min-width: 5px !important;
+  background: var(--text-4) !important;
+  flex-shrink: 0 !important;
+  transition: background var(--dur-fast) var(--ease) !important;
+}
+
+/* Kill rspress's secondary active indicator line on rp-sidebar-item__left */
+.rp-sidebar-item--group-item.rp-sidebar-item--active .rp-sidebar-item__left::before {
+  display: none !important;
+  content: none !important;
+}
+
+.rp-sidebar-item:hover:not(.rp-sidebar-group) {
+  color: var(--text-1) !important;
+  background: var(--surface-1) !important;
+}
+
+/* Active sidebar item — gold left border + warm tint */
+.rp-sidebar-item--active,
+.rp-sidebar-item.rp-sidebar-item--active {
+  color: var(--text-0) !important;
+  background: rgba(234, 179, 8, 0.07) !important;
+  border-left: 3px solid var(--accent) !important;
+  font-weight: 500 !important;
+}
+
+/* Active bullet turns gold */
+.rp-sidebar-item--group-item.rp-sidebar-item--active::before {
+  background: var(--accent) !important;
+}
+
+.rp-sidebar-menu {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* ============================================================
+   Content area
+   ============================================================ */
+
+.rp-doc-layout__doc-container {
+  padding: clamp(28px, 4vw, 56px) clamp(20px, 4vw, 56px) 120px !important;
+}
+
+.rspress-doc {
+  color: var(--text-2);
+}
+
+/* Breadcrumb — monospace, muted */
+.rp-doc__breadcrumb,
+.rspress-doc__breadcrumb {
+  font-family: var(--rp-font-family-mono) !important;
+  font-size: 12px;
+  color: var(--text-3);
+  letter-spacing: 0.03em;
+  margin-bottom: 24px;
+}
+
+/* ============================================================
+   Hero block (home / overview page)
+   ============================================================ */
+
+.owl-hero {
+  padding: 56px 0 40px;
+  border-bottom: 1px solid var(--line-1);
+  margin-bottom: 48px;
+}
+
+.owl-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--rp-font-family-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 0 0 22px;
+}
+
+.owl-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  background: var(--accent);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.owl-h1 {
+  font-size: clamp(38px, 5.5vw, 60px) !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.03em !important;
+  line-height: 1.02 !important;
+  color: var(--text-0) !important;
+  margin: 0 0 20px !important;
+  padding: 0 !important;
+}
+
+.owl-gold,
+.accent {
+  color: var(--accent);
+}
+
+.owl-hero-sub {
+  font-size: 16px !important;
+  line-height: 1.6 !important;
+  color: var(--text-2) !important;
+  max-width: 60ch;
+  margin: 0 0 32px !important;
+}
+
+.owl-cta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ============================================================
+   Buttons
+   ============================================================ */
+
+.owl-btn,
+.btn-primary,
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  font-family: var(--rp-font-family-base);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  text-decoration: none !important;
+  border-radius: 0 !important;
+  white-space: nowrap;
+  transition: filter var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease) !important;
+}
+
+.owl-btn--primary,
+.btn-primary {
+  background: var(--accent) !important;
+  color: var(--accent-ink) !important;
+  border: 1px solid rgba(234, 179, 8, 0.6) !important;
+  box-shadow: 0 4px 16px -4px var(--accent-glow) !important;
+}
+
+.owl-btn--primary:hover,
+.btn-primary:hover {
+  filter: brightness(1.1) !important;
+  box-shadow: 0 6px 20px -4px var(--accent-glow) !important;
+}
+
+.owl-btn--outline,
+.btn-secondary {
+  background: var(--surface-2) !important;
+  color: var(--text-1) !important;
+  border: 1px solid var(--line-2) !important;
+}
+
+.owl-btn--outline:hover,
+.btn-secondary:hover {
+  background: var(--surface-3) !important;
+  border-color: var(--line-3) !important;
+  color: var(--text-0) !important;
+}
+
+/* ============================================================
+   Feature grid
+   ============================================================ */
+
+.owl-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1px;
+  background: var(--line-1);
+  border: 1px solid var(--line-1);
+  margin: 24px 0 0;
+  border-radius: 0 !important;
+}
+
+.owl-card {
+  background: var(--bg-2);
+  padding: 22px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: background var(--dur-fast) var(--ease);
+  border-radius: 0 !important;
+}
+
+.owl-card:hover {
+  background: var(--surface-1);
+}
+
+.owl-card__icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  color: var(--accent);
+  flex-shrink: 0;
+  margin-bottom: 4px;
+  border-radius: 0 !important;
+}
+
+.owl-card__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-0);
+  line-height: 1.3;
+}
+
+.owl-card__desc {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+/* ============================================================
+   Typography
+   ============================================================ */
+
+/* H1 */
+.rspress-doc h1:not(.owl-h1) {
+  font-size: clamp(28px, 4vw, 42px);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  color: var(--text-0);
+  margin: 0 0 16px;
+  scroll-margin-top: 80px;
+}
+
+/* H2 — gold "# " prefix, inline */
+/* H2 — flex layout so ::before stays inline and anchor moves to end */
+.rspress-doc h2 {
+  display: flex !important;
+  align-items: baseline !important;
+  flex-wrap: wrap !important;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  color: var(--text-0);
+  margin: 48px 0 14px;
+  scroll-margin-top: 80px;
+}
+
+/* Gold "# " prefix — first flex item */
+.rspress-doc h2::before {
+  content: "# ";
+  color: var(--accent);
+  font-weight: 400;
+  white-space: pre;
+  flex-shrink: 0;
+  order: 0;
+}
+
+/* Move anchor after heading text via order */
+.rspress-doc h2 .rp-header-anchor,
+.rspress-doc h2 > a {
+  order: 99 !important;
+  float: none !important;
+  margin-left: 6px !important;
+}
+
+/* H3 */
+.rspress-doc h3 {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-0);
+  margin: 30px 0 10px;
+  scroll-margin-top: 80px;
+}
+
+.rspress-doc h3 code {
+  font-family: var(--rp-font-family-mono) !important;
+  font-size: 15px !important;
+  background: var(--surface-1) !important;
+  border: 1px solid var(--line-2) !important;
+  padding: 1px 6px !important;
+  color: var(--accent) !important;
+  border-radius: 0 !important;
+}
+
+.rspress-doc h4,
+.rspress-doc h5,
+.rspress-doc h6 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin: 22px 0 8px;
+  scroll-margin-top: 80px;
+}
+
+/* Heading anchor — hidden by default, visible on hover */
+.rp-header-anchor {
+  float: none !important;
+  color: var(--text-4) !important;
+  border-bottom: none !important;
+  opacity: 0;
+  font-weight: 400;
+  font-size: 0.85em;
+  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.rspress-doc h2:hover .rp-header-anchor,
+.rspress-doc h3:hover .rp-header-anchor {
+  opacity: 1;
+  color: var(--accent) !important;
+}
+
+/* ============================================================
+   Paragraphs, links
+   ============================================================ */
+
+.rspress-doc p {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-2);
+  max-width: 72ch;
+  margin: 0 0 16px;
+}
+
+.rspress-doc p strong {
+  color: var(--text-0);
+  font-weight: 600;
+}
+
+/* Links — only in content, not globally */
+.rspress-doc a:not([class]) {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(234, 179, 8, 0.28);
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.rspress-doc a:not([class]):hover {
+  border-bottom-color: var(--accent);
+}
+
+/* ============================================================
+   Inline code
+   ============================================================ */
+
+.rspress-doc :not(pre):not(h3) > code {
+  font-family: var(--rp-font-family-mono) !important;
+  font-size: 12.5px !important;
+  background: var(--surface-1) !important;
+  border: 1px solid var(--line-2) !important;
+  padding: 1px 6px !important;
+  color: var(--text-1) !important;
+  border-radius: 0 !important;
+}
+
+/* ============================================================
+   Lists — gold 6×1px dash
+   ============================================================ */
+
+.rspress-doc ul,
+.rspress-doc ol {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+}
+
+.rspress-doc li {
+  position: relative;
+  padding: 3px 0 3px 22px;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-2);
+}
+
+.rspress-doc ul > li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 12px;
+  width: 6px;
+  height: 1px;
+  background: var(--accent);
+}
+
+.rspress-doc ol {
+  counter-reset: li;
+}
+
+.rspress-doc ol > li::before {
+  counter-increment: li;
+  content: counter(li) ".";
+  position: absolute;
+  left: 0;
+  top: 3px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--rp-font-family-mono);
+}
+
+.rspress-doc li strong { color: var(--text-0); font-weight: 600; }
+
+.rspress-doc hr {
+  border: none;
+  border-top: 1px solid var(--line-1);
+  margin: 32px 0;
+}
+
+/* ============================================================
+   Code blocks
+   ============================================================ */
+
+.rp-code-block,
+.rspress-code-block {
+  border: 1px solid var(--line-2) !important;
+  overflow: hidden !important;
+  margin: 16px 0 22px !important;
+  background: var(--bg-1) !important;
+  border-radius: 0 !important;
+}
+
+/* Header strip — dark bg with gold leading square */
+.rspress-code-block__title-bar,
+.rp-code-block__header {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 8px 14px !important;
+  background: var(--bg-2) !important;
+  border-bottom: 1px solid var(--line-1) !important;
+  font-family: var(--rp-font-family-mono) !important;
+  font-size: 11px !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  color: var(--text-3) !important;
+}
+
+/* Gold 6×6 square before lang label */
+.rspress-code-block__title-bar::before,
+.rp-code-block__header::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  flex-shrink: 0;
+  border-radius: 0 !important;
+}
+
+.rspress-code-block__copy {
+  margin-left: auto !important;
+  background: transparent !important;
+  border: none !important;
+  color: var(--text-3) !important;
+  font-family: var(--rp-font-family-mono) !important;
+  font-size: 11px !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  cursor: pointer;
+  padding: 0 !important;
+  transition: color var(--dur-fast) var(--ease) !important;
+}
+
+.rspress-code-block__copy:hover { color: var(--text-1) !important; }
+
+.rspress-code-block pre,
+.rp-code-block pre {
+  margin: 0 !important;
+  padding: 14px 18px !important;
+  overflow-x: auto !important;
+  font-family: var(--rp-font-family-mono) !important;
+  font-size: 13px !important;
+  line-height: 1.6 !important;
+  background: var(--bg-1) !important;
+  color: var(--text-1) !important;
+  border-radius: 0 !important;
+}
+
+.shiki,
+.shiki code {
+  background: var(--bg-1) !important;
+  font-family: var(--rp-font-family-mono) !important;
+  font-size: 13px !important;
+}
+
+.shiki .token.keyword      { color: #FFA866; font-weight: 500; }
+.shiki .token.function     { color: #7AB8FF; }
+.shiki .token.string       { color: #7DDF94; }
+.shiki .token.number,
+.shiki .token.boolean      { color: #FFC872; }
+.shiki .token.comment      { color: var(--text-4); font-style: italic; }
+.shiki .token.class-name   { color: #C9A4FF; }
+.shiki .token.punctuation  { color: var(--text-3); }
+.shiki .token.property     { color: #FFCB6B; }
+.shiki .token.operator     { color: var(--accent); }
+
+.line-numbers-rows {
+  border-right: 1px solid var(--line-1) !important;
+}
+
+/* ============================================================
+   Tables
+   ============================================================ */
+
+.rp-table-scroll-container {
+  border: 1px solid var(--line-2) !important;
+  border-radius: 0 !important;
+  margin: 18px 0;
+  overflow-x: auto;
+}
+
+.rspress-doc table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.rspress-doc th {
+  text-align: left;
+  padding: 10px 14px;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line-2);
+}
+
+.rspress-doc td {
+  padding: 10px 14px;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--line-1);
+  vertical-align: top;
+  line-height: 1.55;
+}
+
+.rspress-doc tr:last-child td { border-bottom: none; }
+
+.rspress-doc td:first-child { color: var(--text-1); font-weight: 500; }
+
+.rspress-doc td code,
+.rspress-doc th code {
+  font-family: var(--rp-font-family-mono) !important;
+  font-size: 12px !important;
+  background: var(--surface-1) !important;
+  border: 1px solid var(--line-2) !important;
+  padding: 1px 5px !important;
+  color: var(--text-1) !important;
+  border-radius: 0 !important;
+}
+
+/* ============================================================
+   Callouts / blockquotes
+   ============================================================ */
+
+.rspress-doc blockquote {
+  padding: 14px 16px;
+  margin: 18px 0;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-left: 3px solid var(--accent);
+  border-radius: 0;
+}
+
+.rspress-doc blockquote p {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+  margin: 0;
+  max-width: unset;
+}
+
+.rspress-directive-tip,
+.rspress-directive-note,
+.rspress-directive-info {
+  border: 1px solid var(--info-line) !important;
+  border-left: 3px solid var(--info) !important;
+  background: var(--bg-2) !important;
+  border-radius: 0 !important;
+  margin: 18px 0;
+  padding: 12px 16px !important;
+}
+
+.rspress-directive-warning,
+.rspress-directive-caution {
+  border: 1px solid var(--warn-line) !important;
+  border-left: 3px solid var(--warn) !important;
+  background: var(--bg-2) !important;
+  border-radius: 0 !important;
+  margin: 18px 0;
+  padding: 12px 16px !important;
+}
+
+.rspress-directive-danger {
+  border: 1px solid var(--danger-line) !important;
+  border-left: 3px solid var(--danger) !important;
+  background: var(--bg-2) !important;
+  border-radius: 0 !important;
+  margin: 18px 0;
+  padding: 12px 16px !important;
+}
+
+/* Custom callout class */
+.docs-callout {
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+  margin: 18px 0;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-left: 3px solid var(--accent);
+}
+
+.docs-callout.warn  { border-left-color: var(--warn); }
+.docs-callout.danger { border-left-color: var(--danger); }
+
+/* ============================================================
+   Tags / badges
+   ============================================================ */
+
+.docs-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+.docs-tag {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--rp-font-family-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border: 1px solid var(--line-2);
+  color: var(--text-3);
+  border-radius: 0 !important;
+  line-height: 1.6;
+}
+
+.docs-tag.accent {
+  color: var(--accent);
+  border-color: rgba(234, 179, 8, 0.35);
+  background: var(--accent-soft);
+}
+
+.docs-tag.warn {
+  color: var(--warn);
+  border-color: rgba(255, 181, 71, 0.35);
+  background: var(--warn-bg);
+}
+
+/* ============================================================
+   TOC / outline (right rail)
+   ============================================================ */
+
+.rp-doc-layout__outline {
+  background: transparent !important;
+  border-left: 1px solid var(--line-1) !important;
+  box-shadow: none !important;
+  width: var(--toc-w) !important;
+  top: var(--nav-h) !important;
+}
+
+.rp-outline { padding: 36px 16px 40px 0; }
+
+.rp-outline__title {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.10em !important;
+  text-transform: uppercase !important;
+  color: var(--text-3) !important;
+  font-family: var(--rp-font-family-mono) !important;
+  padding: 0 0 10px 14px !important;
+  margin-bottom: 4px !important;
+}
+
+.rp-toc-item,
+.rp-outline__toc a {
+  display: block;
+  padding: 5px 0 5px 14px !important;
+  font-size: 12.5px !important;
+  color: var(--text-3) !important;
+  border-left: 1px solid var(--line-1) !important;
+  line-height: 1.45;
+  text-decoration: none !important;
+  border-bottom: none !important;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease) !important;
+}
+
+.rp-toc-item:hover,
+.rp-outline__toc a:hover {
+  color: var(--text-1) !important;
+  border-bottom: none !important;
+}
+
+.rp-toc-item.active,
+.rp-outline__toc a[aria-current="true"],
+.rp-toc-item[aria-current="true"] {
+  color: var(--accent) !important;
+  border-left-color: var(--accent) !important;
+}
+
+.rp-outline__divider { border-color: var(--line-1) !important; }
+
+/* ============================================================
+   Prev / Next pager — full-width 2-column grid, Inter Tight
+   ============================================================ */
+
+.rp-prev-next-page {
+  display: grid !important;
+  grid-template-columns: 1fr 1fr !important;
+  gap: 12px !important;
+  margin-top: 64px !important;
+  padding-top: 0 !important;
+  border-top: none !important;
+  width: 100% !important;
+}
+
+.rp-prev-next-page__item {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-between !important;
+  padding: 16px 18px !important;
+  background: var(--bg-2) !important;
+  border: 1px solid var(--line-2) !important;
+  border-radius: 0 !important;
+  text-decoration: none !important;
+  border-bottom: none !important;
+  font-family: var(--rp-font-family-base) !important;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease) !important;
+  min-height: 72px;
+}
+
+.rp-prev-next-page__item:hover {
+  border-color: rgba(234, 179, 8, 0.40) !important;
+  background: var(--surface-1) !important;
+  border-bottom: none !important;
+}
+
+.rp-prev-next-page__item:hover .rp-prev-next-page__item__title {
+  color: var(--accent) !important;
+}
+
+.rp-prev-next-page__item__desc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--rp-font-family-mono) !important;
+  font-size: 10px !important;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--text-4) !important;
+  margin-bottom: 8px;
+}
+
+.rp-prev-next-page__item__title {
+  font-family: var(--rp-font-family-base) !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  color: var(--text-1) !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color var(--dur-fast) var(--ease) !important;
+}
+
+/* ============================================================
+   Doc footer
+   ============================================================ */
+
+.rp-doc-footer {
+  margin-top: 60px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line-1) !important;
+  font-family: var(--rp-font-family-mono);
+  font-size: 12px;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+}
+
+/* ============================================================
+   Scrollbars
+   ============================================================ */
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-2); }
+::-webkit-scrollbar-thumb:hover { background: var(--line-3); }
+
+/* ============================================================
+   Owl logo CSS (gold palette)
+   ============================================================ */
+
+.owl-mark {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.owl-container {
+  position: relative;
+  width: 150px;
+  height: 150px;
+  border: 8px solid hsl(var(--owl-frame)) !important;
+  border-radius: 50% !important;
+  background: hsl(var(--owl-frame-bg));
+  box-shadow:
+    -1px -1px 3px 1px rgba(255, 255, 255, 0.2),
+     2px  2px 3px 1px rgba(0, 0, 0, 0.9),
+    inset -1px -1px 2px 1px rgba(255, 255, 255, 0.2),
+    inset  1px  1px 2px 1px rgba(0, 0, 0, 0.9);
+  overflow: hidden;
+}
+
+.owl {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  width: 80px;
+  height: 80px;
+  transform: translate(-50%, 0);
+}
+
+.owl-wings { position: absolute; inset: 0; }
+
+.owl-wing {
+  position: absolute;
+  bottom: 5px;
+  width: 56px;
+  height: 56px;
+  border-radius: 75% 0 !important;
+  background: hsl(var(--owl-body));
+  z-index: 0;
+}
+
+.owl-wing-left  { left: -7.5px;  transform: rotate(-60deg); }
+.owl-wing-right { right: -7.5px; transform: rotate(150deg); }
+
+.owl-body {
+  position: absolute;
+  top: 0; left: 50%;
+  width: 100%; height: 100%;
+  border-radius: 50% !important;
+  background: linear-gradient(180deg,
+    hsl(var(--owl-body))      0%,
+    hsl(var(--owl-body))      10%,
+    hsl(var(--owl-body-deep)) 20%,
+    hsl(var(--owl-body-deep)) 100%);
+  transform: translate(-50%, 0);
+  z-index: 10;
+}
+
+.owl-abdomen {
+  position: absolute;
+  top: 24px; left: 50%;
+  width: 56px; height: 48px;
+  border-radius: 50% !important;
+  background: hsl(var(--owl-abdomen));
+  transform: translate(-50%, 0);
+}
+
+.owl-head {
+  position: absolute;
+  top: 0; left: 50%;
+  width: 90px;
+  transform: translate(-50%, 0);
+  z-index: 99;
+}
+
+.owl-eyes {
+  position: absolute;
+  width: 90px; height: 50px;
+  top: 50%; left: 50%;
+  transform: translate(-50%, 0);
+}
+
+.owl-eye {
+  position: absolute;
+  width: 40px; height: 40px;
+  border-radius: 50% !important;
+  background: hsl(var(--owl-feature));
+}
+
+.owl-eye-left  { left: 5px; }
+.owl-eye-right { right: 5px; }
+
+.owl-eye-core {
+  position: absolute;
+  top: calc(50% - 16.5px);
+  left: calc(50% - 16.5px);
+  width: 33px; height: 33px;
+  border-radius: 50% !important;
+  background: hsl(var(--owl-eye-gold));
+  overflow: hidden;
+  animation: owl-blink 5s infinite;
+  box-shadow: 0 0 10px hsl(0 0% 100% / 0.2);
+  transform-origin: center center;
+}
+
+.owl-eye-core::before {
+  content: "";
+  position: absolute;
+  top: calc(50% - 7.5px);
+  left: calc(50% - 7.5px);
+  width: 15px; height: 15px;
+  border-radius: 50% !important;
+  background: hsl(var(--owl-feature));
+}
+
+.owl-eye-core::after {
+  content: "";
+  position: absolute;
+  top: 30%; left: 20%;
+  width: 5px; height: 5px;
+  border-radius: 50% !important;
+  background: hsl(0 0% 100%);
+}
+
+.owl-beak {
+  position: absolute;
+  top: 25px; left: 50%;
+  width: 10px; height: 17.5px;
+  border-radius: 80% !important;
+  background: hsl(var(--owl-beak));
+  transform: translate(-50%, 0);
+}
+
+@keyframes owl-blink {
+  10%, 30%, 100% { transform: scaleY(1); }
+  0%, 15%, 25%   { transform: scaleY(0); }
+}
+
+/* ============================================================
+   Responsive
+   ============================================================ */
+
+@media (max-width: 1100px) {
+  .rp-doc-layout__outline { display: none !important; }
+  :root { --toc-w: 0px; --rp-outline-width: 0px; }
+}
+
+@media (max-width: 760px) {
+  .rp-doc-layout__sidebar { display: none !important; }
+  :root { --sidebar-w: 0px; --rp-sidebar-width: 0px; }
+  .owl-h1 { font-size: 34px !important; }
+  .owl-cards { grid-template-columns: 1fr !important; }
+  .rp-prev-next-page { grid-template-columns: 1fr !important; }
+}
+
+@media (max-width: 480px) {
+  .rp-search-button__word,
+  .rp-search-button__hotkey { display: none !important; }
+  .rp-search-button { min-width: unset !important; }
+}

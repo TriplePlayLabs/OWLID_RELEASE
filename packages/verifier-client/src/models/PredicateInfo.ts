@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * OwlID Verification Service
- * Token verification, trusted issuer management, and credential revocation
+ * SD-JWT VC presentation verification, trusted issuer management, and credential revocation
  *
  * The version of the OpenAPI document: 1.0.0
  *
@@ -44,6 +44,14 @@ export interface PredicateInfo {
    */
   op: string
   /**
+   * DCQL claim-path route token. This — not `attribute` — is what a
+   * verifier MUST put on the DCQL claim path: the holder SDK and the
+   * verifier route on it (`age_over_18`, `verification_level`, …).
+   * @type {string}
+   * @memberof PredicateInfo
+   */
+  route: string
+  /**
    * JSON-encoded wire value the holder drops onto `PredicateRequest.value`.
    * `GreaterOrEqual` predicates carry a number (e.g. `"18"`); `InSet`
    * predicates carry a registered dataset name (e.g. `"\"eu\""`).
@@ -61,6 +69,7 @@ export function instanceOfPredicateInfo(value: object): value is PredicateInfo {
   if (!('id' in value) || value['id'] === undefined) return false
   if (!('label' in value) || value['label'] === undefined) return false
   if (!('op' in value) || value['op'] === undefined) return false
+  if (!('route' in value) || value['route'] === undefined) return false
   if (!('value' in value) || value['value'] === undefined) return false
   return true
 }
@@ -78,6 +87,7 @@ export function PredicateInfoFromJSONTyped(json: any, ignoreDiscriminator: boole
     id: json['id'],
     label: json['label'],
     op: json['op'],
+    route: json['route'],
     value: json['value'],
   }
 }
@@ -99,6 +109,7 @@ export function PredicateInfoToJSONTyped(
     id: value['id'],
     label: value['label'],
     op: value['op'],
+    route: value['route'],
     value: value['value'],
   }
 }

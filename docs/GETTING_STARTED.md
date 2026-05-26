@@ -1,8 +1,6 @@
 # OwlID Developer Getting Started Guide
 
-A practical guide to building with OwlID, a privacy-preserving digital identity
-system using Merkle-tree selective disclosure, zero-knowledge proofs, and
-WebAuthn/passkey authentication.
+A practical guide to building with OwlID — standards-conformant SD-JWT VC issuance and verification (OpenID4VCI / OpenID4VP) on the Midnight blockchain, with WebAuthn/passkey-protected wallets.
 
 ---
 
@@ -21,30 +19,20 @@ Verify your toolchain:
 just check-tools
 ```
 
-Expected output:
-
-```
-Rust:   rustc 1.75.0 (or newer)
-Cargo:  cargo 1.75.0
-Bun:    1.x.x
-Docker: Docker version 24.x.x
-```
-
 ---
 
 ## 2. Quick Start
 
 ```bash
-# Clone and enter the repo
 git clone <repo-url> && cd OwlID
 
-# Install JS dependencies and fetch Rust crates
+# Install JS dependencies and fetch Rust crates.
 just setup
 
-# Start PostgreSQL containers
+# Start PostgreSQL containers.
 just db-start
 
-# Start all services (verification, issuer, frontend)
+# Start all services (verification, issuer, frontend).
 just dev
 ```
 
@@ -66,24 +54,14 @@ just dev-full    # adds Sidecar at http://localhost:3000
 For the full end-to-end stack with a local Midnight network:
 
 ```bash
-just dev-e2e     # starts Midnight node, indexer, proof server, then all OwlID services
+just dev-e2e     # starts Midnight node, indexer, proof server, sidecar, then all OwlID services
 ```
 
-### Building the Native SDK
-
-The first run of `just dev` builds the WASM module automatically. To rebuild
-manually:
-
-```bash
-just build-sdk
-```
-
-This compiles the Rust cryptographic primitives to both native (NAPI-RS) and
-WASM (wasm32-wasip1-threads) targets, then builds the TypeScript SDK wrapper.
+> **Midnight is required.** Both verification-service and issuer-service exit 1 on startup if the sidecar's `/health` is unreachable. Roll the sidecar before the services.
 
 ---
 
-## 3. Architecture Overview
+## 3. Architecture overview
 
 ```
                   +-------------------+
@@ -96,471 +74,326 @@ WASM (wasm32-wasip1-threads) targets, then builds the TypeScript SDK wrapper.
   +-----------v-----------+  +----------v-----------+
   | Verification Service  |  |   Issuer Service     |
   | localhost:8000 (Rust) |  |   localhost:8001     |
-  | - Token verification  |  |   - Identity         |
-  | - Trusted issuers     |  |     verification     |
-  | - Revocation registry |  |   - Credential       |
-  +-----------+-----------+  |     issuance          |
-              |              +----------+------------+
+  | - SD-JWT VC verify    |  |   - SD-JWT VC issue  |
+  | - did:web resolve     |  |   - OpenID4VCI       |
+  | - Status List check   |  |   - did:web doc      |
+  | - OpenID4VP           |  |   - Status List feed |
+  +-----------+-----------+  +----------+-----------+
               |                         |
   +-----------v-----------+  +----------v-----------+
   | PostgreSQL            |  | PostgreSQL            |
   | localhost:5432        |  | localhost:5433        |
   | verification DB       |  | issuer DB             |
-  +----------+------------+  +----------+------------+
+  +-----------+-----------+  +----------+------------+
               |                         |
               +------------+------------+
                            |
               +------------v------------+
               | Midnight Sidecar        |
-              | localhost:3000 (Hono)   |
-              | - On-chain anchoring    |
-              | - Contract interaction  |
+              | localhost:3000 (Bun)    |
+              | - issuer_registry       |
+              | - revocation_registry   |
+              | - identity_registry     |
               +-------------------------+
 ```
 
-**Verification Service (8000)** -- Validates proof tokens, manages trusted
-issuer keys, and maintains the credential revocation registry. Stateless
-verification logic backed by PostgreSQL for API keys and audit logs.
+**Verification service (8000)** — Validates SD-JWT VC presentations, resolves `did:web` issuers against the on-chain `issuer_registry`, verifies the holder's key-binding JWT, cross-checks revocation (cache + on-chain + `statuslist+jwt`).
 
-**Issuer Service (8001)** -- Orchestrates identity verification through
-pluggable providers (DigiD/OIDC/Didit/webhooks), then issues signed credentials
-as ProofDocuments. The owner stores these locally.
+**Issuer service (8001)** — Drives identity providers (DigiD/OIDC/Didit/webhook), normalizes claims to SD-JWT VC standard names, signs `application/dc+sd-jwt` credentials, exposes OpenID4VCI metadata + Batch endpoint, publishes `did:web` doc + IETF Token Status List.
 
-**App (5000)** -- React frontend with WebAuthn passkey support. Users register
-credentials, request identity verification, store ProofDocuments, and generate
-selective-disclosure tokens.
+**App (5000)** — React frontend with WebAuthn passkey support. Users register a passkey, generate a wallet-held holder key (PRF-wrapped by the passkey), receive SD-JWT VCs, and present them to verifiers.
 
-**Midnight Sidecar (3000)** -- TypeScript bridge to the Midnight blockchain.
-Anchors issuer keys and revocation state on-chain via Compact smart contracts.
+**Midnight sidecar (3000)** — the only chain-aware process (Bun + Hono). Wraps all ten Compact contracts (`issuer_registry`, `revocation_registry`, `identity_registry`, and seven `predicate_*` contracts), relays holder-proven predicate transactions, and emits SSE state events into the verification service.
+
+For the full architecture (including standards conformance) see [`ARCHITECTURE.md`](./ARCHITECTURE.md); for the Midnight stack see [`MIDNIGHT.md`](./MIDNIGHT.md) and [`COMPACT_CONTRACTS.md`](./COMPACT_CONTRACTS.md).
 
 ---
 
-## 4. SDK Integration (TypeScript)
+## 4. SDK integration (TypeScript)
 
-The `@owlid/sdk` package re-exports all cryptographic primitives from the
-native Rust/WASM layer plus WebAuthn utilities. Install it as a workspace
-dependency or import from the monorepo.
+`@owlid/sdk` is pure TypeScript — `@noble/ed25519` + `@noble/hashes` under the hood. SD-JWT VC bytes match the Rust `owl_proof_system::sd_jwt` implementation.
 
-### Create Keypairs
+### Holder — receive and store a credential
 
 ```typescript
-import { KeyPair } from '@owlid/sdk/native'
+import {
+  OwlIssuer,
+  KeyPair,
+  SdJwtVc,
+  storage,
+  buildCardShape,
+  wrapHolderKey,
+  registerCredential,
+} from '@owlid/sdk'
 
-// Generate a new Ed25519 keypair
-const issuerKp = KeyPair.generate()
-const ownerKp = KeyPair.generate()
-
-// Persist and restore
-const hex = ownerKp.privateKeyHex()
-const restored = KeyPair.fromHex(hex)
-
-// Get the public key
-const pubkey = ownerKp.publicKey()
-console.log(pubkey.toHex()) // 64-char hex string
-```
-
-### Create and Issue a Credential
-
-```typescript
-import { Document } from '@owlid/sdk/native'
-
-// Build a document with identity attributes
-const doc = Document.fromJson(
-  JSON.stringify({
-    issuerKey: issuerKp.publicKey().toHex(),
-    ownerKey: ownerKp.publicKey().toHex(),
-    firstName: 'Alice',
-    lastName: 'Wonderland',
-    dateOfBirth: '1990-05-15',
-    nationality: 'NL',
-  }),
-)
-
-// Issue: signs the Merkle root with the issuer key
-const proofDoc = doc.issue(issuerKp)
-
-// Serialize for storage (e.g., IndexedDB)
-const json = proofDoc.toJson()
-```
-
-### Generate a Selective-Disclosure Token
-
-```typescript
-import { ProofDocument } from '@owlid/sdk/native'
-import type { ProofRequest } from '@owlid/sdk'
-
-// Restore the credential
-const proofDoc = ProofDocument.fromJson(json)
-
-// Build a proof request from the verifier
-const request: ProofRequest = {
-  disclose: ['firstName', 'nationality'],
-  predicates: [],
-  trustedIssuers: [issuerKp.publicKey().toHex()],
-  challenge: crypto.randomUUID(),
-}
-
-// Generate token (signs with Ed25519)
-const token = proofDoc.generateProof(request, ownerKp, 3600)
-
-// Compact encoding for QR codes (OID1:... prefix, ~500-1500 chars)
-const compact = token.toCompact()
-```
-
-### Verify a Token
-
-```typescript
-import { Token, PublicKey } from '@owlid/sdk/native'
-
-// Decode
-const token = Token.fromCompact(compact)
-
-// Verify: checks signature, expiry, issuer trust, revocation, Merkle proofs
-const disclosedJson = token.verify(
-  [issuerKp.publicKey()], // trusted issuers
-  request.challenge, // must match
-  [], // revoked root hashes (optional)
-)
-
-const disclosed = JSON.parse(disclosedJson)
-console.log(disclosed.firstName) // 'Alice'
-console.log(disclosed.nationality) // 'NL'
-// dateOfBirth is NOT disclosed
-```
-
-### Two-Phase Signing with WebAuthn
-
-For hardware-backed signatures (passkeys), use the prepare/finalize flow:
-
-```typescript
-import { Token } from '@owlid/sdk/native'
-import type { WebAuthnSignatureData } from '@owlid/sdk'
-import { base64urlToBuffer, bufferToBase64 } from '@owlid/sdk'
-
-// Phase 1: prepare token payload (no signature yet)
-const prepared = proofDoc.prepareToken(request, 3600)
-
-// Phase 2: sign with WebAuthn
-const assertion = await navigator.credentials.get({
-  publicKey: {
-    challenge: base64urlToBuffer(prepared.challenge()),
-    allowCredentials: [{ id: credentialId, type: 'public-key' }],
-  },
+const issuer = new OwlIssuer({
+  apiKey: process.env.OWLID_API_KEY!,
+  baseUrl: 'http://localhost:8001', // omit in production
 })
 
-const token = Token.finalizeWebauthn(
-  prepared,
+// 1. Mint a passkey + a wallet-held holder key, PRF-wrap the 32-byte seed.
+const passkey = await registerCredential({ rpName: 'OwlID', rpId: 'localhost', userName: 'alice' })
+const holder = KeyPair.generate()
+const wrapped = await wrapHolderKey(passkey.credentialId, holder.toHex())
+
+// 2. Open an issuance session and submit the verified claims.
+const session = await issuer.startSession('mock-digid')
+await issuer.submitClaims(session.id, {
+  given_name: 'Alice',
+  family_name: 'Wonderland',
+  birthdate: '1990-05-15',
+  nationalities: ['NL'],
+})
+
+// 3. Issue — returns { sdJwtVc } — then store it in the wallet.
+const issued = await issuer.issue(session.id, {
+  publicKey: holder.publicKeyHex(),
+  algorithm: 'ed25519',
+})
+const parsed = SdJwtVc.parse(issued.sdJwtVc)
+await storage.addCredential(
   {
-    authenticatorData: bufferToBase64(assertion.response.authenticatorData),
-    clientDataJson: bufferToBase64(assertion.response.clientDataJSON),
-    signature: bufferToBase64(assertion.response.signature),
+    credentialId: parsed.credentialId(),
+    sdJwtVc: issued.sdJwtVc,
+    issuer: parsed.peekIssuer(),
+    providerId: 'mock-digid',
+    issuedAt: new Date().toISOString(),
+    holderPublicKeyHex: holder.publicKeyHex(),
+    verifiedClaims: { firstName: 'Alice' },
+    cardShape: buildCardShape('mock-digid', { firstName: 'Alice' }),
   },
-  credentialPublicKeyHex,
+  wrapped,
 )
+```
+
+### Holder — build a presentation
+
+```typescript
+import { presentSdJwtVc } from '@owlid/sdk'
+
+// presentSdJwtVc(sdJwtVc, holderKeyHex, disclose, { aud, nonce }) — synchronous.
+const presentation = presentSdJwtVc(
+  storedCredential.sdJwtVc,
+  holderKeyHex, // unlocked holder seed hex, from unwrapHolderKey()
+  ['given_name', 'age_over_18'],
+  { aud: verifierOrigin, nonce: verifierNonce }, // bound into the KB-JWT
+)
+// presentation is the full SD-JWT VC presentation string
+```
+
+### Verifier — verify a presentation
+
+```typescript
+import { OwlVerifier } from '@owlid/sdk'
+
+const verifier = new OwlVerifier({ apiKey: process.env.OWLID_API_KEY! })
+const challenge = await verifier.mintChallenge()
+
+// The verifier sends `challenge.challenge` to the holder; the holder
+// builds a presentation that binds it into the KB-JWT.
+const result = await verifier.verify(presentation, challenge.challenge)
+if (result.valid) {
+  console.log(result.subjects) // { given_name: 'Alice', age_over_18: true }
+}
 ```
 
 ---
 
 ## 5. Rust API
 
-Use the proof system directly from Rust for backend integrations or custom
-verification logic.
+Use the proof system directly from Rust for backend integrations or custom verification logic.
 
-### Issue a Credential
+### Build and sign an SD-JWT VC
 
 ```rust
-use owl_proof_system::{Document, Token, ProofRequest, PredicateOp};
-use owl_crypto::KeyPair;
+use owl_proof_system::sd_jwt::{KeyPair, build_sd_jwt_vc};
+use owl_crypto::{KeyPair as IssuerKey};
 use serde_json::json;
-use std::collections::BTreeMap;
 
-let issuer = KeyPair::generate();
-let owner  = KeyPair::generate();
+let issuer = IssuerKey::generate();
+let holder = KeyPair::generate_ed25519();
 
-let mut attrs = BTreeMap::new();
-attrs.insert("issuerKey".into(),   json!(issuer.public_key().to_hex()));
-attrs.insert("ownerKey".into(),    json!(owner.public_key().to_hex()));
-attrs.insert("name".into(),        json!("Alice"));
-attrs.insert("dateOfBirth".into(), json!("1990-05-15"));
-attrs.insert("nationality".into(), json!("NL"));
-
-// Create and issue
-let doc = Document::new(attrs).unwrap();
-let mut proof_doc = doc.issue(&issuer);
-
-// Verify the issuer signature
-proof_doc.verify(&issuer.public_key()).unwrap();
+let sd_jwt_vc = build_sd_jwt_vc(
+    &issuer,
+    "did:web:issuer.example.com",
+    &holder.public_key(),
+    json!({
+        "given_name":    "Alice",
+        "family_name":   "Wonderland",
+        "birthdate":     "1990-05-15",
+        "nationalities": ["NL"],
+        "age_over_18":   true,
+    }),
+    /* expires_in */ 3600,
+).unwrap();
 ```
 
-### Generate and Verify a Token
+### Build a presentation + KB-JWT and verify
 
 ```rust
-use owl_proof_system::revocation::RevocationRegistry;
+use owl_proof_system::sd_jwt::{SdJwtVc, verify_sd_jwt};
 
-let request = ProofRequest {
-    disclose: vec!["name".into()],
-    predicates: vec![],
-    trusted_issuers: vec![issuer.public_key().to_hex()],
-    challenge: "random-challenge-string".into(),
-};
+let credential   = SdJwtVc::parse(&sd_jwt_vc).unwrap();
+let presentation = credential
+    .present(&["given_name", "age_over_18"], &holder, "https://verifier", "nonce-xyz")
+    .unwrap();
 
-// Generate token (signs with owner's Ed25519 key)
-let token = Token::generate(
-    &mut proof_doc,
-    &request,
-    &owner,
-    3600, // TTL in seconds
-).unwrap();
-
-// Verify
-let registry = RevocationRegistry::new();
-token.verify(
+let verified = verify_sd_jwt(
+    &presentation,
     &[issuer.public_key()],
-    "random-challenge-string",
-    &registry,
+    "https://verifier",
+    "nonce-xyz",
 ).unwrap();
-```
 
-### Compact Encoding
-
-```rust
-// Encode: JSON -> CBOR -> deflate -> Base45 -> "OID1:" prefix
-let compact: String = token.to_compact().unwrap();
-
-// Decode
-let restored = Token::from_compact(&compact).unwrap();
+assert_eq!(verified.claims["given_name"], "Alice");
+assert_eq!(verified.claims["age_over_18"], true);
 ```
 
 ---
 
-## 6. ZK Predicates
+## 6. Predicates
 
-Predicates prove facts about credential attributes without revealing the
-underlying values. They are evaluated as zero-knowledge proofs inside the token.
+Predicates surface as **plain SD-JWT VC claims**. The issuer evaluates the underlying ZK predicate (Midnight Compact circuit) at issuance time and emits the result as a claim the holder can selectively disclose.
 
-### Age Verification (GreaterOrEqual)
+| Predicate         | Disclosed claim                                  | Notes                                                         |
+| ----------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| Age ≥ N           | `age_over_N: true`                               | Multiple `age_over_NN` claims may be issued in the same VC.   |
+| Nationality ∈ set | `nationality: "NL"` (or `nationalities: ["NL"]`) | Issuer attests the holder is in the approved set via Compact. |
+| KYC level ≥ N     | `kyc_level: N`                                   | Issuer attests after running the IdP flow.                    |
 
-```typescript
-const request: ProofRequest = {
-  disclose: ['firstName'],
-  predicates: [
-    {
-      attribute: 'dateOfBirth',
-      op: 'GreaterOrEqual',
-      value: '18', // proves age >= 18
-    },
-  ],
-  trustedIssuers: [issuerPk.toHex()],
-  challenge: crypto.randomUUID(),
-}
-```
+The holder discloses only what the verifier asks for — `age_over_18` without `birthdate`, `nationalities` without `given_name`, etc. The verifier sees the issuer-signed claim; the underlying value (the actual DOB, full country list) never leaves the issuer + the wallet.
 
-The verifier learns "this person is 18 or older" without seeing the actual date
-of birth.
-
-### Nationality Set Membership (InSet)
-
-`InSet` operates against a **named, registered dataset** — the holder ships
-the dataset name (e.g. `"eu"`) and the verifier recomputes the canonical
-Merkle root from the same registered set. The holder can no longer pick the
-country list themselves.
-
-```typescript
-const request: ProofRequest = {
-  disclose: [],
-  predicates: [
-    {
-      attribute: 'nationality',
-      op: 'InSet',
-      value: JSON.stringify('eu'),
-    },
-  ],
-  trustedIssuers: [issuerPk.toHex()],
-  challenge: crypto.randomUUID(),
-}
-```
-
-The verifier learns "nationality is in the EU set" without learning the
-specific country. The `eu` dataset normalizes input — alpha-2 (`NL`),
-alpha-3 (`NLD`), country name (`Netherlands`), and demonym (`Dutch`) all
-prove identically.
-
-The list of supported datasets and their contents lives on the
-**verification service** (the verifier already pins proofs against this
-registry, so it is the natural source of truth):
-
-```
-GET /circuit-data           → [{ "name": "eu", "version": 1 }, …]
-GET /circuit-data/eu        → { "name": "eu", "version": 1, "items": ["AT", "BE", …] }
-```
-
-### Combining Disclosure and Predicates
-
-```typescript
-const request: ProofRequest = {
-  disclose: ['firstName'], // reveal name
-  predicates: [
-    { attribute: 'dateOfBirth', op: 'GreaterOrEqual', value: '21' },
-    { attribute: 'nationality', op: 'InSet', value: JSON.stringify('eu') },
-  ],
-  trustedIssuers: [issuerPk.toHex()],
-  challenge: crypto.randomUUID(),
-}
-// Result: verifier sees firstName, knows age >= 21 and nationality is in the EU set.
-```
-
-Apps SHOULD fetch the predicate registry from the verification service at
-startup instead of hard-coding ids and dataset names:
+Apps can discover available predicates at startup:
 
 ```
 GET /predicates → [
-  { "id": "age:>=18",        "attribute": "dateOfBirth",       "label": "Age 18 or older",
-    "op": "GreaterOrEqual",  "value": "18" },
-  { "id": "nationality:eu",  "attribute": "nationality",       "label": "EU citizenship",
-    "op": "InSet",           "value": "\"eu\"" },
+  { "id": "age:>=18", "claim": "age_over_18", "label": "Age 18 or older" },
+  { "id": "age:>=21", "claim": "age_over_21", "label": "Age 21 or older" },
   …
 ]
 ```
 
-`value` is the JSON-encoded wire shape — drop it straight onto a
-`PredicateRequest.value`.
-
-In Rust, predicates use the `PredicateRequest` struct:
-
-```rust
-use owl_proof_system::{PredicateRequest, PredicateOp};
-
-let predicates = vec![
-    PredicateRequest {
-        attribute: "dateOfBirth".into(),
-        op: PredicateOp::GreaterOrEqual,
-        value: json!(18),
-    },
-    PredicateRequest {
-        attribute: "nationality".into(),
-        op: PredicateOp::InSet,
-        value: json!("eu"),
-    },
-];
-```
-
 ---
 
-## 7. Verification Service API
+## 7. Verification service API
 
 All endpoints require an `Authorization: Bearer <api-key>` header unless noted otherwise.
 
 For the full route list see [`crates/verification-service/README.md`](../crates/verification-service/README.md) or `http://localhost:8000/swagger-ui/`.
 
-### Public Endpoints (no auth)
+### Public endpoints (no auth)
 
-| Method | Path      | Description  |
-| ------ | --------- | ------------ |
-| GET    | `/health` | Health check |
+| Method | Path                  | Description                                  |
+| ------ | --------------------- | -------------------------------------------- |
+| GET    | `/health`             | Health check                                 |
+| GET    | `/status-revoked`     | Plain set of revoked credential ids (mirror) |
+| POST   | `/openid4vp/response` | OpenID4VP `direct_post` endpoint             |
 
-### Authenticated Endpoints
+### Authenticated endpoints
 
-| Method | Path                 | Description                      |
-| ------ | -------------------- | -------------------------------- |
-| POST   | `/verify`            | Verify a proof token             |
-| GET    | `/metrics`           | Service metrics                  |
-| GET    | `/trusted-issuers`   | List trusted issuer public keys  |
-| POST   | `/revocations/check` | Check if a credential is revoked |
-| GET    | `/revocations/list`  | List all revoked credentials     |
+| Method | Path                     | Description                       |
+| ------ | ------------------------ | --------------------------------- |
+| POST   | `/verify`                | Verify an SD-JWT VC presentation  |
+| GET    | `/metrics`               | Service metrics                   |
+| GET    | `/trusted-issuers`       | List trusted issuer entries       |
+| POST   | `/revocations/check`     | Check if a credential is revoked  |
+| GET    | `/revocations/list`      | List all revoked credentials      |
+| POST   | `/presentation/sessions` | Open a QR/WS presentation session |
 
-### Admin Endpoints (admin API key)
+### Admin endpoints (admin API key)
 
-| Method | Path                                     | Description               |
-| ------ | ---------------------------------------- | ------------------------- |
-| POST   | `/trusted-issuers`                       | Register a trusted issuer |
-| POST   | `/revocations/revoke`                    | Revoke a credential       |
-| POST   | `/revocations/suspend`                   | Suspend a credential      |
-| POST   | `/revocations/reactivate`                | Reactivate a credential   |
-| DELETE | `/admin/gdpr-erasure/{owner_public_key}` | GDPR data erasure         |
+| Method | Path                                  | Description               |
+| ------ | ------------------------------------- | ------------------------- |
+| POST   | `/trusted-issuers`                    | Register a trusted issuer |
+| POST   | `/revocations/revoke`                 | Revoke a credential       |
+| POST   | `/revocations/suspend`                | Suspend a credential      |
+| POST   | `/revocations/reactivate`             | Reactivate a credential   |
+| DELETE | `/admin/gdpr-erasure/{credential_id}` | GDPR data erasure         |
+| GET    | `/admin/midnight/status`              | Sidecar health probe      |
 
-### Example: Verify a Token
+### Example — verify a presentation
 
 ```bash
 curl -X POST http://localhost:8000/verify \
   -H "Authorization: Bearer owlid_sk_test_dev0000000000000000000000000000000000000000" \
   -H "Content-Type: application/json" \
   -d '{
-    "token": "OID1:...",
-    "challenge": "the-challenge-used-during-generation"
+    "presentation": "<sd-jwt-vc>~<disclosure>~<disclosure>~<kb-jwt>",
+    "challenge": "the-nonce-used-in-kb-jwt"
   }'
 ```
 
-Trusted issuers are managed server-side (`POST /trusted-issuers`); the verifier consults the registry — clients do not pass them per-request.
-
-### Example: Register a Trusted Issuer
+### Example — register a trusted issuer
 
 ```bash
-# Get the issuer's public key from the issuer service
 KEY=$(curl -s http://localhost:8001/issuer-info | jq -r '.publicKey')
 
-# Register it with the verification service (admin API key required)
 curl -X POST http://localhost:8000/trusted-issuers \
   -H "Authorization: Bearer owlid_sk_test_dev0000000000000000000000000000000000000000" \
   -H "Content-Type: application/json" \
   -d "{\"public_key\": \"$KEY\", \"name\": \"OwlID Issuer\"}"
 ```
 
-Or use the shortcut:
+Or use the shortcut: `just register-issuer`.
 
-```bash
-just register-issuer
-```
-
-### Issuer Service API (port 8001)
+### Issuer service API (port 8001)
 
 Key endpoints for the credential issuance flow:
 
-| Method | Path                    | Description                          |
-| ------ | ----------------------- | ------------------------------------ |
-| GET    | `/health`               | Health check                         |
-| GET    | `/issuer-info`          | Issuer public key and metadata       |
-| GET    | `/providers`            | List identity verification providers |
-| POST   | `/sessions`             | Start a verification session         |
-| GET    | `/sessions/{id}`        | Get session status                   |
-| POST   | `/sessions/{id}/submit` | Submit identity data                 |
-| GET    | `/sessions/{id}/claims` | Get verified claims                  |
-| POST   | `/sessions/{id}/issue`  | Issue a credential                   |
-| POST   | `/keypair`              | Generate a new Ed25519 keypair       |
+| Method | Path                                    | Description                               |
+| ------ | --------------------------------------- | ----------------------------------------- |
+| GET    | `/health`                               | Health check                              |
+| GET    | `/.well-known/did.json`                 | did:web document (CORS-public)            |
+| GET    | `/.well-known/openid-credential-issuer` | OpenID4VCI metadata                       |
+| GET    | `/issuer-info`                          | Issuer public key + did:web id            |
+| GET    | `/providers`                            | List identity verification providers      |
+| POST   | `/sessions`                             | Start a verification session              |
+| GET    | `/sessions/{id}`                        | Get session status                        |
+| POST   | `/sessions/{id}/submit`                 | Submit identity data                      |
+| GET    | `/sessions/{id}/claims`                 | Get verified claims                       |
+| POST   | `/sessions/{id}/complete`               | Complete + issue SD-JWT VC                |
+| POST   | `/credential`                           | OpenID4VCI single / Batch issuance        |
+| POST   | `/token`                                | OpenID4VCI pre-authorized token           |
+| GET    | `/status/{id}`                          | IETF Token Status List (`statuslist+jwt`) |
 
 ---
 
 ## 8. Configuration
 
-### Verification Service
+### Verification service
 
-| Variable                    | Default                 | Description                     |
-| --------------------------- | ----------------------- | ------------------------------- |
-| `VERIFICATION_DATABASE_URL` | (required)              | PostgreSQL connection string    |
-| `SERVER_HOST`               | `0.0.0.0`               | Bind address                    |
-| `SERVER_PORT`               | `8000`                  | Listen port                     |
-| `RUST_LOG`                  | `info`                  | Log level filter                |
-| `MIDNIGHT_SIDECAR_URL`      | `http://localhost:3000` | Sidecar URL for on-chain checks |
-| `MIDNIGHT_SIDECAR_API_KEY`  | (none)                  | Optional sidecar auth key       |
+| Variable                    | Default                 | Description                              |
+| --------------------------- | ----------------------- | ---------------------------------------- |
+| `VERIFICATION_DATABASE_URL` | (required)              | PostgreSQL connection string             |
+| `SERVER_HOST`               | `0.0.0.0`               | Bind address                             |
+| `SERVER_PORT`               | `8000`                  | Listen port                              |
+| `RUST_LOG`                  | `info`                  | Log level filter                         |
+| `MIDNIGHT_SIDECAR_URL`      | `http://localhost:3000` | Required; service exits 1 if unreachable |
+| `MIDNIGHT_SIDECAR_API_KEY`  | (required)              | Shared secret with sidecar               |
+| `ENCRYPTION_KEY`            | (optional)              | 32-byte AES-GCM hex, at-rest encryption  |
+| `ADMIN_JWT_SECRET`          | (required, no default)  | HS256 secret for admin JWTs              |
 
-### Issuer Service
+### Issuer service
 
-| Variable               | Default                 | Description                        |
-| ---------------------- | ----------------------- | ---------------------------------- |
-| `ISSUER_DATABASE_URL`  | (required)              | PostgreSQL connection string       |
-| `ISSUER_HOST`          | `0.0.0.0`               | Bind address                       |
-| `ISSUER_PORT`          | `8001`                  | Listen port                        |
-| `RUST_LOG`             | `info`                  | Log level filter                   |
-| `DIDIT_API_KEY`        | (none)                  | Didit provider API key             |
-| `DIDIT_WORKFLOW_ID`    | (none)                  | Didit verification workflow ID     |
-| `MIDNIGHT_SIDECAR_URL` | `http://localhost:3000` | Sidecar URL for on-chain anchoring |
+| Variable                        | Default                 | Description                               |
+| ------------------------------- | ----------------------- | ----------------------------------------- |
+| `ISSUER_DATABASE_URL`           | (required)              | PostgreSQL connection string              |
+| `ISSUER_HOST`                   | `0.0.0.0`               | Bind address                              |
+| `ISSUER_PORT`                   | `8001`                  | Listen port                               |
+| `RUST_LOG`                      | `info`                  | Log level filter                          |
+| `ISSUER_PUBLIC_URL`             | `http://localhost:8001` | Used as `did:web` base + status-list URL  |
+| `ISSUER_PRIVATE_KEY`            | (required)              | 32-byte hex Ed25519 private key           |
+| `MIDNIGHT_SIDECAR_URL`          | `http://localhost:3000` | Required; service exits 1 if unreachable  |
+| `MIDNIGHT_SIDECAR_API_KEY`      | (required)              | Shared secret with sidecar                |
+| `MIDNIGHT_AUTO_REGISTER_ISSUER` | `false`                 | If true, registers issuer key in registry |
+| `DIDIT_API_KEY`                 | (optional)              | Didit KYC provider API key                |
+| `DIDIT_WORKFLOW_ID`             | (optional)              | Didit verification workflow id            |
 
-### Midnight Sidecar
+### Midnight sidecar
 
-Configure via `.env` in the project root (loaded by `just` via `dotenv-load`).
-See `midnight.env.example` for placeholder values. Key variables include the
-Midnight node URL, indexer GraphQL endpoint, proof server URL, and wallet seed.
+Configure via `.env` in the project root (loaded by `just` via `dotenv-load`). See `midnight.env.example` for placeholder values. Key variables include the Midnight node URL, indexer GraphQL endpoint, proof server URL, and wallet seed.
 
-### Database Defaults (docker-compose)
+### Database defaults (docker-compose)
 
 | Service               | Host:Port      | Database     | User | Password |
 | --------------------- | -------------- | ------------ | ---- | -------- |
@@ -569,89 +402,40 @@ Midnight node URL, indexer GraphQL endpoint, proof server URL, and wallet seed.
 
 ---
 
-## 9. Running Tests
-
-### All Tests
+## 9. Running tests
 
 ```bash
-just test
+just test          # rust + ts
+just test-rust     # cargo test --workspace
+just test-ts       # bun run test
+just fmt           # format rust + ts
+just lint          # clippy + oxlint
+just check         # fmt + lint + test
+
+# Live cross-service E2E (requires Midnight devnet + sidecar + services up).
+cargo test -p owl-verification-service --test e2e_api -- --ignored --test-threads=1
 ```
-
-This runs both Rust and TypeScript test suites.
-
-### Rust Only
-
-```bash
-just test-rust
-# or directly:
-cargo test --workspace
-```
-
-### TypeScript Only
-
-```bash
-just test-ts
-# or directly:
-bun run test
-```
-
-### Code Quality
-
-```bash
-just fmt      # format Rust + TS
-just lint     # clippy + eslint
-just check    # fmt + lint + test (all three)
-```
-
-### API Smoke Test
-
-With services running (`just dev`):
-
-```bash
-just test-api
-```
-
-This hits the health endpoints and lists configured identity providers.
 
 ---
 
-## 10. Common Tasks
-
-### Reset Databases
+## 10. Common tasks
 
 ```bash
-just db-reset
-```
-
-Drops and recreates both PostgreSQL containers. Migrations run automatically on
-startup.
-
-### Access Database CLI
-
-```bash
+just db-reset          # drop + recreate both postgres containers
 just db-verification   # psql into verification DB
 just db-issuer         # psql into issuer DB
-```
 
-### Compile Compact Contracts
-
-```bash
-just compact           # full build (generates ZK keys, slow)
-just compact-fast      # skip ZK key generation
+just compact           # full Compact contract build (slow, runs ZK keygen)
+just compact-fast      # skip ZK keygen
 just compact-clean     # remove compiled artifacts
-```
 
-### Deploy Contracts to Local Midnight
-
-```bash
 just midnight-up       # start local Midnight network
-just midnight-status   # verify all services are healthy
+just midnight-status   # health-check the chain stack
 just deploy-contracts  # deploy OwlID Compact contracts
 just fund-accounts     # fund test accounts with NIGHT tokens
-```
 
-### Rebuild Everything
+just generate-api-client  # regenerate verifier/issuer/admin clients from OpenAPI
+just generate-zk-keys     # regenerate Groth16 PK/VK artifacts
 
-```bash
 just clean && just build
 ```

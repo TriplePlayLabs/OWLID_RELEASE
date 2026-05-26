@@ -1,16 +1,14 @@
 import Owl from '~/components/Owl'
+import type { VerifiedClaims } from '@owlid/sdk'
 import { PassportDataPage } from './PassportDataPage'
-import type { IdentityData } from '@owlid/sdk'
 
 interface PassportBookProps {
   isOpen: boolean
   onToggle: () => void
-  identityData: IdentityData | null
+  claims: VerifiedClaims
+  portraitImage?: string
 }
 
-/**
- * SVG Chip component - detailed passport chip design
- */
 function PassportChip() {
   return (
     <svg viewBox="0 0 40 30" className="w-10 h-7">
@@ -36,28 +34,23 @@ function PassportChip() {
   )
 }
 
-export function PassportBook({ isOpen, onToggle, identityData }: PassportBookProps) {
+export function PassportBook({ isOpen, onToggle, claims, portraitImage }: PassportBookProps) {
   return (
     <div className="passport-container">
       <div className={`passport-book ${isOpen ? 'is-open' : ''}`} onClick={onToggle}>
-        {/* COVER */}
         <div className="passport-cover">
           <div className="passport__logo-container scale-75">
             <Owl />
           </div>
-
           <div className="passport__title-group">
             <div className="text-xs tracking-[0.3em] text-amber-400/60 mb-1">DIGITAL</div>
             <div className="text-xl font-semibold tracking-wider text-amber-400/90">PASSPORT</div>
           </div>
-
           <div className="passport__chip-container">
             <PassportChip />
           </div>
         </div>
-
-        {/* DATA PAGE */}
-        <PassportDataPage identityData={identityData} />
+        <PassportDataPage claims={claims} portraitImage={portraitImage} />
       </div>
     </div>
   )

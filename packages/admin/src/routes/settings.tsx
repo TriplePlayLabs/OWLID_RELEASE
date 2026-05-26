@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
-import { Copy, Info, Loader2, Moon } from 'lucide-react'
+import { Info, Moon, ShieldX } from 'lucide-react'
 import { toast } from 'sonner'
 
 import {
@@ -13,12 +13,23 @@ import {
 import { Button } from '@owlid/ui/components/ui/button'
 import { Input } from '@owlid/ui/components/ui/input'
 import { Label } from '@owlid/ui/components/ui/label'
-import { Separator } from '@owlid/ui/components/ui/separator'
-import { Switch } from '@owlid/ui/components/ui/switch'
+import { Skeleton } from '@owlid/ui/components/ui/skeleton'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@owlid/ui/components/ui/dialog'
 import { useIssuerInfo } from '~/hooks/use-issuer'
 import { getGdprApi } from '~/hooks/use-verification'
-import { useMidnightStatus, useToggleMidnight } from '~/hooks/use-midnight'
+import { useMidnightStatus } from '~/hooks/use-midnight'
 import type { ErasureReceipt } from '@owlid/admin-client'
+import { PageHeader } from '~/components/PageHeader'
+import { CopyButton } from '~/components/CopyButton'
+import { StatusBadge } from '~/components/StatusBadge'
 
 export const Route = createFileRoute('/settings')({
   component: SettingsPage,
@@ -27,85 +38,69 @@ export const Route = createFileRoute('/settings')({
 function SettingsPage() {
   const issuerInfo = useIssuerInfo()
   const midnight = useMidnightStatus()
-  const toggleMidnight = useToggleMidnight()
 
-  function copyPublicKey() {
-    if (issuerInfo.data) {
-      navigator.clipboard.writeText(issuerInfo.data.publicKey)
-      toast.success('Issuer public key copied')
-    }
-  }
+  const sidecarReachable = midnight.data?.sidecar.reachable === true
+  const sidecarConnected = midnight.data?.sidecar.connected === true
+  const sidecarLatency = midnight.data?.sidecar.latencyMs
+  const sidecarError = midnight.data?.sidecar.error
+  const sidecarStatus = sidecarConnected ? 'connected' : sidecarReachable ? 'syncing' : 'error'
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="text-muted-foreground">Integration controls and service identity</p>
-      </div>
+      <PageHeader title="Settings" description="Integration status and service identity" />
 
-      {/* Midnight runtime toggle — admin-only, persisted to system_settings */}
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between space-y-0">
-          <div>
-            <CardTitle className="flex items-center gap-2">
-              <Moon className="h-5 w-5" /> Midnight Integration
-            </CardTitle>
-            <CardDescription>
-              Gate chain-bound operations. Disabling stops on-chain calls but preserves the
-              connection so re-enabling is instant.
-            </CardDescription>
-          </div>
-          <div className="flex items-center gap-2">
-            {toggleMidnight.isPending && (
-              <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-            )}
-            <Switch
-              checked={midnight.data?.enabled ?? false}
-              disabled={
-                !midnight.data?.configured || midnight.isLoading || toggleMidnight.isPending
-              }
-              onCheckedChange={(next) => toggleMidnight.mutate(next)}
-              aria-label="Toggle Midnight integration"
-            />
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          {!midnight.data?.configured && (
-            <p className="text-muted-foreground">
-              The verification service was started without{' '}
-              <code className="text-xs bg-muted px-1 py-0.5 rounded">MIDNIGHT_SIDECAR_URL</code>.
-              Set the env and restart the service to make this toggle functional.
-            </p>
-          )}
-          {toggleMidnight.isError && (
-            <p className="text-destructive text-xs">
-              {toggleMidnight.error instanceof Error
-                ? toggleMidnight.error.message
-                : 'Toggle failed'}
-            </p>
-          )}
-          <p className="text-xs text-muted-foreground">
-            Persisted to <code className="text-xs">system_settings.midnight_enabled</code> so
-            restarts inherit the last operator decision.
-          </p>
-        </CardContent>
-      </Card>
-
-      {/* Issuer Info */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Info className="h-5 w-5" /> Issuer Information
+            <Moon className="h-5 w-5" /> Midnight Sidecar
           </CardTitle>
-          <CardDescription>Current issuer service identity</CardDescription>
+          <CardDescription>
+            Midnight is the trust, revocation and identity-anchor core. The verification service
+            refuses to start without a reachable sidecar.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {midnight.isLoading && <Skeleton className="h-5 w-40" />}
+          {midnight.data && (
+            <>
+              <div className="flex items-center gap-3">
+                <StatusBadge
+                  status={sidecarStatus}
+                  label={
+                    sidecarStatus === 'connected'
+                      ? 'Connected'
+                      : sidecarStatus === 'syncing'
+                        ? 'Reachable, syncing'
+                        : 'Unreachable'
+                  }
+                />
+                {sidecarLatency != null && (
+                  <span className="text-xs text-muted-foreground">{sidecarLatency} ms</span>
+                )}
+              </div>
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <span>URL</span>
+                <code className="bg-muted px-1.5 py-0.5 rounded">{midnight.data.sidecarUrl}</code>
+                <CopyButton value={midnight.data.sidecarUrl} label="Sidecar URL" />
+              </div>
+              {sidecarError && <p className="text-destructive text-xs">{sidecarError}</p>}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Info className="h-5 w-5" /> Issuer Identity
+          </CardTitle>
+          <CardDescription>Public identity of the connected issuer service</CardDescription>
         </CardHeader>
         <CardContent>
-          {issuerInfo.isLoading && (
-            <p className="text-muted-foreground text-sm">Loading issuer info...</p>
-          )}
-          {issuerInfo.error && (
+          {issuerInfo.isLoading && <Skeleton className="h-12 w-full max-w-md" />}
+          {issuerInfo.isError && (
             <p className="text-destructive text-sm">
-              Failed to fetch issuer info: {issuerInfo.error.message}
+              Failed to fetch issuer info: {issuerInfo.error?.message}
             </p>
           )}
           {issuerInfo.data && (
@@ -116,13 +111,11 @@ function SettingsPage() {
               </div>
               <div className="grid gap-1">
                 <Label className="text-muted-foreground text-xs">Public Key</Label>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1">
                   <code className="text-xs bg-muted px-2 py-1 rounded break-all">
                     {issuerInfo.data.publicKey}
                   </code>
-                  <Button variant="ghost" size="icon" onClick={copyPublicKey}>
-                    <Copy className="h-4 w-4" />
-                  </Button>
+                  <CopyButton value={issuerInfo.data.publicKey} label="Issuer public key" />
                 </div>
               </div>
             </div>
@@ -130,22 +123,22 @@ function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Separator />
-
-      <Card>
+      <Card className="border-destructive/30">
         <CardHeader>
-          <CardTitle className="text-destructive">Danger Zone</CardTitle>
-          <CardDescription>Destructive operations that cannot be undone</CardDescription>
+          <CardTitle className="text-destructive flex items-center gap-2">
+            <ShieldX className="h-5 w-5" /> Danger Zone
+          </CardTitle>
+          <CardDescription>Irreversible operations</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center justify-between rounded-lg border border-destructive/30 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 p-4">
             <div>
               <h4 className="text-sm font-medium">GDPR Data Erasure</h4>
               <p className="text-xs text-muted-foreground">
-                Delete all data associated with a specific owner public key
+                Revoke credentials and anonymize all records for an owner public key
               </p>
             </div>
-            <GdprErasureButton />
+            <GdprErasureDialog />
           </div>
         </CardContent>
       </Card>
@@ -153,9 +146,10 @@ function SettingsPage() {
   )
 }
 
-function GdprErasureButton() {
+function GdprErasureDialog() {
+  const [open, setOpen] = useState(false)
   const [ownerKey, setOwnerKey] = useState('')
-  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [receipt, setReceipt] = useState<ErasureReceipt | null>(null)
 
   async function handleErasure() {
@@ -163,48 +157,76 @@ function GdprErasureButton() {
       toast.error('Owner public key is required')
       return
     }
+    setBusy(true)
     try {
       const result = await getGdprApi().gdprErasure({ ownerPublicKey: ownerKey.trim() })
       setReceipt(result)
-      toast.success(
-        `GDPR erasure completed: ${result.credentialsRevoked} credentials revoked, ${result.recordsAnonymized} records anonymized`,
-      )
       setOwnerKey('')
-      setConfirming(false)
+      toast.success(
+        `Erasure complete — ${result.credentialsRevoked} revoked, ${result.recordsAnonymized} anonymized`,
+      )
     } catch (err) {
       toast.error(`Erasure failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBusy(false)
     }
-  }
-
-  if (!confirming) {
-    return (
-      <div className="flex items-center gap-2">
-        {receipt && (
-          <span className="text-xs text-muted-foreground">
-            Last: {receipt.receiptId.slice(0, 8)}...
-          </span>
-        )}
-        <Button variant="destructive" size="sm" onClick={() => setConfirming(true)}>
-          Erase Data
-        </Button>
-      </div>
-    )
   }
 
   return (
     <div className="flex items-center gap-2">
-      <Input
-        className="font-mono text-xs w-48"
-        placeholder="Owner public key"
-        value={ownerKey}
-        onChange={(e) => setOwnerKey(e.target.value)}
-      />
-      <Button variant="destructive" size="sm" onClick={handleErasure}>
-        Confirm
-      </Button>
-      <Button variant="outline" size="sm" onClick={() => setConfirming(false)}>
-        Cancel
-      </Button>
+      {receipt && (
+        <span className="text-xs text-muted-foreground">
+          Last receipt {receipt.receiptId.slice(0, 8)}…
+        </span>
+      )}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger asChild>
+          <Button variant="destructive" size="sm">
+            Erase Data
+          </Button>
+        </DialogTrigger>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>GDPR Data Erasure</DialogTitle>
+            <DialogDescription>
+              This revokes every credential and anonymizes every record tied to the owner public
+              key. It cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2 py-2">
+            <Label htmlFor="owner-key">Owner Public Key</Label>
+            <Input
+              id="owner-key"
+              className="font-mono text-xs"
+              placeholder="Hex-encoded owner public key"
+              value={ownerKey}
+              onChange={(e) => setOwnerKey(e.target.value)}
+            />
+          </div>
+          {receipt && (
+            <div className="rounded-lg border bg-muted/50 p-3 text-xs space-y-1">
+              <p className="font-medium">Last erasure receipt</p>
+              <p className="text-muted-foreground">Receipt ID: {receipt.receiptId}</p>
+              <p className="text-muted-foreground">
+                {receipt.credentialsRevoked} credentials revoked, {receipt.recordsAnonymized}{' '}
+                records anonymized
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleErasure}
+              disabled={busy || !ownerKey.trim()}
+            >
+              {busy ? 'Erasing…' : 'Erase Data'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

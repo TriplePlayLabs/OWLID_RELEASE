@@ -1,0 +1,65 @@
+// OwlID predicate contract — unique-personhood per (epoch, app_id).
+// Attestation key recipe matches `owl_proof_system::attestation::unique_personhood_key`.
+
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+import "./lib/access/Ownable" prefix Ownable_;
+import "./lib/security/Pausable" prefix Pausable_;
+
+export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
+
+witness personhoodSecret(): Bytes<32>;
+
+export ledger attestations: Set<Bytes<32>>;
+export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
+export ledger attestCount: Counter;
+// Anti-replay nullifier set keyed on persistentHash([secret, epoch, app_id]).
+export ledger nullifiers: Set<Bytes<32>>;
+
+constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>) {
+  Ownable_initialize(initialOwner);
+}
+
+circuit keyOf(tag: Bytes<32>, dRootHash: Bytes<32>, dParam: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([tag, dRootHash, dParam]);
+}
+
+circuit record(key: Bytes<32>): [] {
+  if (!attestations.member(key)) {
+    attestations.insert(key);
+    attestTree.insert(key);
+    attestCount.increment(1);
+  }
+}
+
+export circuit attestUniquePersonhood(
+  rootHash: Bytes<32>,
+  epoch: Bytes<32>,
+  appId: Bytes<32>
+): [] {
+  Pausable_assertNotPaused();
+  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
+  const secret = personhoodSecret();
+  const nullifier = persistentHash<Vector<3, Bytes<32>>>([secret, disclose(epoch), disclose(appId)]);
+  assert(!nullifiers.member(disclose(nullifier)), "personhood replay");
+  nullifiers.insert(disclose(nullifier));
+  const param = persistentHash<Vector<2, Bytes<32>>>([disclose(epoch), disclose(appId)]);
+  record(keyOf(
+    pad(32, "owlid:attest:uniq:"),
+    disclose(rootHash),
+    param
+  ));
+}
+
+export circuit isAttested(key: Bytes<32>): Boolean {
+  return attestations.member(disclose(key));
+}
+
+export circuit pause(): [] { Ownable_assertOnlyOwner(); Pausable__pause(); }
+export circuit unpause(): [] { Ownable_assertOnlyOwner(); Pausable__unpause(); }
+export circuit transferOwnership(newOwner: Either<ZswapCoinPublicKey, ContractAddress>): [] {
+  Ownable_transferOwnership(newOwner);
+}
+export circuit owner(): Either<ZswapCoinPublicKey, ContractAddress> { return Ownable_owner(); }
+export circuit isPaused(): Boolean { return Pausable_isPaused(); }

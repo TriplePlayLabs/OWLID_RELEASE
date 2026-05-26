@@ -1,0 +1,88 @@
+# Caddy reverse proxy in front of the Midnight proof server.
+#
+# Listens on $PORT (Cloud Run convention, default 8080), forwards to the
+# Midnight prover on :6300, and injects CORS headers so a browser SPA can
+# call it directly. The allowlist is a regex passed via the
+# $CORS_ALLOWED_ORIGIN_REGEX env var so operators can extend it per deploy
+# without rebuilding this image.
+#
+# The proof server itself has no CORS support — that's the whole reason
+# this proxy exists. Keep the matcher tight: an over-broad allowlist
+# defeats CORS's whole point.
+
+{
+	# Cloud Run terminates TLS; serve plain HTTP on the injected port.
+	auto_https off
+	admin off
+	persist_config off
+}
+
+:{$PORT} {
+	@allowed_origin {
+		header_regexp Origin Origin {$CORS_ALLOWED_ORIGIN_REGEX:^https?://(localhost(:[0-9]+)?|.*\.sashoush\.dev|.*\.owlid\.app)$}
+	}
+
+	@preflight_allowed {
+		method OPTIONS
+		header_regexp Origin Origin {$CORS_ALLOWED_ORIGIN_REGEX:^https?://(localhost(:[0-9]+)?|.*\.sashoush\.dev|.*\.owlid\.app)$}
+	}
+
+	@preflight_blocked method OPTIONS
+
+	# Preflight from an allow-listed origin: short-circuit with allow
+	# headers + a long max-age. Browser caches the answer for 24h, so a
+	# busy holder only pays the round-trip once per day per kind.
+	handle @preflight_allowed {
+		header {
+			Access-Control-Allow-Origin "{http.request.header.Origin}"
+			Access-Control-Allow-Methods "GET, POST, OPTIONS"
+			Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+			Access-Control-Max-Age "86400"
+			Vary "Origin"
+		}
+		respond 204
+	}
+
+	# Preflight from any other origin: reject explicitly so the browser
+	# doesn't fall through to the proxied prover with a misleading 405.
+	handle @preflight_blocked {
+		respond 403
+	}
+
+	# Mirror the Origin back on real responses (only when allow-listed).
+	header @allowed_origin {
+		Access-Control-Allow-Origin "{http.request.header.Origin}"
+		Access-Control-Expose-Headers "X-Proof-Server-Version"
+		Vary "Origin"
+	}
+
+	# Don't leak the upstream port; keep request paths intact.
+	reverse_proxy {$UPSTREAM_HOST:localhost}:{$UPSTREAM_PORT:6300} {
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		# The upstream Midnight prover (8.0.3+) emits its own permissive
+		# CORS headers (allow-credentials: true with a wildcard-ish origin
+		# mirror), which both duplicates ours and weakens the policy.
+		# Strip every CORS header from upstream so only the allow-listed
+		# values our matcher above sets reach the browser.
+		header_down -Access-Control-Allow-Origin
+		header_down -Access-Control-Allow-Credentials
+		header_down -Access-Control-Allow-Methods
+		header_down -Access-Control-Allow-Headers
+		header_down -Access-Control-Expose-Headers
+		header_down -Access-Control-Max-Age
+		header_down -Vary
+		# Proving is single-request CPU-bound; give it a generous deadline.
+		transport http {
+			read_timeout 600s
+			write_timeout 600s
+			dial_timeout 10s
+		}
+	}
+
+	log {
+		output stdout
+		format console
+		level INFO
+	}
+}

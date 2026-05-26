@@ -13,7 +13,7 @@ use uuid::Uuid;
 fn random_session_token() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
@@ -60,6 +60,9 @@ impl VerificationSession {
                 external_session_id: None,
             },
             ProviderFlowType::FormBased => FlowState::FormPending,
+            ProviderFlowType::OidcRedirect => FlowState::OidcPending {
+                state: Uuid::new_v4().to_string(),
+            },
         };
 
         Self {
@@ -119,9 +122,7 @@ pub enum FlowState {
 
     /// SAML redirect: received callback, processing
     #[serde(rename_all = "camelCase")]
-    SamlProcessing {
-        relay_state: String,
-    },
+    SamlProcessing { relay_state: String },
 
     /// Polling: initial state, waiting for order to be created
     PollingPending,
@@ -146,9 +147,17 @@ pub enum FlowState {
 
     /// Webhook: user redirected, waiting for callback
     #[serde(rename_all = "camelCase")]
-    WebhookWaiting {
-        external_session_id: String,
-    },
+    WebhookWaiting { external_session_id: String },
+
+    /// OIDC redirect: waiting for authorization-code callback. The
+    /// `state` value is the CSRF parameter the provider echoes back.
+    #[serde(rename_all = "camelCase")]
+    OidcPending { state: String },
+
+    /// OIDC redirect: callback received, exchanging code + verifying
+    /// the ID token against the provider JWKS.
+    #[serde(rename_all = "camelCase")]
+    OidcProcessing { state: String },
 
     /// Form: waiting for user to submit form
     FormPending,
@@ -161,9 +170,7 @@ pub enum FlowState {
 
     /// Verification failed
     #[serde(rename_all = "camelCase")]
-    Failed {
-        reason: String,
-    },
+    Failed { reason: String },
 }
 
 /// Session status in the verification flow
@@ -239,7 +246,7 @@ pub struct VerifiedIdentityClaims {
 
     // === Biometric Data (NOT included in credential) ===
     /// Portrait image from document/selfie (base64)
-    /// Returned in API response but excluded from Merkle tree for privacy
+    /// Returned in API response but excluded from the issued SD-JWT VC for privacy
     #[serde(skip_serializing_if = "Option::is_none")]
     pub portrait_image: Option<String>,
 
@@ -249,6 +256,31 @@ pub struct VerifiedIdentityClaims {
     pub postal_code: String,
     pub country: String,
 
+    // === Account-level identifiers (OIDC providers) ===
+    /// Email address. Present for OIDC providers (Google, etc.) that
+    /// expose it; absent for document-only providers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Provider-attested `email_verified` flag — drives the
+    /// `email:verified` predicate via Midnight `attestEmailVerified`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email_verified: Option<bool>,
+    /// Display name (Google `name`, Apple full name). Set by OIDC
+    /// providers that expose the user's display name separately from
+    /// first/last.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Profile picture URL. Google `picture` claim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    /// BCP-47 locale tag. Google `locale` claim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+    /// Workspace hosted-domain (Google Workspace `hd`). Distinguishes
+    /// consumer accounts from corporate-SSO accounts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hosted_domain: Option<String>,
+
     // === Derived Attributes (pre-computed by IdP) ===
     /// Boolean proofs derived from the raw data - the key privacy feature
     pub is_over_18: bool,
@@ -256,6 +288,11 @@ pub struct VerifiedIdentityClaims {
     pub is_over_65: bool,
     pub is_eu_citizen: bool,
     pub is_resident: bool,
+    /// ISO 3166-1 alpha-2 residence country, set iff the provider
+    /// returned a geo-verified address. Drives the per-country residency
+    /// attestation (`attestResidencyIn`). `None` ⇒ no residency stamp.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resident_country: Option<String>,
 
     // === Verification Metadata ===
     pub verified_at: DateTime<Utc>,
@@ -331,24 +368,116 @@ pub struct ProviderDescriptor {
 /// Includes ISO 3166-1 alpha-2, alpha-3 codes, country names, and demonyms
 pub const EU_COUNTRIES: &[&str] = &[
     // ISO 3166-1 alpha-2 codes
-    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
-    "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
-    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+    "AT",
+    "BE",
+    "BG",
+    "HR",
+    "CY",
+    "CZ",
+    "DK",
+    "EE",
+    "FI",
+    "FR",
+    "DE",
+    "GR",
+    "HU",
+    "IE",
+    "IT",
+    "LV",
+    "LT",
+    "LU",
+    "MT",
+    "NL",
+    "PL",
+    "PT",
+    "RO",
+    "SK",
+    "SI",
+    "ES",
+    "SE",
     // ISO 3166-1 alpha-3 codes
-    "AUT", "BEL", "BGR", "HRV", "CYP", "CZE", "DNK", "EST", "FIN", "FRA",
-    "DEU", "GRC", "HUN", "IRL", "ITA", "LVA", "LTU", "LUX", "MLT", "NLD",
-    "POL", "PRT", "ROU", "SVK", "SVN", "ESP", "SWE",
+    "AUT",
+    "BEL",
+    "BGR",
+    "HRV",
+    "CYP",
+    "CZE",
+    "DNK",
+    "EST",
+    "FIN",
+    "FRA",
+    "DEU",
+    "GRC",
+    "HUN",
+    "IRL",
+    "ITA",
+    "LVA",
+    "LTU",
+    "LUX",
+    "MLT",
+    "NLD",
+    "POL",
+    "PRT",
+    "ROU",
+    "SVK",
+    "SVN",
+    "ESP",
+    "SWE",
     // Country names
-    "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czech Republic",
-    "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary",
-    "Ireland", "Italy", "Latvia", "Lithuania", "Luxembourg", "Malta",
-    "Netherlands", "Poland", "Portugal", "Romania", "Slovakia", "Slovenia",
-    "Spain", "Sweden",
+    "Austria",
+    "Belgium",
+    "Bulgaria",
+    "Croatia",
+    "Cyprus",
+    "Czech Republic",
+    "Denmark",
+    "Estonia",
+    "Finland",
+    "France",
+    "Germany",
+    "Greece",
+    "Hungary",
+    "Ireland",
+    "Italy",
+    "Latvia",
+    "Lithuania",
+    "Luxembourg",
+    "Malta",
+    "Netherlands",
+    "Poland",
+    "Portugal",
+    "Romania",
+    "Slovakia",
+    "Slovenia",
+    "Spain",
+    "Sweden",
     // Demonyms
-    "Dutch", "German", "French", "Italian", "Spanish", "Belgian", "Austrian",
-    "Polish", "Swedish", "Danish", "Finnish", "Greek", "Portuguese", "Irish",
-    "Czech", "Hungarian", "Romanian", "Bulgarian", "Croatian", "Slovak",
-    "Slovenian", "Estonian", "Latvian", "Lithuanian", "Cypriot", "Maltese",
+    "Dutch",
+    "German",
+    "French",
+    "Italian",
+    "Spanish",
+    "Belgian",
+    "Austrian",
+    "Polish",
+    "Swedish",
+    "Danish",
+    "Finnish",
+    "Greek",
+    "Portuguese",
+    "Irish",
+    "Czech",
+    "Hungarian",
+    "Romanian",
+    "Bulgarian",
+    "Croatian",
+    "Slovak",
+    "Slovenian",
+    "Estonian",
+    "Latvian",
+    "Lithuanian",
+    "Cypriot",
+    "Maltese",
     "Luxembourgish",
 ];
 

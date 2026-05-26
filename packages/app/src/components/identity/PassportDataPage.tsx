@@ -1,156 +1,112 @@
-import type { IdentityData } from '@owlid/sdk'
+import type { VerifiedClaims } from '@owlid/sdk'
+import { buildTd3Mrz, toAlpha3 } from '~/utils/mrz'
 
 interface PassportDataPageProps {
-  identityData: IdentityData | null
+  claims: VerifiedClaims
+  portraitImage?: string
 }
 
-/**
- * Get the portrait image source.
- * Handles URLs (http/https), data URIs, or raw base64.
- */
 function getPortraitSrc(portraitImage?: string): string | undefined {
   if (!portraitImage) return undefined
-
-  // If it's an HTTP(S) URL, use as-is
-  if (portraitImage.startsWith('http://') || portraitImage.startsWith('https://')) {
+  if (portraitImage.startsWith('http://') || portraitImage.startsWith('https://'))
     return portraitImage
-  }
-
-  // If it already has a data URI prefix, use as-is
-  if (portraitImage.startsWith('data:')) {
-    return portraitImage
-  }
-
-  // Otherwise, assume it's raw base64 and add JPEG prefix (most common for ID photos)
+  if (portraitImage.startsWith('data:')) return portraitImage
   return `data:image/jpeg;base64,${portraitImage}`
 }
 
-/**
- * Get initials from name for fallback display
- */
 function getInitials(firstName?: string, lastName?: string): string {
   const first = firstName?.[0]?.toUpperCase() || ''
   const last = lastName?.[0]?.toUpperCase() || ''
   return `${first}${last}` || '?'
 }
 
-export function PassportDataPage({ identityData }: PassportDataPageProps) {
-  if (!identityData) {
-    return (
-      <div className="passport-page overflow-y-auto custom-scrollbar">
-        <p className="text-center text-muted-foreground py-8">No identity data available.</p>
-      </div>
-    )
-  }
+function up(s?: string): string {
+  return (s ?? '').trim().toUpperCase() || '—'
+}
 
-  const portraitSrc = getPortraitSrc(identityData.portraitImage)
-  const initials = getInitials(identityData.firstName, identityData.lastName)
+/** ICAO sex code: M / F / X (unspecified). */
+function sexCode(gender?: string): string {
+  const g = (gender ?? '').trim().toLowerCase()
+  if (g.startsWith('m')) return 'M'
+  if (g.startsWith('f')) return 'F'
+  return 'X'
+}
+
+/** One ICAO data-page field — caption above the value. */
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="truncate text-[8px] uppercase tracking-[0.1em] text-zinc-500">{label}</div>
+      <div className="truncate font-mono text-[13.5px] font-semibold uppercase leading-tight text-zinc-900">
+        {value}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * ICAO 9303 TD3 passport data page — fills the (portrait) back face of
+ * the passport card once it flips open. Header, photograph + the
+ * primary field column, the remaining fields, then the machine-readable
+ * zone pinned to the foot. Self-contained styling: it is the flip-card
+ * back, so it must not re-apply any page rotation of its own.
+ */
+export function PassportDataPage({ claims, portraitImage }: PassportDataPageProps) {
+  const c = claims
+  const portraitSrc = getPortraitSrc(portraitImage ?? c.portraitImage)
+  const initials = getInitials(c.firstName, c.lastName)
+  const docNumber = (c.passportNumber || c.documentNumber || c.nationalId || '—').toUpperCase()
+  const issuingState = toAlpha3(c.issuingCountry || c.nationality || '')
+  const nationality3 = toAlpha3(c.nationality || c.issuingCountry || '')
+  const mrz = buildTd3Mrz(c)
 
   return (
-    <div className="passport-page overflow-y-auto custom-scrollbar">
-      <div className="data-page-header shrink-0">
-        <span className="data-page-type">P</span>
-        <span className="data-page-code">
-          {identityData.nationality?.slice(0, 3).toUpperCase() || 'USA'}
-        </span>
-        <span className="data-page-code">
-          {identityData.passportNumber || identityData.nationalId || '---'}
-        </span>
+    <div className="absolute inset-0 flex flex-col bg-[#fdfbf7] p-5 text-zinc-900 [container-type:inline-size]">
+      {/* Header — issuing state · title · document type */}
+      <div className="flex shrink-0 items-center justify-between border-b border-zinc-900/70 pb-2">
+        <div className="font-mono text-[12px] font-bold tracking-[0.14em] text-zinc-800">
+          {issuingState}
+        </div>
+        <div className="text-[14px] font-bold tracking-[0.22em] text-zinc-900">PASSPORT</div>
+        <div className="font-mono text-[12px] font-bold tracking-[0.14em] text-zinc-800">P</div>
       </div>
 
-      <div className="data-grid">
-        <div className="photo-area">
+      {/* Photograph + primary identity fields beside it */}
+      <div className="mt-4 flex shrink-0 gap-3.5">
+        <div className="h-[160px] w-[122px] shrink-0 overflow-hidden rounded-[2px] border border-zinc-400 bg-zinc-200">
           {portraitSrc ? (
             <img
               src={portraitSrc}
-              alt={`Portrait of ${identityData.firstName} ${identityData.lastName}`}
+              alt={`${c.firstName ?? ''} ${c.lastName ?? ''}`.trim()}
+              className="h-full w-full object-cover [filter:grayscale(1)_contrast(1.05)]"
             />
           ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-200 to-gray-300 text-gray-600 font-bold text-3xl">
+            <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-zinc-200 to-zinc-300 text-3xl font-bold text-zinc-500">
               {initials}
             </div>
           )}
         </div>
-
-        <div className="details-area">
-          <div className="detail-group">
-            <span className="detail-label">Surname / Nom</span>
-            <span className="detail-value">
-              {(identityData.lastName ?? '').toUpperCase() || '---'}
-            </span>
-          </div>
-          <div className="detail-group">
-            <span className="detail-label">Given Names / Prénoms</span>
-            <span className="detail-value">
-              {(identityData.firstName ?? '').toUpperCase() || '---'}
-            </span>
-          </div>
-          <div className="detail-group">
-            <span className="detail-label">Nationality / Nationalité</span>
-            <span className="detail-value">{identityData.nationality || '---'}</span>
-          </div>
-          <div className="detail-group">
-            <span className="detail-label">Date of Birth / Date de naissance</span>
-            <span className="detail-value">{identityData.birthDate || '---'}</span>
-          </div>
+        <div className="flex flex-1 flex-col justify-between py-0.5">
+          <Field label="Passport No." value={docNumber} />
+          <Field label="Surname" value={up(c.lastName)} />
+          <Field label="Given names" value={up(c.firstName)} />
+          <Field label="Nationality" value={nationality3} />
         </div>
       </div>
 
-      {/* Extended Digital Attributes */}
-      <div className="mt-6 pt-4 border-t-2 border-black/5 space-y-4 shrink-0">
-        <div className="flex items-center gap-2 opacity-50 mb-2">
-          <div className="h-px bg-black flex-1"></div>
-          <span className="text-[8px] uppercase tracking-widest font-bold text-black">
-            Digital Identity Extensions
-          </span>
-          <div className="h-px bg-black flex-1"></div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-          <div className="detail-group">
-            <span className="detail-label">National ID</span>
-            <span className="detail-value text-xs">{identityData.nationalId}</span>
-          </div>
-          <div className="detail-group">
-            <span className="detail-label">Tax ID</span>
-            <span className="detail-value text-xs">{identityData.taxId}</span>
-          </div>
-          <div className="detail-group">
-            <span className="detail-label">Credit Score</span>
-            <span className="detail-value text-xs text-emerald-700">
-              {identityData.creditScore} (EXCELLENT)
-            </span>
-          </div>
-          <div className="detail-group">
-            <span className="detail-label">Occupation</span>
-            <span className="detail-value text-xs leading-tight">{identityData.occupation}</span>
-          </div>
-          <div className="detail-group col-span-2">
-            <span className="detail-label">Address</span>
-            <span className="detail-value text-xs leading-tight">{identityData.address}</span>
-          </div>
-          <div className="detail-group">
-            <span className="detail-label">Email</span>
-            <span className="detail-value text-xs lowercase leading-tight break-all">
-              {identityData.email}
-            </span>
-          </div>
-          <div className="detail-group">
-            <span className="detail-label">Phone</span>
-            <span className="detail-value text-xs">{identityData.phone}</span>
-          </div>
-        </div>
+      {/* Remaining fields — full width, natural spacing */}
+      <div className="mt-4 grid shrink-0 grid-cols-2 gap-x-3.5 gap-y-4 border-t border-zinc-300 pt-4">
+        <Field label="Date of birth" value={c.dateOfBirth || '—'} />
+        <Field label="Sex" value={sexCode(c.gender)} />
+        <Field label="Place of birth" value={up(c.placeOfBirth)} />
+        <Field label="Date of issue" value={c.documentIssueDate || '—'} />
+        <Field label="Date of expiry" value={c.documentExpiry || '—'} />
       </div>
 
-      <div className="mrz-area shrink-0 mt-8 pb-4">
-        P&lt;{(identityData.nationality ?? '').slice(0, 3).toUpperCase() || 'XXX'}
-        {(identityData.lastName ?? '').toUpperCase() || 'UNKNOWN'}&lt;&lt;
-        {(identityData.firstName ?? '').toUpperCase() || 'UNKNOWN'}
-        &lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;
-        <br />
-        {identityData.passportNumber || identityData.nationalId || 'XXXXXXXXX'}
-        &lt;{(identityData.nationality ?? '').slice(0, 3).toUpperCase() || 'XXX'}&lt;
-        {(identityData.birthDate ?? '').replace(/-/g, '') || 'XXXXXXXX'}&lt;&lt;&lt;&lt;&lt;&lt;
+      {/* Machine-readable zone — pinned to the foot of the page */}
+      <div className="mt-auto shrink-0 border-t border-zinc-900/70 pt-2">
+        <div className="mrz-line">{mrz.line1}</div>
+        <div className="mrz-line">{mrz.line2}</div>
       </div>
     </div>
   )

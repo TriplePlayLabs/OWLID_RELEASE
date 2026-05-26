@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 
 /// Trait for checking if credentials are revoked
 pub trait RevocationChecker: Send + Sync {
-    /// Check if a credential with this root hash is revoked
-    fn is_revoked(&self, root_hash: &str) -> bool;
+    /// Check if a credential is revoked. The id is the SD-JWT VC
+    /// `credential_id` (raw 32-byte hex).
+    fn is_revoked(&self, credential_id: &str) -> bool;
 }
 
 /// Revocation status for a credential
@@ -15,11 +16,11 @@ pub enum RevocationStatus {
     Suspended,
 }
 
-/// Revocation entry for a document
+/// Revocation entry for a credential
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevocationEntry {
-    /// Document root hash (unique identifier)
-    pub root_hash: String,
+    /// SD-JWT VC credential_id (unique identifier)
+    pub credential_id: String,
     /// Current status
     pub status: RevocationStatus,
     /// Timestamp when revoked/suspended
@@ -32,13 +33,13 @@ pub struct RevocationEntry {
 
 impl RevocationEntry {
     pub fn new(
-        root_hash: String,
+        credential_id: String,
         status: RevocationStatus,
         issuer_key: String,
         reason: Option<String>,
     ) -> Self {
         Self {
-            root_hash,
+            credential_id,
             status,
             timestamp: Utc::now(),
             reason,
@@ -76,11 +77,11 @@ impl RevocationRegistry {
                 tracing::warn!("RevocationRegistry lock was poisoned, recovering");
                 poisoned.into_inner()
             });
-        entries.insert(entry.root_hash.clone(), entry);
+        entries.insert(entry.credential_id.clone(), entry);
     }
 
-    /// Check if a document is revoked
-    pub fn is_revoked(&self, root_hash: &str) -> bool {
+    /// Check if a credential is revoked
+    pub fn is_revoked(&self, credential_id: &str) -> bool {
         let entries = self
             .entries
             .read()
@@ -89,13 +90,13 @@ impl RevocationRegistry {
                 poisoned.into_inner()
             });
         entries
-            .get(root_hash)
+            .get(credential_id)
             .map(|e| e.is_revoked())
             .unwrap_or(false)
     }
 
     /// Get revocation status
-    pub fn get_status(&self, root_hash: &str) -> Option<RevocationEntry> {
+    pub fn get_status(&self, credential_id: &str) -> Option<RevocationEntry> {
         let entries = self
             .entries
             .read()
@@ -103,29 +104,29 @@ impl RevocationRegistry {
                 tracing::warn!("RevocationRegistry lock was poisoned, recovering");
                 poisoned.into_inner()
             });
-        entries.get(root_hash).cloned()
+        entries.get(credential_id).cloned()
     }
 
-    /// Revoke a document
-    pub fn revoke(&self, root_hash: String, issuer_key: String, reason: Option<String>) {
-        let entry = RevocationEntry::new(root_hash, RevocationStatus::Revoked, issuer_key, reason);
+    /// Revoke a credential
+    pub fn revoke(&self, credential_id: String, issuer_key: String, reason: Option<String>) {
+        let entry = RevocationEntry::new(credential_id, RevocationStatus::Revoked, issuer_key, reason);
         self.add(entry);
     }
 
-    /// Suspend a document
-    pub fn suspend(&self, root_hash: String, issuer_key: String, reason: Option<String>) {
+    /// Suspend a credential
+    pub fn suspend(&self, credential_id: String, issuer_key: String, reason: Option<String>) {
         let entry =
-            RevocationEntry::new(root_hash, RevocationStatus::Suspended, issuer_key, reason);
+            RevocationEntry::new(credential_id, RevocationStatus::Suspended, issuer_key, reason);
         self.add(entry);
     }
 
-    /// Reactivate a suspended document
-    pub fn reactivate(&self, root_hash: String, issuer_key: String) {
-        let entry = RevocationEntry::new(root_hash, RevocationStatus::Active, issuer_key, None);
+    /// Reactivate a suspended credential
+    pub fn reactivate(&self, credential_id: String, issuer_key: String) {
+        let entry = RevocationEntry::new(credential_id, RevocationStatus::Active, issuer_key, None);
         self.add(entry);
     }
 
-    /// List all revoked/suspended documents
+    /// List all revoked/suspended credentials
     pub fn list_revoked(&self) -> Vec<RevocationEntry> {
         let entries = self
             .entries
@@ -149,8 +150,8 @@ impl Default for RevocationRegistry {
 }
 
 impl RevocationChecker for RevocationRegistry {
-    fn is_revoked(&self, root_hash: &str) -> bool {
-        self.is_revoked(root_hash)
+    fn is_revoked(&self, credential_id: &str) -> bool {
+        self.is_revoked(credential_id)
     }
 }
 

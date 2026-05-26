@@ -1,14 +1,13 @@
-//! T-015: Rate limiting middleware
-//!
-//! DB-backed rate limiting with configurable window and max requests.
+//! DB-backed rate-limiting middleware with configurable window and
+//! max requests per identifier.
 
+use crate::db::DbPool;
 use axum::{
     extract::{Request, State},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use crate::db::DbPool;
 
 /// Rate limit configuration loaded from environment
 #[derive(Clone)]

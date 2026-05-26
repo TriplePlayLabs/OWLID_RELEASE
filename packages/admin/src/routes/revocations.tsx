@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Ban, RotateCcw, Pause, Search } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -13,7 +13,6 @@ import {
 import { Button } from '@owlid/ui/components/ui/button'
 import { Input } from '@owlid/ui/components/ui/input'
 import { Label } from '@owlid/ui/components/ui/label'
-import { Badge } from '@owlid/ui/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@owlid/ui/components/ui/tabs'
 import {
   Table,
@@ -23,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from '@owlid/ui/components/ui/table'
+import { openConfirmModal } from '@owlid/ui/modal'
 import {
   useRevokedCredentials,
   useRevokeCredential,
@@ -31,6 +31,11 @@ import {
   useCheckRevocation,
 } from '~/hooks/use-verification'
 import type { CheckRevocationResponse, RevocationEntry } from '@owlid/verifier-client'
+import { PageHeader } from '~/components/PageHeader'
+import { CopyButton } from '~/components/CopyButton'
+import { StatusBadge } from '~/components/StatusBadge'
+import { RelativeTime } from '~/components/RelativeTime'
+import { TableSkeleton, TableError, TableEmpty } from '~/components/TableStates'
 
 export const Route = createFileRoute('/revocations')({
   component: RevocationsPage,
@@ -39,10 +44,10 @@ export const Route = createFileRoute('/revocations')({
 function RevocationsPage() {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Revocations</h1>
-        <p className="text-muted-foreground">Manage credential revocation status</p>
-      </div>
+      <PageHeader
+        title="Revocations"
+        description="Revoke, suspend or reactivate credentials — chain is the source of truth"
+      />
 
       <Tabs defaultValue="list">
         <TabsList>
@@ -68,10 +73,24 @@ function RevocationsPage() {
 function RevokedList() {
   const revoked = useRevokedCredentials()
   const reactivate = useReactivateCredential()
+  const [query, setQuery] = useState('')
 
   const entries: RevocationEntry[] = revoked.data ?? []
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return entries
+    return entries.filter(
+      (e) => e.credentialId.toLowerCase().includes(q) || (e.reason ?? '').toLowerCase().includes(q),
+    )
+  }, [entries, query])
 
-  function handleReactivate(credentialId: string) {
+  async function handleReactivate(credentialId: string) {
+    const ok = await openConfirmModal({
+      title: 'Reactivate credential',
+      description: 'This credential will pass verification again. The change is written on-chain.',
+      confirmLabel: 'Reactivate',
+    })
+    if (ok !== 'confirmed') return
     reactivate.mutate(
       { credentialId },
       {
@@ -84,10 +103,23 @@ function RevokedList() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Ban className="h-5 w-5" /> Revoked Credentials
-        </CardTitle>
-        <CardDescription>{entries.length} revoked or suspended credentials</CardDescription>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Ban className="h-5 w-5" /> Revoked Credentials
+            </CardTitle>
+            <CardDescription>{entries.length} revoked or suspended</CardDescription>
+          </div>
+          <div className="relative w-full max-w-xs">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search by ID or reason…"
+              className="pl-8"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+        </div>
       </CardHeader>
       <CardContent>
         <Table>
@@ -96,41 +128,57 @@ function RevokedList() {
               <TableHead>Credential ID</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Reason</TableHead>
-              <TableHead>Revoked At</TableHead>
-              <TableHead className="w-[100px]" />
+              <TableHead>Revoked</TableHead>
+              <TableHead className="w-[120px]" />
             </TableRow>
           </TableHeader>
           <TableBody>
-            {entries.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground">
-                  No revoked credentials
-                </TableCell>
-              </TableRow>
+            {revoked.isLoading && <TableSkeleton cols={5} />}
+            {revoked.isError && (
+              <TableError
+                colSpan={5}
+                message={revoked.error?.message ?? 'Failed to load revocations'}
+                onRetry={() => revoked.refetch()}
+              />
             )}
-            {entries.map((entry) => (
+            {revoked.data && filtered.length === 0 && (
+              <TableEmpty
+                colSpan={5}
+                icon={<Ban className="h-6 w-6" />}
+                title={query ? 'No matching credentials' : 'No revoked credentials'}
+                description={
+                  query ? 'Try a different search term.' : 'Revoked credentials will appear here.'
+                }
+              />
+            )}
+            {filtered.map((entry) => (
               <TableRow key={entry.credentialId}>
                 <TableCell>
-                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
-                    {entry.credentialId.slice(0, 20)}...
-                  </code>
+                  <div className="flex items-center gap-1">
+                    <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
+                      {entry.credentialId.slice(0, 20)}…
+                    </code>
+                    <CopyButton value={entry.credentialId} label="Credential ID" />
+                  </div>
                 </TableCell>
                 <TableCell>
                   <StatusBadge status={entry.status} />
                 </TableCell>
                 <TableCell className="text-sm">{entry.reason ?? '—'}</TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {entry.revokedAt ? new Date(entry.revokedAt).toLocaleDateString() : '—'}
+                <TableCell className="text-sm">
+                  <RelativeTime value={entry.revokedAt} />
                 </TableCell>
                 <TableCell>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleReactivate(entry.credentialId)}
-                    disabled={reactivate.isPending}
-                  >
-                    <RotateCcw className="mr-1 h-3 w-3" /> Reactivate
-                  </Button>
+                  {entry.status.toLowerCase() !== 'active' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleReactivate(entry.credentialId)}
+                      disabled={reactivate.isPending}
+                    >
+                      <RotateCcw className="mr-1 h-3 w-3" /> Reactivate
+                    </Button>
+                  )}
                 </TableCell>
               </TableRow>
             ))}
@@ -149,39 +197,40 @@ function RevokeForm() {
   const [issuerPublicKey, setIssuerPublicKey] = useState('')
   const [reason, setReason] = useState('')
 
+  const pending = revoke.isPending || suspend.isPending
+
   function resetForm() {
     setCredentialId('')
     setIssuerPublicKey('')
     setReason('')
   }
 
-  function handleRevoke() {
-    if (!credentialId || !issuerPublicKey) {
+  async function submit(mode: 'revoke' | 'suspend') {
+    if (!credentialId.trim() || !issuerPublicKey.trim()) {
       toast.error('Credential ID and issuer public key are required')
       return
     }
-    revoke.mutate(
-      { credentialId, issuerPublicKey, reason: reason || undefined },
-      {
-        onSuccess: () => {
-          toast.success('Credential revoked')
-          resetForm()
-        },
-        onError: (err) => toast.error(err.message),
-      },
-    )
-  }
+    const ok = await openConfirmModal({
+      title: mode === 'revoke' ? 'Revoke credential' : 'Suspend credential',
+      description:
+        mode === 'revoke'
+          ? 'Revocation is permanent and written on-chain. The credential will fail every future verification.'
+          : 'Suspension is a temporary on-chain block. The credential can be reactivated later.',
+      confirmLabel: mode === 'revoke' ? 'Revoke' : 'Suspend',
+      variant: 'destructive',
+    })
+    if (ok !== 'confirmed') return
 
-  function handleSuspend() {
-    if (!credentialId || !issuerPublicKey) {
-      toast.error('Credential ID and issuer public key are required')
-      return
-    }
-    suspend.mutate(
-      { credentialId, issuerPublicKey, reason: reason || undefined },
+    const mutation = mode === 'revoke' ? revoke : suspend
+    mutation.mutate(
+      {
+        credentialId: credentialId.trim(),
+        issuerPublicKey: issuerPublicKey.trim(),
+        reason: reason.trim() || undefined,
+      },
       {
         onSuccess: () => {
-          toast.success('Credential suspended')
+          toast.success(mode === 'revoke' ? 'Credential revoked' : 'Credential suspended')
           resetForm()
         },
         onError: (err) => toast.error(err.message),
@@ -228,13 +277,13 @@ function RevokeForm() {
           />
         </div>
         <div className="flex gap-2">
-          <Button onClick={handleRevoke} disabled={revoke.isPending} variant="destructive">
+          <Button onClick={() => submit('revoke')} disabled={pending} variant="destructive">
             <Ban className="mr-2 h-4 w-4" />
-            {revoke.isPending ? 'Revoking...' : 'Revoke'}
+            {revoke.isPending ? 'Revoking…' : 'Revoke'}
           </Button>
-          <Button onClick={handleSuspend} disabled={suspend.isPending} variant="outline">
+          <Button onClick={() => submit('suspend')} disabled={pending} variant="outline">
             <Pause className="mr-2 h-4 w-4" />
-            {suspend.isPending ? 'Suspending...' : 'Suspend'}
+            {suspend.isPending ? 'Suspending…' : 'Suspend'}
           </Button>
         </div>
       </CardContent>
@@ -247,11 +296,14 @@ function CheckForm() {
   const [credentialId, setCredentialId] = useState('')
 
   function handleCheck() {
-    if (!credentialId) {
+    if (!credentialId.trim()) {
       toast.error('Credential ID is required')
       return
     }
-    check.mutate({ credentialId }, { onError: (err) => toast.error(err.message) })
+    check.mutate(
+      { credentialId: credentialId.trim() },
+      { onError: (err) => toast.error(err.message) },
+    )
   }
 
   const result: CheckRevocationResponse | undefined = check.data
@@ -269,39 +321,26 @@ function CheckForm() {
             placeholder="Enter credential ID"
             value={credentialId}
             onChange={(e) => setCredentialId(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleCheck()}
           />
           <Button onClick={handleCheck} disabled={check.isPending}>
-            <Search className="mr-2 h-4 w-4" /> Check
+            <Search className="mr-2 h-4 w-4" /> {check.isPending ? 'Checking…' : 'Check'}
           </Button>
         </div>
 
         {result && (
-          <div className="rounded-lg border p-4">
+          <div className="rounded-lg border p-4 space-y-2">
             <div className="flex items-center gap-3">
-              <span className="text-sm font-medium">Status:</span>
+              <span className="text-sm font-medium">Status</span>
               <StatusBadge status={result.status} />
             </div>
-            <div className="mt-2 text-xs text-muted-foreground font-mono">
-              ID: {result.credentialId}
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <span className="font-mono break-all">{result.credentialId}</span>
+              <CopyButton value={result.credentialId} label="Credential ID" />
             </div>
           </div>
         )}
       </CardContent>
     </Card>
   )
-}
-
-function StatusBadge({ status }: { status: string }) {
-  switch (status.toLowerCase()) {
-    case 'revoked':
-      return <Badge variant="destructive">Revoked</Badge>
-    case 'suspended':
-      return <Badge className="bg-amber-500/10 text-amber-500 border-amber-500/20">Suspended</Badge>
-    case 'active':
-      return (
-        <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20">Active</Badge>
-      )
-    default:
-      return <Badge variant="secondary">{status}</Badge>
-  }
 }

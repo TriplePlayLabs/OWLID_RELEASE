@@ -7,7 +7,7 @@
 //! The hash maps two Fr elements to one Fr element, suitable for binary Merkle trees.
 
 use ark_bls12_381::Fr;
-use ark_ff::{Field, PrimeField};
+use ark_ff::PrimeField;
 use ark_r1cs_std::{fields::fp::FpVar, prelude::*};
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 use sha2::{Digest, Sha256};

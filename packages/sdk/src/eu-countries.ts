@@ -1,33 +1,8 @@
-// Mirror of the alpha-2 portion of `EU_COUNTRIES` in the issuer service.
-// The issuer normalises nationality to alpha-2 at issuance, so the holder's
-// predicate-side list only needs alpha-2 codes. Keep in sync when EU
-// membership changes.
-export const EU_ALPHA2 = [
-  'AT',
-  'BE',
-  'BG',
-  'HR',
-  'CY',
-  'CZ',
-  'DK',
-  'EE',
-  'FI',
-  'FR',
-  'DE',
-  'GR',
-  'HU',
-  'IE',
-  'IT',
-  'LV',
-  'LT',
-  'LU',
-  'MT',
-  'NL',
-  'PL',
-  'PT',
-  'RO',
-  'SK',
-  'SI',
-  'ES',
-  'SE',
-] as const
+/**
+ * @deprecated Re-export of the canonical EU country list from
+ * `./countries`. Kept so existing imports
+ * (`import { EU_ALPHA2 } from '@owlid/sdk'`) don't break. New code
+ * should use `EU_COUNTRIES` (and the rest of the country helpers) from
+ * `./countries` directly.
+ */
+export { EU_COUNTRIES as EU_ALPHA2 } from './countries.js'

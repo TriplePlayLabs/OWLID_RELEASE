@@ -1,12 +1,12 @@
 # @owlid/sdk
 
-TypeScript SDK for OwlID — privacy-preserving identity built on Midnight.
-
-Crypto, WebAuthn, credential storage, presentation protocol, and the shared `configure()` runtime resolver. API clients (verification, issuer) are re-exported through subpaths.
+TypeScript SDK for OwlID — standards-conformant SD-JWT VC + OpenID4VCI/OpenID4VP holder, verifier, and issuer helpers in pure TypeScript.
 
 ```bash
 bun add @owlid/sdk
 ```
+
+Browser + Node. No platform binaries, no WASM plumbing. SD-JWT VC bytes match the Rust `owl_proof_system::sd_jwt` implementation, so any OwlID verifier accepts presentations minted here unchanged.
 
 ## Quick start
 
@@ -20,96 +20,96 @@ configure({
 })
 ```
 
-Call once at app boot. Every API singleton in the SDK reads from this state. Browsers can also set `window.__OWLID_CONFIG__` for runtime config without rebuilds.
+Call once at app boot. Every API singleton reads from this state. Browsers can also set `window.__OWLID_CONFIG__` for runtime config without rebuilds.
 
 ## Subpath exports
 
-| Import                | Contents                                                               |
-| --------------------- | ---------------------------------------------------------------------- |
-| `@owlid/sdk`          | Config, WebAuthn, storage, encoding, presentation, native primitives   |
-| `@owlid/sdk/verifier` | Re-exports `@owlid/verifier-client` (verification HTTP API singletons) |
-| `@owlid/sdk/issuer`   | Re-exports `@owlid/issuer-client` (issuer HTTP API singletons)         |
-| `@owlid/sdk/native`   | Direct alias to `@owlid/native-sdk` (NAPI / WASM crypto)               |
+| Import                | Contents                                                                                                    |
+| --------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `@owlid/sdk`          | `OwlVerifier`, `OwlIssuer`, holder helpers, WebAuthn, storage, encoding, presentation, SD-JWT VC primitives |
+| `@owlid/sdk/verifier` | Re-exports `@owlid/verifier-client` (verification HTTP API singletons)                                      |
+| `@owlid/sdk/issuer`   | Re-exports `@owlid/issuer-client` (issuer HTTP API singletons)                                              |
 
 ## Verifier integration
 
 ```ts
-import { configure } from '@owlid/sdk'
-import { getVerificationApi, getPresentationApi } from '@owlid/sdk/verifier'
+import { OwlVerifier } from '@owlid/sdk'
 
-configure({ verificationUrl, apiKey })
+const verifier = new OwlVerifier({ apiKey: process.env.OWLID_API_KEY })
 
-// 1. Direct token verification
-const result = await getVerificationApi().verifyToken({
-  verifyRequest: { token, challenge },
-})
-// → { valid, subjects?, error? }
+// 1. Direct verification of an SD-JWT VC presentation.
+const challenge = await verifier.mintChallenge()
+const result = await verifier.verify(presentation, challenge.challenge)
+if (result.valid) console.log(result.subjects)
 
-// 2. QR / WebSocket presentation session
-const session = await getPresentationApi().createSession()
-// → { sessionId, wsUrl, nonce, expiresIn }
-// Render `wsUrl` as a QR for the holder. Both sides connect to:
-//   ws://host${wsUrl}?role=holder | ?role=verifier
+// 2. QR / WebSocket presentation session.
+const session = await verifier.createPresentationSession()
+// session.qrPayload → render as QR; session.verifierWsUrl is the
+// fully-resolved WS URL the verifier side connects to.
 ```
 
 ## Issuer integration
 
 ```ts
-import { configure } from '@owlid/sdk'
-import { getSessionsApi, getCredentialsApi } from '@owlid/sdk/issuer'
+import { OwlIssuer } from '@owlid/sdk'
 
-configure({ issuerUrl })
+const issuer = new OwlIssuer({ baseUrl: 'https://issuer.example.com' })
 
-const session = await getSessionsApi().createSession({
-  createSessionRequest: { providerId: 'mock-digid' },
+const session = await issuer.createSession({ providerId: 'mock-digid' })
+
+// After the holder completes the provider flow, the issuer service
+// signs an SD-JWT VC bound to the holder's confirmation key.
+const credential = await issuer.issue(session.sessionId, {
+  ownerPublicKey,
+  keyAlgorithm: 'ed25519', // or 'p256'
 })
-
-// After the holder completes the provider flow:
-const issued = await getCredentialsApi().issueCredential({
-  id: session.sessionId,
-  issueCredentialRequest: { ownerPublicKey, keyAlgorithm: 'p256' },
-})
+// credential.sdJwtVc → application/dc+sd-jwt string
 ```
 
-## Native crypto primitives
+`OwlIssuer.issueBatch(n)` returns `n` one-time-use SD-JWT VCs (each with a distinct `credential_id` and independent revocation), used to defeat multi-show linkability.
 
-Re-exported from `@owlid/native-sdk` (NAPI on Node, WASM in browsers):
+## Holder — SD-JWT VC primitives
+
+Pure TS, browser + Node. Built on `@noble/ed25519` + `@noble/hashes`.
 
 ```ts
-import { Document, Credential, KeyPair, Token, blake3, sha256 } from '@owlid/sdk'
+import { KeyPair, SdJwtVc, verifySdJwt, presentSdJwtVc } from '@owlid/sdk'
 
-const issuer = KeyPair.generate()
-const owner = KeyPair.generate()
+const holder = await KeyPair.generate('ed25519')
 
-const document = Document.fromJson(
-  JSON.stringify({
-    issuerKey: issuer.publicKey().toHex(),
-    ownerKey: owner.publicKey().toHex(),
-    firstName: 'Alice',
-    dateOfBirth: '1990-05-15',
-  }),
-)
+// Parse an SD-JWT VC received from an issuer.
+const credential = SdJwtVc.parse(sdJwtVcString)
 
-const credential = document.issue(issuer)
+// Build a presentation that discloses specific claims plus a KB-JWT
+// bound to the verifier's nonce + audience.
+const presentation = await presentSdJwtVc({
+  credential,
+  disclose: ['given_name', 'age_over_18'],
+  holderKey: holder,
+  audience: verifierOrigin,
+  nonce: verifierNonce,
+})
 
-const token = credential.prove(
-  {
-    disclose: ['firstName'],
-    predicates: [{ attribute: 'dateOfBirth', op: 'GreaterOrEqual', value: '18' }],
-    trustedIssuers: [issuer.publicKey().toHex()],
-    challenge: verifierChallenge,
-  },
-  owner,
-  /* ttlSeconds */ 300,
-)
-
-const compact = token.toCompact() // "OID1:..."
+// Verifier side (server or other tab):
+const result = await verifySdJwt(presentation, {
+  audience: verifierOrigin,
+  nonce: verifierNonce,
+})
+// → { valid, claims }
 ```
 
 ## WebAuthn / passkeys
 
+WebAuthn is the **unlock and user-verification gate** for the holder key — never the signer. The KB-JWT is a standard JWS (EdDSA or ES256) over a wallet-held key.
+
 ```ts
-import { registerCredential, signChallenge, isWebAuthnSupported } from '@owlid/sdk'
+import {
+  registerCredential,
+  authenticate,
+  isWebAuthnSupported,
+  wrapHolderKey,
+  unwrapHolderKey,
+} from '@owlid/sdk'
 
 if (!isWebAuthnSupported()) throw new Error('WebAuthn not available')
 
@@ -120,40 +120,47 @@ const cred = await registerCredential({
   userVerification: 'required',
 })
 
-const sig = await signChallenge(cred.credentialId, challengeBytes)
-```
+// Wrap the holder's signing key with PRF output from the passkey.
+const wrapped = await wrapHolderKey({ holderKey, credentialId: cred.credentialId })
 
-For two-phase token signing (token bytes prepared by the native SDK, signed by the secure enclave, finalized client-side) use `Credential.prepare()` and `Token.finalizeWebauthn()` from the native exports.
+// On unlock:
+await authenticate({ credentialId: cred.credentialId, userVerification: 'required' })
+const holderKey = await unwrapHolderKey({ wrapped, credentialId: cred.credentialId })
+```
 
 ## Credential storage
 
 ```ts
 import { storage, proofStorage, CredentialStorageManager } from '@owlid/sdk'
 
-// Default: localStorage-backed, suitable for browser wallets
-await storage.saveCredential(proofDocumentJson)
+// Default: browserStorageAdapter — IndexedDB-backed in browsers.
+await storage.saveCredential({ sdJwtVc, issuer, credentialId })
+await storage.saveHolderKey(holderKeyMaterial)
 const list = await storage.listCredentials()
 
-// IndexedDB-backed proof history
-await proofStorage.put({ id, tokenJson, createdAt })
+// IndexedDB-backed proof history (verifier-bound presentations).
+await proofStorage.put({ id, presentation, createdAt })
 ```
 
-`storage` and `proofStorage` are singletons. For custom storage backends (mobile, server-side test rigs), instantiate `CredentialStorageManager` directly with your own `StorageAdapter`.
+`storage` and `proofStorage` are singletons. For custom backends (mobile, server-side test rigs), instantiate `CredentialStorageManager` directly with your own `StorageAdapter`.
 
-## Presentation protocol (ISO 18013-5 style)
+## Presentation protocol
+
+QR + WebSocket session-engagement helpers, in the spirit of ISO 18013-5.
 
 ```ts
 import {
   decodeSessionEngagement,
   resolveWsUrl,
   isPresentationEngagement,
+  isSdJwtVc,
   PRESENTATION_PREDICATES,
 } from '@owlid/sdk'
 
 if (isPresentationEngagement(qrPayload)) {
   const engagement = decodeSessionEngagement(qrPayload)
   const ws = new WebSocket(resolveWsUrl(engagement.wsUrl))
-  // negotiate proof_request → proof_response over ws
+  // negotiate proof_request → proof_response (SD-JWT VC presentation) over ws
 }
 ```
 
@@ -161,10 +168,17 @@ Full message schema in [`src/presentation.ts`](src/presentation.ts).
 
 ## Encoding helpers
 
-Common base64 / base64url / hex conversions for binary data crossing the WebAuthn / Token / network boundary:
+Common base64 / base64url / hex conversions for binary data crossing the WebAuthn / SD-JWT / network boundary:
 
 ```ts
-import { bufferToBase64, base64ToBuffer, bytesToHex, hexToBytes } from '@owlid/sdk'
+import {
+  bufferToBase64,
+  base64ToBuffer,
+  bufferToBase64url,
+  base64urlToBuffer,
+  bytesToHex,
+  hexToBytes,
+} from '@owlid/sdk'
 ```
 
 ## Configuration precedence

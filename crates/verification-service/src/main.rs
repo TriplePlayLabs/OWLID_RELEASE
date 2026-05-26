@@ -1,36 +1,42 @@
 mod admin_auth;
+mod admin_ops;
 mod api;
 mod api_key;
 mod config;
 mod db;
+mod dcql;
+mod did;
 mod gdpr;
+mod openid4vp;
+mod middleware;
 mod midnight;
 mod midnight_admin;
-mod middleware;
 mod observability;
+mod predicate_assets;
 mod presentation;
 mod registry;
+mod sidecar_events;
 mod state;
 mod tls;
 mod ws;
 mod zk_assets;
 
 use crate::{
+    db::ApiKeyRepository,
     db::create_pool,
-    middleware::{AuthMiddleware, RateLimitConfig, RateLimitMiddleware, RateLimitState, require_permission},
+    middleware::{RateLimitConfig, RateLimitMiddleware, RateLimitState, require_permission},
     state::AppState,
     ws::RevocationBroadcaster,
 };
+use axum::http::{HeaderValue, Method, header};
 use axum::{
-    middleware as axum_middleware,
+    Router, middleware as axum_middleware,
     routing::{delete, get, post},
-    Json, Router,
 };
-use utoipa::OpenApi;
 use std::{net::SocketAddr, sync::Arc};
-use axum::http::{header, HeaderValue, Method};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use utoipa::OpenApi;
 
 use crate::config::Config;
 
@@ -76,12 +82,14 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
     info(
         title = "OwlID Verification Service",
         version = "1.0.0",
-        description = "Token verification, trusted issuer management, and credential revocation"
+        description = "SD-JWT VC presentation verification, trusted issuer management, and credential revocation"
     ),
     paths(
         api::health,
+        api::get_midnight_info,
+        api::get_midnight_params,
         api::generate_challenge,
-        api::verify_token,
+        api::verify_dcql,
         api::list_trusted_issuers,
         api::add_trusted_issuer,
         api::revoke_credential,
@@ -98,20 +106,36 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
         admin_auth::list_api_keys,
         admin_auth::create_api_key,
         admin_auth::deactivate_api_key,
+        admin_ops::list_audit_events,
+        admin_ops::list_admin_users,
+        admin_ops::create_admin_user,
+        admin_ops::deactivate_admin_user,
         presentation::create_session,
         registry::list_predicates,
         registry::list_circuit_data,
         registry::get_circuit_dataset,
         registry::list_proving_keys,
         registry::get_proving_key,
+        registry::list_predicate_assets,
+        registry::get_predicate_asset,
         midnight_admin::get_midnight_status,
-        midnight_admin::enable_midnight,
-        midnight_admin::disable_midnight,
+        api::check_predicate_attested,
+        api::get_predicate_snapshot,
+        api::relay_predicate_proof,
+        api::stream_predicate_tx_events,
     ),
     components(schemas(
         api::ChallengeResponse,
-        api::VerifyRequest,
+        api::MidnightInfoResponse,
+        api::VerifyDcqlRequest,
+        api::VerifyDcqlResponse,
         api::VerifyResponse,
+        dcql::DcqlRequest,
+        dcql::DcqlCredentialQuery,
+        dcql::DcqlMeta,
+        dcql::DcqlClaimQuery,
+        dcql::DcqlCredentialSet,
+        dcql::OwlPredicate,
         api::AddTrustedIssuerRequest,
         api::AddTrustedIssuerResponse,
         api::TrustedIssuerInfo,
@@ -130,22 +154,31 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
         admin_auth::CreateApiKeyRequest,
         admin_auth::CreateApiKeyResponse,
         admin_auth::ApiKeyInfo,
+        admin_ops::AuditEventInfo,
+        admin_ops::AdminUserInfo,
+        admin_ops::CreateAdminUserRequest,
         presentation::CreatePresentationResponse,
         registry::PredicateInfo,
         registry::CircuitDatasetInfo,
         registry::CircuitDataset,
         midnight_admin::MidnightStatus,
         midnight_admin::SidecarHealth,
-        midnight_admin::ToggleResponse,
+        api::CheckPredicateRequest,
+        api::CheckPredicateResponse,
+        api::PredicateSnapshotResponse,
+        api::RelayProofRequest,
+        api::RelayProofResponse,
+        api::TxStatusResponse,
     )),
     tags(
         // Public — anyone with a valid API key may call.
-        (name = "verification", description = "Token verification (verifyToken, generateChallenge)"),
+        (name = "verification", description = "SD-JWT VC presentation verification (verifyToken, generateChallenge)"),
         (name = "presentation", description = "ISO 18013-5 style credential presentation sessions"),
         (name = "monitoring", description = "Public health probe"),
         (name = "issuers", description = "Trusted issuer directory (read-only listing)"),
         (name = "revocations", description = "Revocation lookups (check, list)"),
         (name = "registry", description = "Predicate + circuit-dataset registry (public reference data)"),
+        (name = "predicates", description = "Holder-device predicate attestation: state snapshot, proof relay, attested-set check"),
         // Operator/admin — require manage-* permission or JWT.
         (name = "metrics", description = "Detailed metrics (admin)"),
         (name = "admin-issuers", description = "Trusted issuer management (admin)"),
@@ -156,6 +189,79 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
     )
 )]
 struct ApiDoc;
+
+fn api_key_preview(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 16 {
+        return key.to_string();
+    }
+    let prefix: String = chars.iter().take(14).collect();
+    let suffix: String = chars
+        .iter()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{prefix}...{suffix}")
+}
+
+fn api_key_type_and_env(key: &str) -> (&'static str, &'static str) {
+    let key_type = if key.starts_with("owlid_pk_") {
+        "pk"
+    } else {
+        "sk"
+    };
+    let environment = if key.contains("_live_") {
+        "live"
+    } else {
+        "test"
+    };
+    (key_type, environment)
+}
+
+async fn ensure_configured_api_key(
+    repo: &ApiKeyRepository,
+    env_name: &str,
+    name: &str,
+    description: &str,
+    permissions: Vec<&str>,
+) -> anyhow::Result<()> {
+    let Ok(key) = std::env::var(env_name) else {
+        return Ok(());
+    };
+    if key.trim().is_empty() {
+        return Ok(());
+    }
+
+    if repo.find_by_key(&key).await.is_ok() {
+        tracing::info!("Configured API key from {} is already active", env_name);
+        return Ok(());
+    }
+
+    let (key_type, environment) = api_key_type_and_env(&key);
+    let permission_strings = permissions.into_iter().map(str::to_string).collect();
+    repo.create(
+        &key,
+        name.to_string(),
+        Some(description.to_string()),
+        permission_strings,
+        None,
+        Some("system".to_string()),
+        key_type,
+        environment,
+        &api_key_preview(&key),
+    )
+    .await?;
+    tracing::info!(
+        "Bootstrapped configured {} API key from {} with {} permissions",
+        environment,
+        env_name,
+        key_type
+    );
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -197,53 +303,49 @@ async fn main() -> anyhow::Result<()> {
         .expect("Failed to connect to database");
     tracing::info!("✅ Database connection verified");
 
-    // T-020: Initialize Prometheus metrics recorder
     let metrics_handle = observability::init_metrics();
 
-    // T-018: Initialize WebSocket revocation broadcaster
     let broadcaster = Arc::new(RevocationBroadcaster::new(1024));
 
     // Initialize Midnight sidecar client.
     //
-    // Always construct the client when MIDNIGHT_SIDECAR_URL is configured —
-    // even if the runtime flag is off — so an admin can flip it on at
-    // runtime without a service restart. The DB setting
-    // `system_settings.midnight_enabled` (if present) takes precedence over
-    // the env var, so the last operator decision survives restarts.
-    let mut midnight_config = midnight::MidnightConfig::from_env();
-    let env_enabled = midnight_config.enabled;
-    let settings_repo = db::SystemSettingsRepository::new(db_pool.clone());
-    let stored_enabled = settings_repo
-        .get_typed::<Option<bool>>(db::repositories::system_settings::keys::MIDNIGHT_ENABLED, None)
-        .await;
-    if let Some(stored) = stored_enabled {
-        midnight_config.enabled = stored;
-        tracing::info!(
-            "Midnight runtime flag from DB: {} (env was {})",
-            stored,
-            env_enabled
-        );
-    }
+    // Midnight is required — the service refuses to start without a
+    // reachable sidecar. There is no runtime enable/disable toggle.
     let midnight_client = {
-        let sidecar = midnight::MidnightSidecar::new(midnight_config);
-        if sidecar.is_enabled() {
-            tracing::info!("🌙 Midnight integration enabled, probing sidecar...");
-            match sidecar.health_check().await {
-                Ok(true) => tracing::info!("✅ Midnight sidecar connected and healthy"),
-                Ok(false) => {
-                    tracing::warn!("⚠️ Midnight sidecar reachable but not connected to network")
+        let sidecar = midnight::MidnightSidecar::new(midnight::MidnightConfig::from_env());
+        tracing::info!("🌙 Probing Midnight sidecar at {}", sidecar.base_url());
+        // `VERIFICATION_SKIP_SIDECAR_PROBE=true` downgrades a probe
+        // failure from hard-exit to warning. Useful for one-shot dev
+        // workflows that just need the HTTP surface up (e.g.
+        // `just generate-api-client` curling `/openapi.json`) without
+        // a live sidecar.
+        let skip_sidecar_probe = std::env::var("VERIFICATION_SKIP_SIDECAR_PROBE")
+            .map(|v| matches!(v.as_str(), "true" | "1" | "yes"))
+            .unwrap_or(false);
+        match sidecar.health_check().await {
+            Ok(true) => tracing::info!("✅ Midnight sidecar connected and healthy"),
+            Ok(false) => tracing::warn!(
+                "⚠️ Midnight sidecar reachable but not yet connected to network — proceeding"
+            ),
+            Err(e) => {
+                if skip_sidecar_probe {
+                    tracing::warn!(
+                        "⚠️ Midnight sidecar unreachable at {}: {} — skipping per \
+                         VERIFICATION_SKIP_SIDECAR_PROBE",
+                        sidecar.base_url(),
+                        e
+                    );
+                } else {
+                    tracing::error!(
+                        "❌ Midnight sidecar unreachable at {}: {}",
+                        sidecar.base_url(),
+                        e
+                    );
+                    std::process::exit(1);
                 }
-                Err(e) => tracing::warn!(
-                    "⚠️ Midnight sidecar unreachable: {}. Chain operations will fail-open until it recovers.",
-                    e
-                ),
             }
-        } else {
-            tracing::info!(
-                "Midnight integration is disabled. Flip via POST /admin/midnight/enable when ready."
-            );
         }
-        Some(Arc::new(sidecar))
+        Arc::new(sidecar)
     };
 
     // Initialize application state
@@ -254,16 +356,50 @@ async fn main() -> anyhow::Result<()> {
         metrics_handle,
         midnight_client,
         config.webauthn_expected_origins.clone(),
+        config.verification_public_url.clone(),
+        config.midnight_network_id.clone(),
     )
     .await;
     tracing::info!("✅ Application state initialized");
 
-    // T-003: Warn if no trusted issuers exist at startup
+    // Subscribe to the Midnight sidecar event stream so revocations and
+    // issuer changes published on chain are mirrored into local
+    // Postgres + the in-memory cache without per-request round-trips.
+    sidecar_events::spawn(Arc::new(state.clone()));
+
+    ensure_configured_api_key(
+        &state.api_keys,
+        "VERIFIER_API_KEY",
+        "Verifier App Key",
+        "Browser publishable key used by the hosted verifier app",
+        vec!["verify"],
+    )
+    .await?;
+
+    ensure_configured_api_key(
+        &state.api_keys,
+        "API_KEY_DEV",
+        "Terraform Dev Key",
+        "Operator/service key provisioned from deployment configuration",
+        vec![
+            "verify",
+            "manage_issuers",
+            "manage_revocations",
+            "admin",
+            "gdpr",
+        ],
+    )
+    .await?;
+
+    // Warn if no trusted issuers exist at startup — verification will
+    // reject every credential until at least one is registered.
     {
         let issuers = state.issuers.list(false).await;
         match issuers {
             Ok(list) if list.is_empty() => {
-                tracing::warn!("No trusted issuers configured. Register issuers via POST /trusted-issuers before issuing credentials.");
+                tracing::warn!(
+                    "No trusted issuers configured. Register issuers via POST /trusted-issuers before issuing credentials."
+                );
             }
             Ok(list) => {
                 tracing::info!("Loaded {} trusted issuer(s)", list.len());
@@ -314,7 +450,6 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // T-015: Load rate limiting configuration
     let rate_limit_config = RateLimitConfig::from_env();
     if rate_limit_config.enabled {
         tracing::info!(
@@ -333,7 +468,7 @@ async fn main() -> anyhow::Result<()> {
     // Create API key repository for auth middleware
     let api_key_repo = Arc::clone(&state.api_keys);
 
-    // T-003: Build admin routes (require API key with "admin" permission)
+    // Admin routes (require API key with "admin" permission).
     let admin_routes = Router::new()
         .route("/trusted-issuers", post(api::add_trusted_issuer))
         .route("/revocations/revoke", post(api::revoke_credential))
@@ -349,53 +484,107 @@ async fn main() -> anyhow::Result<()> {
     // versa). The route still requires a valid API key via the outer
     // `authenticated_routes` layering.
     let gdpr_routes = Router::new()
-        .route("/admin/gdpr-erasure/{owner_public_key}", delete(gdpr::gdpr_erasure))
+        .route(
+            "/admin/gdpr-erasure/{owner_public_key}",
+            delete(gdpr::gdpr_erasure),
+        )
         .layer(axum_middleware::from_fn_with_state(
             Arc::clone(&api_key_repo),
             require_permission("gdpr"),
         ));
 
-    // Build authenticated routes (require any valid API key)
-    let authenticated_routes = Router::new()
-        .route("/verify", post(api::verify_token))
+    let verification_routes = Router::new()
+        .route("/verify/dcql", post(api::verify_dcql))
         .route("/verify/challenge", get(api::generate_challenge))
-        .route("/metrics", get(api::get_metrics))
+        .route("/openid4vp/response", post(api::openid4vp_response))
+        .route(
+            "/predicates/attested",
+            post(api::check_predicate_attested),
+        )
+        .route(
+            "/predicates/{kind}/snapshot",
+            get(api::get_predicate_snapshot),
+        )
+        .route(
+            "/predicates/{kind}/relay",
+            post(api::relay_predicate_proof),
+        )
+        .route(
+            "/predicates/tx/{tx_id}/events",
+            get(api::stream_predicate_tx_events),
+        )
+        // Read-only trust/revocation surface — every verifier needs
+        // these to render its own "is this issuer trusted?" / "is this
+        // credential revoked?" UI, so they sit under the same `verify`
+        // permission as the verify endpoints rather than admin.
         .route("/trusted-issuers", get(api::list_trusted_issuers))
         .route("/revocations/check", post(api::check_revocation))
         .route("/revocations/list", get(api::list_revoked))
+        .layer(axum_middleware::from_fn_with_state(
+            Arc::clone(&api_key_repo),
+            require_permission("verify"),
+        ));
+
+    // Operator-only read routes. The list above moved out — these are
+    // ops / observability surfaces a customer verifier never calls.
+    let service_read_routes = Router::new()
+        .route("/metrics", get(api::get_metrics))
+        .layer(axum_middleware::from_fn_with_state(
+            Arc::clone(&api_key_repo),
+            require_permission("admin"),
+        ));
+
+    let authenticated_routes = Router::new()
+        .merge(verification_routes)
+        .merge(service_read_routes)
         .merge(admin_routes)
         .merge(gdpr_routes)
-        // T-015: Rate limiting (runs after auth)
         .layer(axum_middleware::from_fn_with_state(
             rate_limit_state,
             RateLimitMiddleware::check_rate_limit,
-        ))
-        .layer(axum_middleware::from_fn_with_state(
-            api_key_repo,
-            AuthMiddleware::validate,
         ));
 
     // Admin routes (JWT-protected, except /admin/login + /admin/logout).
-    //
     // /admin/midnight/* is grouped here because it speaks for the operator,
-    // not for a service caller. The unified AuthMiddleware (further down)
-    // also routes admin-cookie-bearing browsers, but these endpoints
-    // intentionally require the JWT path so an API key alone can't flip
-    // the integration.
+    // not for a service caller.
     let admin_routes = Router::new()
         .route("/admin/me", get(admin_auth::me))
         .route("/admin/password", post(admin_auth::change_password))
         .route("/admin/api-keys", get(admin_auth::list_api_keys))
         .route("/admin/api-keys", post(admin_auth::create_api_key))
-        .route("/admin/api-keys/{id}", delete(admin_auth::deactivate_api_key))
-        .route("/admin/midnight/status", get(midnight_admin::get_midnight_status))
-        .route("/admin/midnight/enable", post(midnight_admin::enable_midnight))
-        .route("/admin/midnight/disable", post(midnight_admin::disable_midnight))
+        .route(
+            "/admin/api-keys/{id}",
+            delete(admin_auth::deactivate_api_key),
+        )
+        .route("/admin/audit-events", get(admin_ops::list_audit_events))
+        .route("/admin/users", get(admin_ops::list_admin_users))
+        .route("/admin/users", post(admin_ops::create_admin_user))
+        .route(
+            "/admin/users/{id}",
+            delete(admin_ops::deactivate_admin_user),
+        )
+        .route(
+            "/admin/midnight/status",
+            get(midnight_admin::get_midnight_status),
+        )
         .layer(axum_middleware::from_fn(admin_auth::require_jwt));
 
     // Build router with public and protected routes
     let app = Router::new()
         .route("/health", get(api::health))
+        // Public Midnight network info — wallet bootstrap reads this
+        // before any contract call so midnight-js `setNetworkId()` can
+        // be set. Not secret.
+        .route("/midnight/info", get(api::get_midnight_info))
+        // CORS-friendly proxy of the universal BLS SRS the in-process
+        // zkir-v2 prover needs. Upstream S3 bucket lacks CORS headers,
+        // so the browser can't fetch directly. Public, immutably cached.
+        .route("/midnight/params/{k}", get(api::get_midnight_params))
+        // The IETF Token Status List the issuer publishes is public; the
+        // revoked-id feed it is projected from is likewise not secret
+        // (the signed statuslist+jwt already encodes the same state).
+        // The issuer fetches this unauthenticated to build /status/{id}.
+        .route("/status-revoked", get(api::status_revoked))
         // Public predicate + circuit-dataset registry. Verifier-side apps
         // build selectors from these without needing an API key.
         .route("/predicates", get(registry::list_predicates))
@@ -406,24 +595,34 @@ async fn main() -> anyhow::Result<()> {
         // segment must be `<circuit>.pk.bin`.
         .route("/zk-keys", get(registry::list_proving_keys))
         .route("/zk-keys/{filename}", get(registry::get_proving_key))
+        // Per-kind predicate Compact artifacts (zkir/prover/verifier)
+        // for every deployed kind, same role as /zk-keys for the
+        // holder's WASM build.
+        .route("/predicate-zk", get(registry::list_predicate_assets))
+        .route("/predicate-zk/{filename}", get(registry::get_predicate_asset))
         .route("/admin/login", post(admin_auth::login))
         // Logout is intentionally public+idempotent: clearing a cookie
         // shouldn't itself require an authenticated session.
         .route("/admin/logout", post(admin_auth::logout))
         .merge(admin_routes)
         .merge(utoipa_swagger_ui::SwaggerUi::new("/swagger-ui").url("/openapi.json", ApiDoc::openapi()))
-        // T-018: WebSocket endpoint for real-time revocation events
         .route("/ws/revocations", get(ws::ws_revocations))
+        .route("/ws/events", get(ws::ws_events))
         // Presentation protocol (ISO 18013-5 style)
         .route("/presentation/sessions", post(presentation::create_session))
         .route("/ws/presentation/{session_id}", get(presentation::ws_presentation))
-        // T-020: Prometheus metrics endpoint
+        // OpenID4VP 1.0 §5 Authorization Request — external wallets
+        // fetch the Request Object here after scanning the
+        // openid4vp://?request_uri=... deeplink.
+        .route(
+            "/openid4vp/request/{session_id}",
+            get(openid4vp::get_authorization_request),
+        )
         .route("/prometheus", get(observability::prometheus_metrics))
         .merge(authenticated_routes)
         .with_state(state)
         // Midnight Compact ZK artifacts for browser FetchZkConfigProvider (stateless)
         .nest("/zk", zk_assets::router())
-        // T-020: Correlation ID and request metrics middleware
         .layer(axum_middleware::from_fn(observability::correlation_and_metrics))
         .layer(build_cors_layer(&config))
         .layer(TraceLayer::new_for_http());

@@ -8,15 +8,17 @@
 import { Loader2, Building2, Globe, Shield, ChevronRight } from 'lucide-react'
 import { Button } from '@owlid/ui/components/ui/button'
 import { useProviders } from '~/hooks/use-idp-api'
-import type { ProviderInfoExtended, ProviderFlowType } from '@owlid/sdk/issuer'
+import type { ProviderInfo, ProviderFlowType } from '@owlid/issuer-client'
+import { getBrandIcon } from './ProviderBrandIcon'
 
 interface ProviderSelectorProps {
-  onSelect: (provider: ProviderInfoExtended) => void
+  onSelect: (provider: ProviderInfo) => void
   disabled?: boolean
 }
 
 const FLOW_TYPE_LABELS: Record<ProviderFlowType, string> = {
   form_based: 'Form',
+  oidc_redirect: 'Redirect',
   saml_redirect: 'Redirect',
   qr_polling: 'QR Code',
   webhook_async: 'Document Upload',
@@ -24,6 +26,7 @@ const FLOW_TYPE_LABELS: Record<ProviderFlowType, string> = {
 
 const FLOW_TYPE_ICONS: Record<ProviderFlowType, typeof Building2> = {
   form_based: Building2,
+  oidc_redirect: Globe,
   saml_redirect: Globe,
   qr_polling: Shield,
   webhook_async: Shield,
@@ -67,6 +70,7 @@ export function ProviderSelector({ onSelect, disabled = false }: ProviderSelecto
         Select an identity provider to verify your identity:
       </p>
       {providers.map((provider) => {
+        const BrandIcon = getBrandIcon(provider.id)
         const FlowIcon = FLOW_TYPE_ICONS[provider.flowType] || Shield
         return (
           <Button
@@ -77,8 +81,18 @@ export function ProviderSelector({ onSelect, disabled = false }: ProviderSelecto
             onClick={() => onSelect(provider)}
           >
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                <FlowIcon className="w-5 h-5 text-primary" />
+              <div
+                className={
+                  BrandIcon
+                    ? 'w-10 h-10 rounded-lg bg-white flex items-center justify-center'
+                    : 'w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center'
+                }
+              >
+                {BrandIcon ? (
+                  <BrandIcon className="w-5 h-5" />
+                ) : (
+                  <FlowIcon className="w-5 h-5 text-primary" />
+                )}
               </div>
               <div className="text-left">
                 <div className="font-medium">{provider.name}</div>

@@ -1,0 +1,60 @@
+// OwlID predicate contract — age >= public threshold.
+//
+// One predicate per contract address keeps each deploy under
+// Midnight's per-extrinsic block-weight cap. Attestation key recipe
+// matches `owl_proof_system::attestation::age_key`:
+//   sha256( pad32("owlid:attest:age:") || rootHash || u128_le32(threshold) )
+
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+import "./lib/access/Ownable" prefix Ownable_;
+import "./lib/security/Pausable" prefix Pausable_;
+
+export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
+
+witness ageValue(): Uint<16>;
+
+export ledger attestations: Set<Bytes<32>>;
+export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
+export ledger attestCount: Counter;
+
+constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>) {
+  Ownable_initialize(initialOwner);
+}
+
+circuit keyOf(tag: Bytes<32>, dRootHash: Bytes<32>, dParam: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([tag, dRootHash, dParam]);
+}
+
+circuit record(key: Bytes<32>): [] {
+  if (!attestations.member(key)) {
+    attestations.insert(key);
+    attestTree.insert(key);
+    attestCount.increment(1);
+  }
+}
+
+export circuit attestAgeGte(rootHash: Bytes<32>, threshold: Uint<16>): [] {
+  Pausable_assertNotPaused();
+  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
+  const age = ageValue();
+  assert(age >= threshold, "age below threshold");
+  record(keyOf(
+    pad(32, "owlid:attest:age:"),
+    disclose(rootHash),
+    disclose(threshold) as Field as Bytes<32>
+  ));
+}
+
+export circuit isAttested(key: Bytes<32>): Boolean {
+  return attestations.member(disclose(key));
+}
+
+export circuit pause(): [] { Ownable_assertOnlyOwner(); Pausable__pause(); }
+export circuit unpause(): [] { Ownable_assertOnlyOwner(); Pausable__unpause(); }
+export circuit transferOwnership(newOwner: Either<ZswapCoinPublicKey, ContractAddress>): [] {
+  Ownable_transferOwnership(newOwner);
+}
+export circuit owner(): Either<ZswapCoinPublicKey, ContractAddress> { return Ownable_owner(); }
+export circuit isPaused(): Boolean { return Pausable_isPaused(); }

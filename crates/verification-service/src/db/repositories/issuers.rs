@@ -1,4 +1,5 @@
-use crate::db::{models::TrustedIssuer, DatabaseError, DbPool, Result};
+#![allow(dead_code)] // intentional API surface / serde fields
+use crate::db::{DatabaseError, DbPool, Result, models::TrustedIssuer};
 use uuid::Uuid;
 
 pub struct IssuerRepository {
@@ -24,6 +25,13 @@ impl IssuerRepository {
             r#"
             INSERT INTO trusted_issuers (public_key, name, description, issuer_url, added_by, metadata)
             VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (public_key) DO UPDATE
+            SET name = EXCLUDED.name,
+                description = EXCLUDED.description,
+                issuer_url = EXCLUDED.issuer_url,
+                added_by = EXCLUDED.added_by,
+                metadata = EXCLUDED.metadata,
+                is_active = true
             RETURNING *
             "#,
         )
@@ -35,17 +43,7 @@ impl IssuerRepository {
         .bind(&metadata)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.is_unique_violation() {
-                    return DatabaseError::Duplicate(format!(
-                        "Issuer with public key {} already exists",
-                        public_key
-                    ));
-                }
-            }
-            DatabaseError::from(e)
-        })?;
+        .map_err(DatabaseError::from)?;
 
         Ok(issuer)
     }

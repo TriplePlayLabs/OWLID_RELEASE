@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * OwlID Verification Service
- * Token verification, trusted issuer management, and credential revocation
+ * SD-JWT VC presentation verification, trusted issuer management, and credential revocation
  *
  * The version of the OpenAPI document: 1.0.0
  *
@@ -13,18 +13,18 @@
  */
 
 import * as runtime from '../runtime.js'
-import type { ChallengeResponse, VerifyRequest, VerifyResponse } from '../models/index.js'
+import type { ChallengeResponse, VerifyDcqlRequest, VerifyDcqlResponse } from '../models/index.js'
 import {
   ChallengeResponseFromJSON,
   ChallengeResponseToJSON,
-  VerifyRequestFromJSON,
-  VerifyRequestToJSON,
-  VerifyResponseFromJSON,
-  VerifyResponseToJSON,
+  VerifyDcqlRequestFromJSON,
+  VerifyDcqlRequestToJSON,
+  VerifyDcqlResponseFromJSON,
+  VerifyDcqlResponseToJSON,
 } from '../models/index.js'
 
-export interface VerifyTokenRequest {
-  verifyRequest: VerifyRequest
+export interface VerifyDcqlOperationRequest {
+  verifyDcqlRequest: VerifyDcqlRequest
 }
 
 /**
@@ -54,25 +54,26 @@ export interface VerificationApiInterface {
   ): Promise<ChallengeResponse>
 
   /**
-   *
-   * @summary Verify a token
-   * @param {VerifyRequest} verifyRequest
+   * Consumes the one-shot nonce ONCE, then verifies every `vp_token` entry independently with the same `challenge` and `audience`. Per-credential DCQL constraints (`format`, `meta.vct_values`, `claims[].path`/`values`) are enforced after the crypto chain passes; `credential_sets` are solved over the set of valid ids.
+   * @summary DCQL multi-credential verification (OpenID4VP 1.0 §6 + §8.1).
+   * @param {VerifyDcqlRequest} verifyDcqlRequest
    * @param {*} [options] Override http request option.
    * @throws {RequiredError}
    * @memberof VerificationApiInterface
    */
-  verifyTokenRaw(
-    requestParameters: VerifyTokenRequest,
+  verifyDcqlRaw(
+    requestParameters: VerifyDcqlOperationRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<runtime.ApiResponse<VerifyResponse>>
+  ): Promise<runtime.ApiResponse<VerifyDcqlResponse>>
 
   /**
-   * Verify a token
+   * Consumes the one-shot nonce ONCE, then verifies every `vp_token` entry independently with the same `challenge` and `audience`. Per-credential DCQL constraints (`format`, `meta.vct_values`, `claims[].path`/`values`) are enforced after the crypto chain passes; `credential_sets` are solved over the set of valid ids.
+   * DCQL multi-credential verification (OpenID4VP 1.0 §6 + §8.1).
    */
-  verifyToken(
-    requestParameters: VerifyTokenRequest,
+  verifyDcql(
+    requestParameters: VerifyDcqlOperationRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<VerifyResponse>
+  ): Promise<VerifyDcqlResponse>
 }
 
 /**
@@ -117,16 +118,17 @@ export class VerificationApi extends runtime.BaseAPI implements VerificationApiI
   }
 
   /**
-   * Verify a token
+   * Consumes the one-shot nonce ONCE, then verifies every `vp_token` entry independently with the same `challenge` and `audience`. Per-credential DCQL constraints (`format`, `meta.vct_values`, `claims[].path`/`values`) are enforced after the crypto chain passes; `credential_sets` are solved over the set of valid ids.
+   * DCQL multi-credential verification (OpenID4VP 1.0 §6 + §8.1).
    */
-  async verifyTokenRaw(
-    requestParameters: VerifyTokenRequest,
+  async verifyDcqlRaw(
+    requestParameters: VerifyDcqlOperationRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<runtime.ApiResponse<VerifyResponse>> {
-    if (requestParameters['verifyRequest'] == null) {
+  ): Promise<runtime.ApiResponse<VerifyDcqlResponse>> {
+    if (requestParameters['verifyDcqlRequest'] == null) {
       throw new runtime.RequiredError(
-        'verifyRequest',
-        'Required parameter "verifyRequest" was null or undefined when calling verifyToken().',
+        'verifyDcqlRequest',
+        'Required parameter "verifyDcqlRequest" was null or undefined when calling verifyDcql().',
       )
     }
 
@@ -138,26 +140,29 @@ export class VerificationApi extends runtime.BaseAPI implements VerificationApiI
 
     const response = await this.request(
       {
-        path: `/verify`,
+        path: `/verify/dcql`,
         method: 'POST',
         headers: headerParameters,
         query: queryParameters,
-        body: VerifyRequestToJSON(requestParameters['verifyRequest']),
+        body: VerifyDcqlRequestToJSON(requestParameters['verifyDcqlRequest']),
       },
       initOverrides,
     )
 
-    return new runtime.JSONApiResponse(response, (jsonValue) => VerifyResponseFromJSON(jsonValue))
+    return new runtime.JSONApiResponse(response, (jsonValue) =>
+      VerifyDcqlResponseFromJSON(jsonValue),
+    )
   }
 
   /**
-   * Verify a token
+   * Consumes the one-shot nonce ONCE, then verifies every `vp_token` entry independently with the same `challenge` and `audience`. Per-credential DCQL constraints (`format`, `meta.vct_values`, `claims[].path`/`values`) are enforced after the crypto chain passes; `credential_sets` are solved over the set of valid ids.
+   * DCQL multi-credential verification (OpenID4VP 1.0 §6 + §8.1).
    */
-  async verifyToken(
-    requestParameters: VerifyTokenRequest,
+  async verifyDcql(
+    requestParameters: VerifyDcqlOperationRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<VerifyResponse> {
-    const response = await this.verifyTokenRaw(requestParameters, initOverrides)
+  ): Promise<VerifyDcqlResponse> {
+    const response = await this.verifyDcqlRaw(requestParameters, initOverrides)
     return await response.value()
   }
 }

@@ -16,14 +16,15 @@
 //! callers usually do not set Cookie, and browsers usually do not set
 //! Authorization, so collisions are rare. When both are present the API
 //! key wins — explicit beats ambient.
+#![allow(dead_code)] // intentional API surface / serde fields
+use crate::admin_auth;
+use crate::db::{ApiKeyRepository, models::ApiKey};
 use axum::{
     extract::{Request, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use crate::admin_auth;
-use crate::db::{ApiKeyRepository, models::ApiKey};
 use std::sync::Arc;
 
 /// Authentication middleware that validates API keys or admin sessions.
@@ -98,8 +99,7 @@ async fn resolve_principal(
     }
 
     if let Some(token) = admin_auth::read_token_from_cookies(headers) {
-        let claims = admin_auth::validate_token(&token)
-            .map_err(|_| AuthError::InvalidApiKey)?;
+        let claims = admin_auth::validate_token(&token).map_err(|_| AuthError::InvalidApiKey)?;
         return Ok(Principal::AdminSession {
             username: claims.sub,
             permissions: claims.permissions,
@@ -125,7 +125,9 @@ impl AuthMiddleware {
     ) -> Result<Response, AuthError> {
         let principal = resolve_principal(&repo, &headers).await?;
         if let Principal::ApiKey(ref k) = principal {
-            request.extensions_mut().insert(AuthenticatedKey { api_key: k.clone() });
+            request
+                .extensions_mut()
+                .insert(AuthenticatedKey { api_key: k.clone() });
         }
         request.extensions_mut().insert(principal);
         Ok(next.run(request).await)
@@ -146,7 +148,9 @@ impl AuthMiddleware {
             ));
         }
         if let Principal::ApiKey(ref k) = principal {
-            request.extensions_mut().insert(AuthenticatedKey { api_key: k.clone() });
+            request
+                .extensions_mut()
+                .insert(AuthenticatedKey { api_key: k.clone() });
         }
         request.extensions_mut().insert(principal);
         Ok(next.run(request).await)
@@ -154,13 +158,15 @@ impl AuthMiddleware {
 }
 
 /// Helper to create a permission-checking middleware
-pub fn require_permission(permission: &'static str) -> impl Fn(
+pub fn require_permission(
+    permission: &'static str,
+) -> impl Fn(
     State<Arc<ApiKeyRepository>>,
     HeaderMap,
     Request,
     Next,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, AuthError>> + Send>>
-       + Clone {
++ Clone {
     move |state, headers, request, next| {
         Box::pin(async move {
             AuthMiddleware::validate_with_permission(state, headers, request, next, permission)

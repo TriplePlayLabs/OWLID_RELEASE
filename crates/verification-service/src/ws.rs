@@ -1,13 +1,12 @@
-//! T-018: WebSocket push for real-time revocation notifications
-//!
-//! Provides a WebSocket endpoint that broadcasts revocation events to connected clients.
+//! WebSocket endpoint that broadcasts revocation events to clients.
 //! Clients can optionally filter by issuer public key.
 
+#![allow(dead_code)] // intentional API surface / serde fields
 use crate::state::AppState;
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
 };
@@ -20,8 +19,8 @@ use tokio::sync::broadcast;
 pub struct RevocationEvent {
     /// Type of event: "revoked", "suspended", "reactivated"
     pub event: String,
-    /// Root hash of the affected credential
-    pub root_hash: String,
+    /// SD-JWT VC credential_id of the affected credential
+    pub credential_id: String,
     /// Issuer public key (hex)
     pub issuer_public_key: String,
     /// Unix timestamp
@@ -122,6 +121,78 @@ async fn handle_ws(
                         let _ = socket.send(Message::Pong(data)).await;
                     }
                     _ => {} // Ignore other messages
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// System event stream — every audit-logged action, live.
+// ---------------------------------------------------------------------------
+
+/// One system event pushed to `/ws/events` subscribers. Mirrors the
+/// `AuditEventInfo` shape returned by `GET /admin/audit-events` so the
+/// admin dashboard renders the live feed and the polled trail the same way.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemEvent {
+    id: String,
+    event_type: String,
+    entity_type: String,
+    entity_id: String,
+    actor: Option<String>,
+    occurred_at: String,
+}
+
+/// WebSocket endpoint streaming every audit event as it is logged.
+pub async fn ws_events(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+    let rx = state.audit.subscribe();
+    ws.on_upgrade(move |socket| handle_events_ws(socket, rx))
+}
+
+async fn handle_events_ws(
+    mut socket: WebSocket,
+    mut rx: broadcast::Receiver<crate::db::models::AuditEvent>,
+) {
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(ev) => {
+                        let dto = SystemEvent {
+                            id: ev.id.to_string(),
+                            event_type: ev.event_type,
+                            entity_type: ev.entity_type,
+                            entity_id: ev.entity_id,
+                            actor: ev.actor,
+                            occurred_at: ev.occurred_at.to_rfc3339(),
+                        };
+                        match serde_json::to_string(&dto) {
+                            Ok(json) => {
+                                if socket.send(Message::Text(json.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        let warning = serde_json::json!({
+                            "warning": format!("Missed {} events", n)
+                        });
+                        let _ = socket.send(Message::Text(warning.to_string().into())).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(data))) => {
+                        let _ = socket.send(Message::Pong(data)).await;
+                    }
+                    _ => {}
                 }
             }
         }

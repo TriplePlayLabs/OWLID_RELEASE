@@ -117,7 +117,10 @@ impl WebhookHandler for JumioWebhookHandler {
 
         if let Some(auth) = auth_header {
             // Check Basic auth token matches
-            let expected = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{}:", secret)));
+            let expected = format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(format!("{}:", secret))
+            );
             if auth != &expected {
                 return Err(IdpError::InvalidField {
                     field: "authorization".to_string(),
@@ -266,14 +269,10 @@ impl WebhookHandlerRegistry {
     }
 
     /// Process a webhook, verifying signature and extracting metadata
-    pub fn process(
-        &self,
-        payload: WebhookPayload,
-        secret: &str,
-    ) -> Result<VerifiedWebhook> {
-        let handler = self.get(&payload.provider_id).ok_or_else(|| {
-            IdpError::ProviderNotFound(payload.provider_id.clone())
-        })?;
+    pub fn process(&self, payload: WebhookPayload, secret: &str) -> Result<VerifiedWebhook> {
+        let handler = self
+            .get(&payload.provider_id)
+            .ok_or_else(|| IdpError::ProviderNotFound(payload.provider_id.clone()))?;
 
         // Verify signature
         handler.verify_signature(&payload, secret)?;
@@ -311,7 +310,8 @@ fn verify_hmac_sha256(key: &[u8], data: &[u8], expected_signature: &str) -> Resu
     }
 
     // Try base64-encoded signature
-    if let Ok(expected_bytes) = base64::engine::general_purpose::STANDARD.decode(expected_signature) {
+    if let Ok(expected_bytes) = base64::engine::general_purpose::STANDARD.decode(expected_signature)
+    {
         if mac.verify_slice(&expected_bytes).is_ok() {
             return Ok(());
         }

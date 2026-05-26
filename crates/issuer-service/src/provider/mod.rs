@@ -12,11 +12,14 @@
 //! - **QrPolling**: Bank eID (BankID) - QR code + polling
 //! - **WebhookAsync**: KYC providers (Onfido, Jumio, Didit) - redirect + webhook
 //! - **FormBased**: Mock/test providers - direct form submission
+//! - **OidcRedirect**: OpenID Connect providers (Google, Microsoft, Apple) - redirect + callback
 
 mod didit;
+mod oidc_provider;
 mod registry;
 mod traits;
 
 pub use didit::{DiditConfig, DiditProvider};
+pub use oidc_provider::OidcProvider;
 pub use registry::ProviderRegistry;
 pub use traits::*;

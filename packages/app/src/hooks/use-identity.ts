@@ -1,64 +1,59 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { storage, type IdentityData } from '@owlid/sdk'
-import { clearIdentitySession, setIdentityData, useIdentityData } from './use-identity-session'
+import { storage } from '@owlid/sdk'
 
-const STORED_KEY = ['identity', 'stored'] as const
+const USERNAME_KEY = ['identity', 'username'] as const
 const HAS_CRED_KEY = ['identity', 'has-credential'] as const
+const PASSKEY_KEY = ['identity', 'passkey'] as const
 
+/**
+ * Bootstrap-state hook for the holder app. Reads:
+ *   - username       — wallet display label
+ *   - passkey        — WebAuthn credentialId (the unlock gate)
+ *   - has-credential — at least one wallet credential present
+ *
+ * Always refetches on mount + window focus so the cache can't lie after
+ * the user wipes storage from DevTools.
+ */
 export function useIdentity() {
   const qc = useQueryClient()
-  const identityData = useIdentityData()
 
-  const stored = useQuery({
-    queryKey: STORED_KEY,
-    queryFn: () => storage.loadStoredIdentity(),
-    staleTime: Infinity,
+  const usernameQuery = useQuery({
+    queryKey: USERNAME_KEY,
+    queryFn: () => storage.loadUsername(),
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: 'always',
   })
 
   const hasCredential = useQuery({
     queryKey: HAS_CRED_KEY,
-    queryFn: () => storage.hasStoredCredential(),
-    staleTime: Infinity,
+    queryFn: () => storage.hasAnyCredential(),
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: 'always',
+  })
+
+  const passkey = useQuery({
+    queryKey: PASSKEY_KEY,
+    queryFn: () => storage.loadWebAuthnCredential(),
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: 'always',
   })
 
   const completeRegistrationMut = useMutation({
-    mutationFn: ({ credentialId, username }: { credentialId: string; username: string }) =>
-      storage.saveIdentity(credentialId, username),
+    mutationFn: ({ username }: { username: string }) => storage.saveUsername(username),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['identity'] }),
   })
 
-  const completeIdentityCreationMut = useMutation({
-    mutationFn: async (newData: IdentityData) => {
-      await storage.saveEncryptedIdentity(newData)
-      return newData
-    },
-    onSuccess: (newData) => {
-      setIdentityData(newData)
-      qc.invalidateQueries({ queryKey: HAS_CRED_KEY })
-    },
-  })
-
-  const unlockMut = useMutation({
-    mutationFn: async (encryptedBlob: string) => storage.decryptIdentity(encryptedBlob),
-    onSuccess: (decrypted) => setIdentityData(decrypted),
-  })
-
   return {
-    username: stored.data?.username ?? '',
-    credentialId: stored.data?.credentialId ?? null,
-    encryptedBlob: stored.data?.encryptedBlob ?? null,
-    isRegistered: !!stored.data?.credentialId,
+    username: usernameQuery.data ?? '',
+    /** WebAuthn passkey credentialId — required by `authenticate()` calls. */
+    credentialId: passkey.data?.credentialId ?? null,
+    isRegistered: !!usernameQuery.data,
     isIdentityCreated: !!hasCredential.data,
-    identityData,
-    isBootstrapping: stored.isPending || hasCredential.isPending,
+    isBootstrapping: usernameQuery.isPending || hasCredential.isPending || passkey.isPending,
 
-    completeRegistration: (credentialId: string, username: string) =>
-      completeRegistrationMut.mutateAsync({ credentialId, username }),
-    completeIdentityCreation: (d: IdentityData) => completeIdentityCreationMut.mutateAsync(d),
-    unlockIdentity: (blob: string) => unlockMut.mutateAsync(blob),
-    setIdentityData,
+    completeRegistration: (username: string) => completeRegistrationMut.mutateAsync({ username }),
+
     resetDemo: async () => {
-      clearIdentitySession()
       await storage.clearAll()
       window.location.reload()
     },

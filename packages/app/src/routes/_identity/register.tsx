@@ -1,5 +1,6 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useEffect, useMemo, useState } from 'react'
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
+import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Fingerprint, ChevronRight, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@owlid/ui/components/ui/button'
@@ -8,14 +9,29 @@ import { StepCard } from '~/components/identity/StepCard'
 import { useIdentity } from '~/hooks/use-identity'
 import { useWebAuthn } from '~/hooks/use-webauthn'
 import { storage, type StoredWebAuthnCredential } from '@owlid/sdk'
+import { readAuthState, ROUTE_FOR_STATE } from '~/lib/auth-gate'
 
 export const Route = createFileRoute('/_identity/register')({
+  beforeLoad: async () => {
+    const state = await readAuthState()
+    if (state.kind === 'unknown' || state.kind === 'unregistered') return
+    throw redirect({ to: ROUTE_FOR_STATE[state.kind], replace: true })
+  },
   component: RegisterPage,
 })
 
 function RegisterPage() {
   const navigate = useNavigate()
-  const { isRegistered, completeRegistration } = useIdentity()
+  const { completeRegistration } = useIdentity()
+  // `isRegistered` is keyed off the actual passkey gate, not the
+  // username string — a stale username with no passkey would otherwise
+  // render the form as already-completed (input disabled, button hidden).
+  const passkeyQuery = useQuery({
+    queryKey: ['identity', 'has-passkey'],
+    queryFn: () => storage.hasWebAuthnCredential(),
+    refetchOnMount: 'always',
+  })
+  const isRegistered = passkeyQuery.data === true
   const [username, setUsername] = useState('')
   const [isLoading, setIsLoading] = useState(false)
 
@@ -29,23 +45,6 @@ function RegisterPage() {
       return 'Only letters, numbers, underscores, and hyphens are allowed.'
     return ''
   }, [username])
-
-  // Redirect if already registered
-  useEffect(() => {
-    async function checkAndRedirect() {
-      const hasIdentity = await storage.hasStoredIdentity()
-      const stored = await storage.loadStoredIdentity()
-
-      if (hasIdentity) {
-        // Has full identity - go to locked page
-        navigate({ to: '/locked', replace: true })
-      } else if (stored.credentialId) {
-        // Has passkey but no identity yet - go to login
-        navigate({ to: '/login', replace: true })
-      }
-    }
-    checkAndRedirect()
-  }, [navigate])
 
   const handleRegister = async () => {
     if (!username) {
@@ -70,7 +69,7 @@ function RegisterPage() {
         }
         await storage.saveWebAuthnCredential(webauthnCred)
 
-        completeRegistration(result.credentialId, username)
+        completeRegistration(username)
         toast.success('Registration Successful', {
           description: 'Passkey created. You can now login.',
         })
@@ -88,7 +87,7 @@ function RegisterPage() {
   }
 
   return (
-    <div className="my-auto w-full max-w-md mx-auto px-4 py-8">
+    <div className="w-full max-w-md mx-auto px-4 pt-8 pb-12">
       <div className="space-y-4">
         <StepCard
           isActive={true}

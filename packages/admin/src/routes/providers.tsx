@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { Plug, Globe } from 'lucide-react'
+import { toast } from 'sonner'
 
 import {
   Card,
@@ -21,6 +22,9 @@ import {
 import { Switch } from '@owlid/ui/components/ui/switch'
 import { useProviders, useOidcProviders, useToggleProvider } from '~/hooks/use-issuer'
 import type { ProviderFlowType } from '@owlid/issuer-client'
+import { PageHeader } from '~/components/PageHeader'
+import { CopyButton } from '~/components/CopyButton'
+import { TableSkeleton, TableError, TableEmpty } from '~/components/TableStates'
 
 function flowTypeLabel(t: ProviderFlowType): string {
   switch (t) {
@@ -46,14 +50,22 @@ function ProvidersPage() {
   const oidcProviders = useOidcProviders()
   const toggle = useToggleProvider()
 
+  function onToggle(id: string, enable: boolean) {
+    toggle.mutate(
+      { id, enable },
+      {
+        onSuccess: () => toast.success(`Provider ${enable ? 'enabled' : 'disabled'}`),
+        onError: (err) => toast.error(err.message),
+      },
+    )
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Identity Providers</h1>
-        <p className="text-muted-foreground">
-          View configured identity verification and OIDC providers
-        </p>
-      </div>
+      <PageHeader
+        title="Identity Providers"
+        description="Identity-verification and OIDC providers wired into the issuer service"
+      />
 
       <Tabs defaultValue="identity">
         <TabsList>
@@ -68,7 +80,7 @@ function ProvidersPage() {
                 <Plug className="h-5 w-5" /> Identity Providers
               </CardTitle>
               <CardDescription>
-                Configured providers for identity verification workflows
+                Toggle a provider off to fail-close every new session that uses it
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -82,19 +94,21 @@ function ProvidersPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {providers.isLoading && (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-center text-muted-foreground">
-                        Loading...
-                      </TableCell>
-                    </TableRow>
+                  {providers.isLoading && <TableSkeleton cols={4} />}
+                  {providers.isError && (
+                    <TableError
+                      colSpan={4}
+                      message={providers.error?.message ?? 'Failed to load providers'}
+                      onRetry={() => providers.refetch()}
+                    />
                   )}
                   {providers.data?.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-center text-muted-foreground">
-                        No identity providers configured
-                      </TableCell>
-                    </TableRow>
+                    <TableEmpty
+                      colSpan={4}
+                      icon={<Plug className="h-6 w-6" />}
+                      title="No identity providers"
+                      description="Providers are configured in the issuer service."
+                    />
                   )}
                   {providers.data?.map((p) => {
                     const pending = toggle.isPending && toggle.variables?.id === p.id
@@ -111,7 +125,7 @@ function ProvidersPage() {
                           <Switch
                             checked={p.enabled}
                             disabled={pending}
-                            onCheckedChange={(next) => toggle.mutate({ id: p.id, enable: next })}
+                            onCheckedChange={(next) => onToggle(p.id, next)}
                             aria-label={`Toggle provider ${p.id}`}
                           />
                         </TableCell>
@@ -141,27 +155,32 @@ function ProvidersPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {oidcProviders.isLoading && (
-                    <TableRow>
-                      <TableCell colSpan={2} className="text-center text-muted-foreground">
-                        Loading...
-                      </TableCell>
-                    </TableRow>
+                  {oidcProviders.isLoading && <TableSkeleton cols={2} />}
+                  {oidcProviders.isError && (
+                    <TableError
+                      colSpan={2}
+                      message={oidcProviders.error?.message ?? 'Failed to load OIDC providers'}
+                      onRetry={() => oidcProviders.refetch()}
+                    />
                   )}
                   {oidcProviders.data?.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={2} className="text-center text-muted-foreground">
-                        No OIDC providers configured
-                      </TableCell>
-                    </TableRow>
+                    <TableEmpty
+                      colSpan={2}
+                      icon={<Globe className="h-6 w-6" />}
+                      title="No OIDC providers"
+                      description="OIDC providers are configured in the issuer service."
+                    />
                   )}
                   {oidcProviders.data?.map((p) => (
                     <TableRow key={p.providerId}>
                       <TableCell className="font-medium">{p.providerId}</TableCell>
                       <TableCell>
-                        <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
-                          {p.issuerUrl}
-                        </code>
+                        <div className="flex items-center gap-1">
+                          <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
+                            {p.issuerUrl}
+                          </code>
+                          <CopyButton value={p.issuerUrl} label="Issuer URL" />
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}

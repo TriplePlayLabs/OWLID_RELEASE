@@ -1,19 +1,35 @@
 # Midnight Sidecar (Bun + Hono)
 
-FROM oven/bun:1
+FROM oven/bun:1.3.14
 WORKDIR /app
 
-# Copy workspace root for dependency resolution
-COPY package.json bun.lock* ./
+# Workspace manifests for dependency resolution.
+COPY package.json bun.lock* bunfig.toml ./
 COPY packages/midnight-sidecar/package.json packages/midnight-sidecar/
-
-# Create stub dirs so native-sdk workspace resolution doesn't fail
-COPY packages/native-sdk/package.json packages/native-sdk/
-RUN mkdir -p packages/native-sdk/npm/wasm32-wasi packages/native-sdk/npm/linux-x64-gnu \
-    && printf '{"name":"@owlid/native-sdk-wasm32-wasi","version":"1.0.0","main":"owl-id.wasi.cjs","browser":"owl-id.wasi-browser.js"}\n' > packages/native-sdk/npm/wasm32-wasi/package.json \
-    && printf '{"name":"@owlid/native-sdk-linux-x64-gnu","version":"1.0.0","main":"index.node"}\n' > packages/native-sdk/npm/linux-x64-gnu/package.json
+# Sidecar consumes `@owlid/sdk/midnight` (merkle helpers,
+# proveAttestationUnsubmitted, attestation key recipes) at runtime, so
+# the SDK + its workspace deps must be present in the image too. Their
+# manifests come first so `bun install` resolves the workspace graph,
+# then the source layers below get cache-friendly individual COPYs.
+COPY packages/sdk/package.json packages/sdk/
+COPY packages/config/package.json packages/config/
+COPY packages/verifier-client/package.json packages/verifier-client/
+COPY packages/issuer-client/package.json packages/issuer-client/
 
 RUN bun install
+
+# Workspace source — config + verifier-client + issuer-client + sdk
+# build under `bun run build` (tsc) so the runtime `dist/` exports
+# match what `@owlid/sdk/midnight` resolves to via the package.json
+# exports map.
+COPY packages/config packages/config
+COPY packages/verifier-client packages/verifier-client
+COPY packages/issuer-client packages/issuer-client
+COPY packages/sdk packages/sdk
+RUN cd packages/config && bun run build \
+    && cd ../verifier-client && bun run build \
+    && cd ../issuer-client && bun run build \
+    && cd ../sdk && bun run build
 
 COPY packages/midnight-sidecar packages/midnight-sidecar
 

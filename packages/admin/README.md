@@ -96,7 +96,7 @@ bun run --filter @owlid/admin check
 bun run --filter @owlid/admin test
 ```
 
-The dev server allows `*.trycloudflare.com` and `*.sashoush.dev` for tunnel testing — see `vite.config.ts`. SSR is enabled via `@tanstack/react-start`; native SDK modules are excluded from the SSR bundle (browser-only).
+The dev server allows `*.trycloudflare.com` and `*.sashoush.dev` for tunnel testing — see `vite.config.ts`. SSR is enabled via `@tanstack/react-start`. `@owlid/sdk` is pure TypeScript, so no special bundler config is needed for SSR.
 
 ## Building
 

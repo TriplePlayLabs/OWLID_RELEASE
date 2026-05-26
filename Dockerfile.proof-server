@@ -1,0 +1,40 @@
+# Owl ID Proof-Server CORS Proxy
+#
+# A tiny Caddy reverse proxy that fronts the upstream Midnight proof
+# server, injecting CORS headers so the browser-based holder app can
+# call it. Deployed alongside `midnightntwrk/proof-server:8.0.3` as a
+# Cloud Run multi-container service — this image is the ingress
+# (listens on $PORT), the unmodified upstream image runs as a sidecar
+# on :6300 and only this proxy talks to it over localhost.
+#
+# Why this is a separate image rather than `FROM midnightntwrk/proof-server`:
+# the upstream image is a Nix-built scratch layer (no shell utilities,
+# no apt) so we cannot easily install Caddy on top of it. Co-running
+# as siblings keeps both images unmodified upstream-pinned + lets us
+# upgrade either independently.
+#
+# Build:    docker build -t owlid-proof-proxy -f Dockerfile.proof-server .
+# Run:      docker run -p 8080:8080 -e UPSTREAM_HOST=host.docker.internal owlid-proof-proxy
+
+FROM caddy:2.10-alpine
+
+RUN apk add --no-cache curl tini
+
+# Cloud Run injects $PORT (default 8080); $UPSTREAM_HOST + $UPSTREAM_PORT
+# point at the proof-server sidecar (localhost on Cloud Run, the docker
+# network gateway in compose). $CORS_ALLOWED_ORIGIN_REGEX is the regex
+# the Caddyfile matches the `Origin` header against — override per deploy.
+ENV PORT=8080 \
+    UPSTREAM_HOST=localhost \
+    UPSTREAM_PORT=6300 \
+    CORS_ALLOWED_ORIGIN_REGEX="^https?://(localhost(:[0-9]+)?|.*\\.sashoush\\.dev|.*\\.owlid\\.app)$"
+
+COPY docker/proof-server/Caddyfile /etc/caddy/Caddyfile
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD curl -fsS "http://localhost:${PORT}/version" || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

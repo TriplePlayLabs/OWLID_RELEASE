@@ -1,1491 +1,1170 @@
-//! End-to-end API tests for the OwlID Verification Service.
+//! Live cross-service standards E2E for the OwlID stack.
 //!
-//! These tests cover all API endpoints, security requirements, and acceptance criteria
-//! from TODO items T-001 through T-022.
+//! Exercises the real HTTP standard path end to end against running
+//! services — no in-process shortcuts:
 //!
-//! Prerequisites: PostgreSQL running with VERIFICATION_DATABASE_URL set.
-//! Run with: cargo test -p owl-verification-service --test e2e_api -- --test-threads=1
+//!   OpenID4VCI  discover -> /token -> /credential   (issuer :8001)
+//!   holder      SD-JWT VC select-disclose + EdDSA KB-JWT
+//!   OpenID4VP   /openid4vp/response direct_post      (verification :8000)
+//!   did:web     issuer /.well-known/did.json resolves the `iss` key
+//!   Status List issuer GET /status/1 (statuslist+jwt) verifies + idx live
+//!
+//! Replaces the deleted legacy (Token/Document/Merkle) e2e suite.
+//!
+//! Prerequisites: issuer-service on :8001 and verification-service on
+//! :8000 (each with its Postgres + the Midnight sidecar), the issuer
+//! key registered as a trusted issuer (auto-registered at issuer
+//! startup). Run with:
+//!
+//!   cargo test -p owl-verification-service --test e2e_api -- --ignored --test-threads=1
 
-use owl_crypto::KeyPair;
-use owl_proof_system::{Document, ProofRequest, PredicateOp, PredicateRequest, Token};
+use owl_crypto::{KeyPair, PublicKey};
+use owl_proof_system::sd_jwt::{self, KbParams, SdJwtVc};
+use owl_proof_system::status_list;
 use reqwest::Client;
-use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use serde_json::{Value, json};
 
-/// Test server state shared across tests
-struct TestServer {
-    base_url: String,
-    client: Client,
-    dev_api_key: String,
-    admin_api_key: String,
+fn issuer_url() -> String {
+    std::env::var("ISSUER_SERVICE_URL").unwrap_or_else(|_| "http://localhost:8001".to_string())
 }
 
-impl TestServer {
-    /// Create a new test server pointing at the running verification service.
-    /// Assumes the service is running on the default port with dev DB seeded.
-    async fn new() -> Self {
-        let base_url = std::env::var("VERIFICATION_SERVICE_URL")
-            .unwrap_or_else(|_| "http://localhost:8000".to_string());
-
-        let client = Client::new();
-
-        // The dev seed key from 002_seed.sql
-        let dev_api_key = "dev_key_12345678901234567890123456789012".to_string();
-        // The dev key has ["verify", "manage_issuers", "manage_revocations"] but NOT "admin"
-        // For admin tests we need a key with admin permission — use the same for now
-        // since the dev seed includes manage_issuers which maps to the old behavior.
-        // In production, we'd create a separate admin key.
-        let admin_api_key = dev_api_key.clone();
-
-        let server = TestServer {
-            base_url,
-            client,
-            dev_api_key,
-            admin_api_key,
-        };
-
-        // Verify service is up
-        let resp = server.get("/health").await;
-        assert_eq!(resp.status(), 200, "Verification service not running at {}", server.base_url);
-
-        server
-    }
-
-    async fn get(&self, path: &str) -> reqwest::Response {
-        self.client
-            .get(format!("{}{}", self.base_url, path))
-            .send()
-            .await
-            .expect("HTTP request failed")
-    }
-
-    async fn get_auth(&self, path: &str) -> reqwest::Response {
-        self.client
-            .get(format!("{}{}", self.base_url, path))
-            .header("X-API-Key", &self.dev_api_key)
-            .send()
-            .await
-            .expect("HTTP request failed")
-    }
-
-    async fn post_auth(&self, path: &str, body: &Value) -> reqwest::Response {
-        self.client
-            .post(format!("{}{}", self.base_url, path))
-            .header("X-API-Key", &self.admin_api_key)
-            .json(body)
-            .send()
-            .await
-            .expect("HTTP request failed")
-    }
-
-    async fn post_verify(&self, path: &str, body: &Value) -> reqwest::Response {
-        self.client
-            .post(format!("{}{}", self.base_url, path))
-            .header("X-API-Key", &self.dev_api_key)
-            .json(body)
-            .send()
-            .await
-            .expect("HTTP request failed")
-    }
-
-    async fn delete_auth(&self, path: &str) -> reqwest::Response {
-        self.client
-            .delete(format!("{}{}", self.base_url, path))
-            .header("X-API-Key", &self.admin_api_key)
-            .send()
-            .await
-            .expect("HTTP request failed")
-    }
+fn verify_url() -> String {
+    std::env::var("VERIFICATION_SERVICE_URL").unwrap_or_else(|_| "http://localhost:8000".to_string())
 }
 
-/// Helper: create a valid issuer, owner, and compact token
-fn create_test_credential_and_token(
-    challenge: &str,
-) -> (KeyPair, KeyPair, String, String) {
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("firstName".to_string(), json!("Alice"));
-    attrs.insert("lastName".to_string(), json!("Wonderland"));
-    attrs.insert("dateOfBirth".to_string(), json!("1995-06-15"));
-    attrs.insert("nationality".to_string(), json!("Dutch"));
-    attrs.insert("isOver18".to_string(), json!(true));
-    attrs.insert("isOver21".to_string(), json!(true));
-    attrs.insert("verificationLevel".to_string(), json!(3));
-
-    let doc = Document::new(attrs).unwrap();
-    let mut proof_doc = doc.issue(&issuer);
-    let root_hash = proof_doc.root_hash().to_string();
-
-    let request = ProofRequest {
-        disclose: vec!["firstName".to_string()],
-        predicates: vec![],
-        trusted_issuers: vec![issuer.public_key().to_hex()],
-        challenge: challenge.to_string(),
-    };
-
-    let token = Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
-    let compact = token.to_compact().unwrap();
-
-    (issuer, owner, compact, root_hash)
+fn api_key() -> String {
+    std::env::var("API_KEY_DEV")
+        .unwrap_or_else(|_| "dev_key_12345678901234567890123456789012".to_string())
 }
 
-/// Helper: create token with ZK age predicate
-fn create_token_with_age_predicate(
-    challenge: &str,
-    min_age: u64,
-) -> (KeyPair, String) {
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("dateOfBirth".to_string(), json!("1995-06-15"));
-    attrs.insert("firstName".to_string(), json!("Bob"));
-
-    let doc = Document::new(attrs).unwrap();
-    let mut proof_doc = doc.issue(&issuer);
-
-    let request = ProofRequest {
-        disclose: vec![],
-        predicates: vec![PredicateRequest {
-            attribute: "dateOfBirth".to_string(),
-            op: PredicateOp::GreaterOrEqual,
-            value: json!(min_age),
-        }],
-        trusted_issuers: vec![issuer.public_key().to_hex()],
-        challenge: challenge.to_string(),
-    };
-
-    let token = Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
-    let compact = token.to_compact().unwrap();
-
-    (issuer, compact)
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
-// ==========================================================================
-// Health & Public Endpoints
-// ==========================================================================
+/// base64url (no pad) decode — for the DID-doc JWK `x` and JWT payloads.
+fn b64url(s: &str) -> Vec<u8> {
+    use base64::prelude::*;
+    BASE64_URL_SAFE_NO_PAD
+        .decode(s.trim_end_matches('='))
+        .expect("base64url")
+}
 
-#[tokio::test]
-#[ignore] // Requires running service
-async fn test_health_endpoint() {
-    let server = TestServer::new().await;
-    let resp = server.get("/health").await;
-    assert_eq!(resp.status(), 200);
-    let body = resp.text().await.unwrap();
-    assert_eq!(body, "OK");
+/// Issuer pubkey hex via the issuer's own `/issuer-info`.
+async fn issuer_pubkey_hex(http: &Client) -> String {
+    let info: Value = http
+        .get(format!("{}/issuer-info", issuer_url()))
+        .send()
+        .await
+        .expect("issuer reachable")
+        .json()
+        .await
+        .expect("issuer-info json");
+    info["publicKey"].as_str().expect("publicKey").to_string()
+}
+
+/// OpenID4VCI: session -> auto-verify -> /token -> /credential.
+/// Returns the issued SD-JWT VC (issuance form `JWT~D1~..~Dn~`).
+async fn issue_sd_jwt_vc(http: &Client, holder: &KeyPair) -> String {
+    let created: Value = http
+        .post(format!("{}/sessions", issuer_url()))
+        .json(&json!({ "providerId": "mock-digid" }))
+        .send()
+        .await
+        .expect("create session")
+        .json()
+        .await
+        .expect("session json");
+    let sid = created["sessionId"].as_str().expect("sessionId");
+    let session_token = created["sessionToken"].as_str().expect("sessionToken");
+
+    let claims: Value = http
+        .post(format!("{}/sessions/{sid}/auto-verify", issuer_url()))
+        .bearer_auth(session_token)
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("auto-verify")
+        .json()
+        .await
+        .expect("claims json");
+    assert_eq!(claims["firstName"], "Jan", "mock-digid identity");
+    assert_eq!(claims["isOver18"], true);
+
+    // OpenID4VCI token endpoint — pre-authorized code grant.
+    let token: Value = http
+        .post(format!("{}/token", issuer_url()))
+        .json(&json!({ "pre-authorized_code": sid }))
+        .send()
+        .await
+        .expect("token")
+        .json()
+        .await
+        .expect("token json");
+    let access_token = token["access_token"].as_str().expect("access_token");
+    assert_eq!(token["token_type"], "bearer");
+
+    // OpenID4VCI credential endpoint — binds the holder cnf key.
+    let cred: Value = http
+        .post(format!("{}/credential", issuer_url()))
+        .bearer_auth(access_token)
+        .json(&json!({
+            "ownerPublicKey": holder.public_key().to_hex(),
+            "keyAlgorithm": "ed25519",
+        }))
+        .send()
+        .await
+        .expect("credential")
+        .json()
+        .await
+        .expect("credential json");
+    cred["credential"]
+        .as_str()
+        .expect("SD-JWT VC string")
+        .to_string()
+}
+
+/// `status.status_list.idx` from the issuer JWT payload of an SD-JWT VC.
+fn status_idx(sd_jwt_vc: &str) -> u64 {
+    let jwt = sd_jwt_vc.split('~').next().expect("jwt segment");
+    let payload = jwt.split('.').nth(1).expect("jwt payload");
+    let v: Value = serde_json::from_slice(&b64url(payload)).expect("payload json");
+    v["status"]["status_list"]["idx"]
+        .as_u64()
+        .expect("status.status_list.idx")
 }
 
 #[tokio::test]
 #[ignore]
-async fn test_prometheus_metrics_endpoint() {
-    let server = TestServer::new().await;
-    let resp = server.get("/prometheus").await;
-    assert_eq!(resp.status(), 200);
-    let body = resp.text().await.unwrap();
-    // Prometheus text format
-    assert!(body.contains("http_requests_total") || body.is_empty() || body.contains("#"));
-}
+async fn oid4vci_metadata_and_did_web_resolve() {
+    let http = Client::new();
 
-/// T-002: /generate-keypair endpoint must be REMOVED
-#[tokio::test]
-#[ignore]
-async fn test_t002_generate_keypair_removed() {
-    let server = TestServer::new().await;
-    let resp = server.get("/generate-keypair").await;
-    // Should NOT return 200 with keypair data. Could be 404, 401, or 405.
-    let status = resp.status().as_u16();
-    assert!(
-        status != 200,
-        "T-002: /generate-keypair should be removed, got 200 OK"
+    // OpenID4VCI Credential Issuer Metadata.
+    let meta: Value = http
+        .get(format!(
+            "{}/.well-known/openid-credential-issuer",
+            issuer_url()
+        ))
+        .send()
+        .await
+        .expect("issuer reachable")
+        .json()
+        .await
+        .expect("metadata json");
+    assert_eq!(
+        meta["credential_configurations_supported"]["owlid_identity"]["format"],
+        "dc+sd-jwt"
     );
-    // If we get a response body, it should NOT contain a private key
-    if let Ok(body) = resp.text().await {
+    assert!(
+        meta["credential_endpoint"].as_str().unwrap().ends_with("/credential"),
+        "advertises the credential endpoint"
+    );
+    assert!(meta["token_endpoint"].as_str().unwrap().ends_with("/token"));
+
+    // did:web document — the `iss` key the verifier resolves.
+    let doc: Value = http
+        .get(format!("{}/.well-known/did.json", issuer_url()))
+        .send()
+        .await
+        .expect("did.json")
+        .json()
+        .await
+        .expect("did.json");
+    let jwk = &doc["verificationMethod"][0]["publicKeyJwk"];
+    assert_eq!(jwk["kty"], "OKP");
+    assert_eq!(jwk["crv"], "Ed25519");
+
+    // The DID-doc key MUST equal the issuer's signing key.
+    let did_key_hex = hex::encode(b64url(jwk["x"].as_str().expect("jwk x")));
+    assert_eq!(
+        did_key_hex,
+        issuer_pubkey_hex(&http).await,
+        "did:web key == issuer signing key"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn standard_oid4vc_cross_service_e2e() {
+    let http = Client::new();
+
+    // Holder cnf key (wallet-held Ed25519).
+    let holder = KeyPair::generate();
+
+    // --- OpenID4VCI: issue an SD-JWT VC ---
+    let sd_jwt_vc = issue_sd_jwt_vc(&http, &holder).await;
+    assert!(
+        sd_jwt_vc.contains('~'),
+        "SD-JWT VC issuance form, got: {}",
+        &sd_jwt_vc[..sd_jwt_vc.len().min(40)]
+    );
+    assert_eq!(
+        sd_jwt::peek_iss(&sd_jwt_vc).expect("peek iss"),
+        "did:web:localhost%3A8001",
+        "iss is the issuer did:web identifier"
+    );
+
+    // --- Verifier nonce (one-shot, server-generated) ---
+    let challenge: String = {
+        let c: Value = http
+            .get(format!("{}/verify/challenge", verify_url()))
+            .bearer_auth(api_key())
+            .send()
+            .await
+            .expect("challenge")
+            .json()
+            .await
+            .expect("challenge json");
+        c["challenge"].as_str().expect("challenge").to_string()
+    };
+
+    // --- Holder: selective disclosure + EdDSA KB-JWT bound to the nonce ---
+    let (vc, _kb) = SdJwtVc::parse(&sd_jwt_vc).expect("parse SD-JWT VC");
+    let audience = "https://verifier.owlid.example".to_string();
+    let presentation = vc
+        .present(
+            &["given_name", "age_over_18"],
+            Some(KbParams {
+                holder: &holder,
+                aud: audience.clone(),
+                nonce: challenge.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present");
+
+    // --- OpenID4VP: direct_post ---
+    let vr: Value = http
+        .post(format!("{}/openid4vp/response", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({ "vp_token": {"cred0": presentation}, "state": challenge }))
+        .send()
+        .await
+        .expect("openid4vp/response")
+        .json()
+        .await
+        .expect("verify json");
+    assert_eq!(vr["valid"], true, "verification failed: {vr}");
+    assert_eq!(
+        vr["subjects"]["cred0"]["given_name"], "Jan",
+        "disclosed given_name"
+    );
+    assert_eq!(
+        vr["subjects"]["cred0"]["age_over_18"], true,
+        "disclosed age_over_18 (Midnight predicate projection)"
+    );
+    assert!(
+        vr["subjects"]["cred0"].get("family_name").is_none(),
+        "undisclosed claim must NOT leak"
+    );
+
+    // --- Stale/reused challenge is rejected (one-shot nonce) ---
+    let replay: Value = http
+        .post(format!("{}/openid4vp/response", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({ "vp_token": {"cred0": presentation}, "state": challenge }))
+        .send()
+        .await
+        .expect("replay")
+        .json()
+        .await
+        .expect("replay json");
+    assert_eq!(replay["valid"], false, "replayed nonce must be rejected");
+
+    // --- IETF Token Status List: signed, issuer-verifiable, idx live ---
+    let resp = http
+        .get(format!("{}/status/1", issuer_url()))
+        .send()
+        .await
+        .expect("status list");
+    assert_eq!(
+        resp.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/statuslist+jwt")
+    );
+    let jwt = resp.text().await.expect("status jwt");
+    let issuer_pk = PublicKey::from_hex(&issuer_pubkey_hex(&http).await).expect("issuer pk");
+    let list = status_list::verify_status_list_jwt(&jwt, &issuer_pk)
+        .expect("status list jwt verifies under the issuer key");
+    assert!(
+        !list.is_revoked(status_idx(&sd_jwt_vc)),
+        "a freshly issued credential is not revoked in the status list"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn revoked_credential_is_rejected_and_status_list_reflects_it() {
+    let http = Client::new();
+    let holder = KeyPair::generate();
+
+    let sd_jwt_vc = issue_sd_jwt_vc(&http, &holder).await;
+    let cred_id = sd_jwt::credential_id(&sd_jwt_vc);
+    let idx = status_idx(&sd_jwt_vc);
+    let issuer_pk_hex = issuer_pubkey_hex(&http).await;
+
+    // Revoke it (admin) — Midnight revocation_registry + the mirrored
+    // verifier cache; the issuer projects it into the Status List.
+    let rv = http
+        .post(format!("{}/revocations/revoke", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({
+            "credentialId": cred_id,
+            "issuerPublicKey": issuer_pk_hex,
+            "reason": "e2e revocation test",
+        }))
+        .send()
+        .await
+        .expect("revoke");
+    assert!(rv.status().is_success(), "revoke failed: {}", rv.status());
+
+    // Present the revoked credential — verification must refuse it.
+    let challenge: String = {
+        let c: Value = http
+            .get(format!("{}/verify/challenge", verify_url()))
+            .bearer_auth(api_key())
+            .send()
+            .await
+            .expect("challenge")
+            .json()
+            .await
+            .expect("challenge json");
+        c["challenge"].as_str().unwrap().to_string()
+    };
+    let (vc, _kb) = SdJwtVc::parse(&sd_jwt_vc).expect("parse");
+    let presentation = vc
+        .present(
+            &["given_name"],
+            Some(KbParams {
+                holder: &holder,
+                aud: "https://verifier.owlid.example".to_string(),
+                nonce: challenge.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present");
+    let vr: Value = http
+        .post(format!("{}/openid4vp/response", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({ "vp_token": {"cred0": presentation}, "state": challenge }))
+        .send()
+        .await
+        .expect("openid4vp/response")
+        .json()
+        .await
+        .expect("verify json");
+    assert_eq!(vr["valid"], false, "a revoked credential must be rejected");
+
+    // The IETF Token Status List the issuer publishes now marks this
+    // credential's index revoked (same path a third-party verifier and
+    // verify_token's status_list_revoked() consult).
+    let jwt = http
+        .get(format!("{}/status/1", issuer_url()))
+        .send()
+        .await
+        .expect("status list")
+        .text()
+        .await
+        .expect("status jwt");
+    let issuer_pk = PublicKey::from_hex(&issuer_pk_hex).expect("issuer pk");
+    let list = status_list::verify_status_list_jwt(&jwt, &issuer_pk).expect("status list verifies");
+    assert!(
+        list.is_revoked(idx),
+        "revoked credential's idx must be set in the published status list"
+    );
+
+    // Midnight is the source of truth: the revocation must also land
+    // on-chain (revocation_registry). The verification-service writes it
+    // async via the sidecar; poll the sidecar's on-chain read (the same
+    // path verify_token's midnight.is_credential_revoked() uses). The
+    // on-chain handle is the 32-byte hex digest, not the base64url id.
+    let cid_hex = sd_jwt::credential_id_hex(&cred_id).expect("cid hex");
+    let sidecar = std::env::var("MIDNIGHT_SIDECAR_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let mut on_chain = false;
+    // ~3 min: a Midnight write tx (proof gen + submit + confirm + SSE
+    // mirror) can exceed 90 s under cumulative-suite load on the local
+    // devnet; the standards path itself is unaffected (the verifier
+    // already rejected the presentation via cache + status list).
+    for _ in 0..36 {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        let r: Value = http
+            .get(format!("{sidecar}/api/revocations/{cid_hex}/revoked"))
+            .bearer_auth(api_key())
+            .send()
+            .await
+            .expect("sidecar revoked")
+            .json()
+            .await
+            .expect("sidecar json");
+        if r["revoked"].as_bool() == Some(true) {
+            on_chain = true;
+            break;
+        }
         assert!(
-            !body.contains("private_key"),
-            "T-002: Response must never contain private_key"
+            r.get("error").is_none(),
+            "sidecar on-chain revocation errored (regression — base64url id \
+             must be hex Bytes<32>): {r}"
         );
     }
-}
-
-// ==========================================================================
-// Authentication & Authorization (T-003)
-// ==========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_auth_missing_api_key_returns_401() {
-    let server = TestServer::new().await;
-    let resp = server
-        .client
-        .post(format!("{}/verify", server.base_url))
-        .json(&json!({"token": "NID1:test", "challenge": "test"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 401, "Missing API key should return 401");
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_auth_invalid_api_key_returns_401() {
-    let server = TestServer::new().await;
-    let resp = server
-        .client
-        .post(format!("{}/verify", server.base_url))
-        .header("X-API-Key", "invalid_key_that_doesnt_exist")
-        .json(&json!({"token": "NID1:test", "challenge": "test"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 401, "Invalid API key should return 401");
-}
-
-/// T-003: Admin routes require elevated permission
-#[tokio::test]
-#[ignore]
-async fn test_t003_trusted_issuer_list_requires_auth() {
-    let server = TestServer::new().await;
-    let resp = server
-        .client
-        .get(format!("{}/trusted-issuers", server.base_url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 401);
-}
-
-// ==========================================================================
-// Trusted Issuer Management
-// ==========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_list_trusted_issuers() {
-    let server = TestServer::new().await;
-    let resp = server.get_auth("/trusted-issuers").await;
-    assert_eq!(resp.status(), 200);
-    let body: Vec<Value> = resp.json().await.unwrap();
-    assert!(!body.is_empty(), "Should have at least the seed issuer");
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_add_trusted_issuer() {
-    let server = TestServer::new().await;
-    let issuer = KeyPair::generate();
-    let pk = issuer.public_key().to_hex();
-
-    let resp = server
-        .post_auth(
-            "/trusted-issuers",
-            &json!({
-                "public_key": pk,
-                "name": "E2E Test Issuer",
-                "description": "Added by E2E test"
-            }),
-        )
-        .await;
-
     assert!(
-        resp.status() == 200 || resp.status() == 201,
-        "Add issuer failed with status {}",
-        resp.status()
-    );
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["success"], true);
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_add_issuer_invalid_public_key_returns_400() {
-    let server = TestServer::new().await;
-    let resp = server
-        .post_auth(
-            "/trusted-issuers",
-            &json!({
-                "public_key": "not_a_valid_hex_key",
-                "name": "Invalid Issuer"
-            }),
-        )
-        .await;
-
-    assert_eq!(resp.status(), 400, "Invalid public key should return 400");
-}
-
-// ==========================================================================
-// Token Verification (Core Flow)
-// ==========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_verify_valid_token() {
-    let server = TestServer::new().await;
-    let challenge = format!("e2e_valid_{}", uuid::Uuid::new_v4());
-    let (issuer, _owner, compact, _root_hash) = create_test_credential_and_token(&challenge);
-
-    // Register the issuer first
-    server
-        .post_auth(
-            "/trusted-issuers",
-            &json!({
-                "public_key": issuer.public_key().to_hex(),
-                "name": "E2E Verify Test Issuer"
-            }),
-        )
-        .await;
-
-    // Verify the token
-    let resp = server
-        .post_verify(
-            "/verify",
-            &json!({
-                "token": compact,
-                "challenge": challenge
-            }),
-        )
-        .await;
-
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["valid"], true, "Valid token should verify: {:?}", body);
-    assert!(body["subjects"].is_object(), "Should return disclosed subjects");
-    // firstName was disclosed
-    assert!(
-        body["subjects"]["firstName"].is_string(),
-        "firstName should be disclosed in subjects"
+        on_chain,
+        "revocation must be anchored on-chain (Midnight revocation_registry)"
     );
 }
 
 #[tokio::test]
 #[ignore]
-async fn test_verify_wrong_challenge_fails() {
-    let server = TestServer::new().await;
-    let challenge = format!("e2e_wrong_{}", uuid::Uuid::new_v4());
-    let (issuer, _owner, compact, _root_hash) = create_test_credential_and_token(&challenge);
+async fn untrusted_issuer_presentation_is_rejected() {
+    let http = Client::new();
 
-    server
-        .post_auth(
-            "/trusted-issuers",
-            &json!({
-                "public_key": issuer.public_key().to_hex(),
-                "name": "E2E Wrong Challenge Issuer"
+    // An SD-JWT VC minted by a key that is NOT a Midnight trusted issuer,
+    // with an `iss` that resolves nowhere — verification must refuse it.
+    let rogue_issuer = KeyPair::generate();
+    let holder = KeyPair::generate();
+    let mut claims = std::collections::BTreeMap::new();
+    claims.insert("given_name".to_string(), json!("Mallory"));
+    let vc = SdJwtVc::issue(
+        &claims,
+        &sd_jwt::IssueParams {
+            issuer: &rogue_issuer,
+            iss: "did:web:attacker.invalid".to_string(),
+            vct: "https://owlid.dev/credentials/identity".to_string(),
+            holder: &holder.public_key(),
+            iat: Some(now()),
+            exp: None,
+            status: None,
+        },
+    )
+    .expect("rogue issue");
+
+    let challenge: String = {
+        let c: Value = http
+            .get(format!("{}/verify/challenge", verify_url()))
+            .bearer_auth(api_key())
+            .send()
+            .await
+            .expect("challenge")
+            .json()
+            .await
+            .expect("challenge json");
+        c["challenge"].as_str().unwrap().to_string()
+    };
+    let presentation = vc
+        .present(
+            &["given_name"],
+            Some(KbParams {
+                holder: &holder,
+                aud: "https://verifier.owlid.example".to_string(),
+                nonce: challenge.clone(),
+                iat: now(),
             }),
         )
-        .await;
+        .expect("present");
 
-    let resp = server
-        .post_verify(
-            "/verify",
-            &json!({
-                "token": compact,
-                "challenge": "completely_wrong_challenge"
-            }),
-        )
-        .await;
-
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["valid"], false, "Wrong challenge should fail verification");
-    assert!(body["error"].is_string());
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_verify_untrusted_issuer_fails() {
-    let server = TestServer::new().await;
-    let challenge = format!("e2e_untrusted_{}", uuid::Uuid::new_v4());
-    // Create token but DON'T register the issuer
-    let (_issuer, _owner, compact, _root_hash) = create_test_credential_and_token(&challenge);
-
-    let resp = server
-        .post_verify(
-            "/verify",
-            &json!({
-                "token": compact,
-                "challenge": challenge
-            }),
-        )
-        .await;
-
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["valid"], false, "Untrusted issuer should fail");
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_verify_invalid_compact_token_returns_400() {
-    let server = TestServer::new().await;
-    let resp = server
-        .post_verify(
-            "/verify",
-            &json!({
-                "token": "NID1:totally_invalid_garbage",
-                "challenge": "test"
-            }),
-        )
-        .await;
-
-    assert_eq!(resp.status(), 400, "Invalid compact token should return 400");
-}
-
-/// T-011: Challenge replay protection
-#[tokio::test]
-#[ignore]
-async fn test_t011_challenge_replay_rejected() {
-    let server = TestServer::new().await;
-    let challenge = format!("e2e_replay_{}", uuid::Uuid::new_v4());
-    let (issuer, _owner, compact, _root_hash) = create_test_credential_and_token(&challenge);
-
-    server
-        .post_auth(
-            "/trusted-issuers",
-            &json!({
-                "public_key": issuer.public_key().to_hex(),
-                "name": "E2E Replay Test Issuer"
-            }),
-        )
-        .await;
-
-    // First verification should succeed
-    let resp1 = server
-        .post_verify("/verify", &json!({"token": compact, "challenge": challenge}))
-        .await;
-    let body1: Value = resp1.json().await.unwrap();
-    assert_eq!(body1["valid"], true, "First verification should succeed");
-
-    // Second verification with same challenge should be rejected (replay)
-    let resp2 = server
-        .post_verify("/verify", &json!({"token": compact, "challenge": challenge}))
-        .await;
-    let body2: Value = resp2.json().await.unwrap();
+    let vr: Value = http
+        .post(format!("{}/openid4vp/response", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({ "vp_token": {"cred0": presentation}, "state": challenge }))
+        .send()
+        .await
+        .expect("openid4vp/response")
+        .json()
+        .await
+        .expect("verify json");
     assert_eq!(
-        body2["valid"], false,
-        "T-011: Replay with same challenge should be rejected"
-    );
-    assert!(
-        body2["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("replay"),
-        "Error should mention replay: {:?}",
-        body2["error"]
+        vr["valid"], false,
+        "an untrusted / unresolvable issuer must be rejected"
     );
 }
 
-/// ZK age predicate verification (Milestone 2)
-#[tokio::test]
-#[ignore]
-async fn test_verify_zk_age_predicate() {
-    let server = TestServer::new().await;
-    let challenge = format!("e2e_zk_age_{}", uuid::Uuid::new_v4());
-    let (issuer, compact) = create_token_with_age_predicate(&challenge, 18);
+// ---------------------------------------------------------------------------
+// ES256 holder (standard P-256 / WebCrypto) — full live cross-service path.
+// ---------------------------------------------------------------------------
 
-    server
-        .post_auth(
-            "/trusted-issuers",
-            &json!({
-                "public_key": issuer.public_key().to_hex(),
-                "name": "E2E ZK Age Issuer"
-            }),
-        )
-        .await;
-
-    let resp = server
-        .post_verify("/verify", &json!({"token": compact, "challenge": challenge}))
-        .await;
-
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(
-        body["valid"], true,
-        "ZK age predicate should verify: {:?}",
-        body
-    );
+fn b64url_enc(b: &[u8]) -> String {
+    use base64::prelude::*;
+    BASE64_URL_SAFE_NO_PAD.encode(b)
 }
 
-// ==========================================================================
-// Revocation Management
-// ==========================================================================
-
+/// OID4VCI issue bound to a P-256 holder `cnf`, then present with a
+/// standard ES256 KB-JWT (raw R‖S over `header.payload`) — exactly what
+/// a non-extractable WebCrypto P-256 holder key produces. `present(.., None)`
+/// emits the disclosure prefix without signing (the wallet EdDSA path),
+/// so the ES256 KB-JWT is built here as a browser holder would.
 #[tokio::test]
 #[ignore]
-async fn test_revoke_credential() {
-    let server = TestServer::new().await;
-    let cred_id = format!("e2e_revoke_{}", uuid::Uuid::new_v4());
-    let issuer = KeyPair::generate();
-
-    let resp = server
-        .post_auth(
-            "/revocations/revoke",
-            &json!({
-                "credential_id": cred_id,
-                "issuer_public_key": issuer.public_key().to_hex(),
-                "reason": "E2E test revocation"
-            }),
-        )
-        .await;
-
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["success"], true);
-
-    // Check status
-    let check_resp = server
-        .post_verify(
-            "/revocations/check",
-            &json!({"credential_id": cred_id}),
-        )
-        .await;
-    let check_body: Value = check_resp.json().await.unwrap();
-    assert_eq!(check_body["status"], "revoked");
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_suspend_and_reactivate_credential() {
-    let server = TestServer::new().await;
-    let cred_id = format!("e2e_suspend_{}", uuid::Uuid::new_v4());
-    let issuer = KeyPair::generate();
-
-    // Suspend
-    let resp = server
-        .post_auth(
-            "/revocations/suspend",
-            &json!({
-                "credential_id": cred_id,
-                "issuer_public_key": issuer.public_key().to_hex(),
-                "reason": "Temporary suspension"
-            }),
-        )
-        .await;
-    assert_eq!(resp.status(), 200);
-
-    // Check suspended
-    let check = server
-        .post_verify("/revocations/check", &json!({"credential_id": cred_id}))
-        .await;
-    let check_body: Value = check.json().await.unwrap();
-    assert_eq!(check_body["status"], "suspended");
-
-    // Reactivate
-    let reactivate = server
-        .post_auth(
-            "/revocations/reactivate",
-            &json!({"credential_id": cred_id}),
-        )
-        .await;
-    assert_eq!(reactivate.status(), 200);
-
-    // Check active
-    let check2 = server
-        .post_verify("/revocations/check", &json!({"credential_id": cred_id}))
-        .await;
-    let check2_body: Value = check2.json().await.unwrap();
-    assert_eq!(check2_body["status"], "active");
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_list_revoked_credentials() {
-    let server = TestServer::new().await;
-    let resp = server.get_auth("/revocations/list").await;
-    assert_eq!(resp.status(), 200);
-    let body: Vec<Value> = resp.json().await.unwrap();
-    // Should be a list (may be empty)
-    assert!(body.len() >= 0);
-}
-
-/// Verify that a revoked credential fails token verification
-#[tokio::test]
-#[ignore]
-async fn test_revoked_token_fails_verification() {
-    let server = TestServer::new().await;
-    let challenge = format!("e2e_revoked_verify_{}", uuid::Uuid::new_v4());
-    let (issuer, _owner, compact, root_hash) = create_test_credential_and_token(&challenge);
-
-    // Register issuer
-    server
-        .post_auth(
-            "/trusted-issuers",
-            &json!({
-                "public_key": issuer.public_key().to_hex(),
-                "name": "E2E Revoked Verify Issuer"
-            }),
-        )
-        .await;
-
-    // Revoke the credential (using root_hash as credential_id)
-    server
-        .post_auth(
-            "/revocations/revoke",
-            &json!({
-                "credential_id": root_hash,
-                "issuer_public_key": issuer.public_key().to_hex(),
-                "reason": "Revoked for E2E test"
-            }),
-        )
-        .await;
-
-    // Verify should fail
-    let resp = server
-        .post_verify("/verify", &json!({"token": compact, "challenge": challenge}))
-        .await;
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(
-        body["valid"], false,
-        "Revoked credential should fail verification: {:?}",
-        body
-    );
-}
-
-// ==========================================================================
-// Metrics (T-020)
-// ==========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_t020_metrics_endpoint() {
-    let server = TestServer::new().await;
-    let resp = server.get_auth("/metrics").await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert!(body["total_verifications"].is_number());
-    assert!(body["successful_verifications"].is_number());
-    assert!(body["failed_verifications"].is_number());
-    assert!(body["success_rate"].is_number());
-}
-
-// ==========================================================================
-// GDPR Erasure (T-019)
-// ==========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_t019_gdpr_erasure() {
-    let server = TestServer::new().await;
-    let owner = KeyPair::generate();
-    let owner_pk = owner.public_key().to_hex();
-
-    let resp = server
-        .delete_auth(&format!("/admin/gdpr-erasure/{}", owner_pk))
-        .await;
-
-    // Should succeed even if no credentials exist for this owner
-    assert!(
-        resp.status() == 200 || resp.status() == 404,
-        "GDPR erasure returned unexpected status: {}",
-        resp.status()
-    );
-}
-
-// ==========================================================================
-// Schema Validation (T-008)
-// ==========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_t008_schema_validation_identity_v1() {
-    use owl_proof_system::CredentialSchema;
-
-    let schema = CredentialSchema::identity_v1();
-
-    // Valid identity document
-    let mut valid_attrs = BTreeMap::new();
-    valid_attrs.insert("issuerKey".to_string(), json!("abc123"));
-    valid_attrs.insert("ownerKey".to_string(), json!("def456"));
-    valid_attrs.insert("firstName".to_string(), json!("Jan"));
-    valid_attrs.insert("lastName".to_string(), json!("Jansen"));
-    valid_attrs.insert("dateOfBirth".to_string(), json!("1990-01-15"));
-    valid_attrs.insert("isOver18".to_string(), json!(true));
-    assert!(schema.validate(&valid_attrs).is_ok());
-
-    // Missing required field
-    let mut missing = BTreeMap::new();
-    missing.insert("issuerKey".to_string(), json!("abc123"));
-    assert!(schema.validate(&missing).is_err());
-
-    // Wrong type
-    let mut wrong_type = valid_attrs.clone();
-    wrong_type.insert("isOver18".to_string(), json!("not a bool"));
-    assert!(schema.validate(&wrong_type).is_err());
-
-    // Invalid date
-    let mut bad_date = valid_attrs.clone();
-    bad_date.insert("dateOfBirth".to_string(), json!("not-a-date"));
-    assert!(schema.validate(&bad_date).is_err());
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_t008_document_with_schema() {
-    use owl_proof_system::CredentialSchema;
-
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-    let schema = CredentialSchema::identity_v1();
-
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("firstName".to_string(), json!("Alice"));
-    attrs.insert("lastName".to_string(), json!("Test"));
-    attrs.insert("dateOfBirth".to_string(), json!("1990-05-20"));
-
-    let doc = Document::new_with_schema(attrs, &schema);
-    assert!(doc.is_ok(), "Document with valid schema should succeed");
-}
-
-// ==========================================================================
-// Compact Token Format (Milestone 4)
-// ==========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_compact_token_round_trip() {
-    let challenge = "compact_round_trip_test";
-    let (_issuer, _owner, compact, _root_hash) = create_test_credential_and_token(challenge);
-
-    assert!(compact.starts_with("NID1:"), "Compact token must start with NID1: prefix");
-    assert!(compact.len() < 5000, "Compact token should be reasonably sized");
-
-    // Round-trip
-    let restored = Token::from_compact(&compact).unwrap();
-    assert_eq!(
-        restored.subjects().get("firstName").and_then(|v| v.as_str()),
-        Some("Alice"),
-        "Disclosed attribute should survive round-trip"
-    );
-}
-
-// ==========================================================================
-// Proof System Core (Milestones 2-4)
-// ==========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_selective_disclosure_hides_undisclosed() {
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("firstName".to_string(), json!("Alice"));
-    attrs.insert("secretField".to_string(), json!("TOP_SECRET_VALUE"));
-    attrs.insert("dateOfBirth".to_string(), json!("1995-06-15"));
-
-    let doc = Document::new(attrs).unwrap();
-    let mut proof_doc = doc.issue(&issuer);
-
-    let request = ProofRequest {
-        disclose: vec!["firstName".to_string()], // Only disclose firstName
-        predicates: vec![],
-        trusted_issuers: vec![issuer.public_key().to_hex()],
-        challenge: "selective_test".to_string(),
-    };
-
-    let token = Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
-
-    // firstName IS disclosed
-    assert_eq!(
-        token.subjects().get("firstName").and_then(|v| v.as_str()),
-        Some("Alice")
-    );
-
-    // secretField is NOT disclosed
-    assert!(
-        token.subjects().get("secretField").is_none(),
-        "secretField must NOT be disclosed"
-    );
-}
-
-/// T-004: Per-document salt prevents rainbow table attacks
-#[tokio::test]
-#[ignore]
-async fn test_t004_per_document_salt() {
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-
-    let make_doc = || {
-        let mut attrs = BTreeMap::new();
-        attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-        attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-        attrs.insert("name".to_string(), json!("Same Name"));
-        Document::new(attrs).unwrap().issue(&issuer)
-    };
-
-    let doc1 = make_doc();
-    let doc2 = make_doc();
-
-    // Same attributes but different salt → different root hashes
-    assert_ne!(
-        doc1.root_hash(),
-        doc2.root_hash(),
-        "T-004: Same attributes should produce different root hashes due to per-document salt"
-    );
-
-    // Both have salt
-    assert!(doc1.salt().is_some(), "Document 1 should have salt");
-    assert!(doc2.salt().is_some(), "Document 2 should have salt");
-    assert_ne!(doc1.salt(), doc2.salt(), "Salts should differ");
-}
-
-/// T-007: Multisig threshold verification
-#[tokio::test]
-#[ignore]
-async fn test_t007_multisig_verification() {
-    let issuer = KeyPair::generate();
-    let owner1 = KeyPair::generate();
-    let owner2 = KeyPair::generate();
-
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert(
-        "ownerKeys".to_string(),
-        json!([owner1.public_key().to_hex(), owner2.public_key().to_hex()]),
-    );
-    attrs.insert("name".to_string(), json!("Joint Account"));
-
-    let doc = Document::new(attrs).unwrap();
-    let mut proof_doc = doc.issue(&issuer);
-
-    let request = ProofRequest {
-        disclose: vec!["name".to_string()],
-        predicates: vec![],
-        trusted_issuers: vec![issuer.public_key().to_hex()],
-        challenge: "multisig_test".to_string(),
-    };
-
-    // Prepare token (two-phase for multisig)
-    let prepared = Token::prepare(&mut proof_doc, &request, 3600).unwrap();
-
-    // Owner signs (finalize_standard is an associated fn on Token)
-    let token = Token::finalize_standard(prepared, &owner1).unwrap();
-
-    // Verify
-    let registry = owl_proof_system::RevocationRegistry::new();
-    let trusted = vec![issuer.public_key()];
-    assert!(
-        token.verify(&trusted, "multisig_test", &registry, &[]).is_ok(),
-        "T-007: Multisig token should verify"
-    );
-}
-
-/// T-012: HMAC integrity protection
-#[tokio::test]
-#[ignore]
-async fn test_t012_hmac_token_integrity() {
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("data".to_string(), json!("test"));
-
-    let doc = Document::new(attrs).unwrap();
-    let mut proof_doc = doc.issue(&issuer);
-
-    let request = ProofRequest {
-        disclose: vec!["data".to_string()],
-        predicates: vec![],
-        trusted_issuers: vec![issuer.public_key().to_hex()],
-        challenge: "hmac_test".to_string(),
-    };
-
-    let mut token = Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
-    let hmac_key = b"test_hmac_key_for_integrity_check";
-
-    // Set HMAC
-    token.set_hmac(hmac_key);
-
-    // Verify HMAC
-    assert!(token.verify_hmac(hmac_key).is_ok(), "T-012: Valid HMAC should verify");
-
-    // Wrong key should fail
-    assert!(
-        token.verify_hmac(b"wrong_key").is_err(),
-        "T-012: Wrong HMAC key should fail"
-    );
-}
-
-/// T-022: Ring signature anonymous verification
-#[tokio::test]
-#[ignore]
-async fn test_t022_ring_signature_anonymity() {
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-    let decoy1 = KeyPair::generate();
-    let decoy2 = KeyPair::generate();
-
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("ageProof".to_string(), json!(true));
-
-    let doc = Document::new(attrs).unwrap();
-    let mut proof_doc = doc.issue(&issuer);
-
-    let request = ProofRequest {
-        disclose: vec![],
-        predicates: vec![],
-        trusted_issuers: vec![issuer.public_key().to_hex()],
-        challenge: "ring_sig_test".to_string(),
-    };
-
-    let prepared = Token::prepare(&mut proof_doc, &request, 3600).unwrap();
-
-    // Ring signature needs raw 32-byte keys
-    let owner_private: [u8; 32] = owner.to_bytes()[..32].try_into().unwrap();
-    let to_32 = |v: Vec<u8>| -> [u8; 32] { v.try_into().unwrap() };
-    let ring: Vec<[u8; 32]> = vec![
-        to_32(owner.public_key().to_bytes()),
-        to_32(decoy1.public_key().to_bytes()),
-        to_32(decoy2.public_key().to_bytes()),
-    ];
-
-    let token = Token::finalize_ring_sig(prepared, &owner_private, &ring).unwrap();
-
-    let registry = owl_proof_system::RevocationRegistry::new();
-    let trusted = vec![issuer.public_key()];
-    assert!(
-        token.verify(&trusted, "ring_sig_test", &registry, &[]).is_ok(),
-        "T-022: Ring signature token should verify"
-    );
-}
-
-// ==========================================================================
-// Full E2E Flow: Issue → Verify → Revoke → Re-verify
-// ==========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_full_e2e_flow() {
-    let server = TestServer::new().await;
-
-    // 1. Create credential
-    let challenge = format!("e2e_full_{}", uuid::Uuid::new_v4());
-    let (issuer, _owner, compact, root_hash) = create_test_credential_and_token(&challenge);
-
-    // 2. Register issuer
-    let add_resp = server
-        .post_auth(
-            "/trusted-issuers",
-            &json!({
-                "public_key": issuer.public_key().to_hex(),
-                "name": "E2E Full Flow Issuer"
-            }),
-        )
-        .await;
-    assert!(add_resp.status() == 200 || add_resp.status() == 201);
-
-    // 3. Verify token (should succeed)
-    let verify_resp = server
-        .post_verify("/verify", &json!({"token": &compact, "challenge": &challenge}))
-        .await;
-    let verify_body: Value = verify_resp.json().await.unwrap();
-    assert_eq!(verify_body["valid"], true, "Step 3: Initial verify should pass");
-
-    // 4. Revoke the credential
-    let revoke_resp = server
-        .post_auth(
-            "/revocations/revoke",
-            &json!({
-                "credential_id": &root_hash,
-                "issuer_public_key": issuer.public_key().to_hex(),
-                "reason": "E2E test: testing revocation"
-            }),
-        )
-        .await;
-    assert_eq!(revoke_resp.status(), 200);
-
-    // 5. Re-verify same token with NEW challenge (should fail due to revocation)
-    let challenge2 = format!("e2e_full_after_revoke_{}", uuid::Uuid::new_v4());
-    let (_, _, compact2, _) = {
-        // Need to create a new token with the same issuer/credential but new challenge
-        let owner2 = KeyPair::generate();
-        let mut attrs = BTreeMap::new();
-        attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-        attrs.insert("ownerKey".to_string(), json!(owner2.public_key().to_hex()));
-        attrs.insert("firstName".to_string(), json!("Alice"));
-
-        let doc = Document::new(attrs).unwrap();
-        let mut proof_doc = doc.issue(&issuer);
-        let rh = proof_doc.root_hash().to_string();
-
-        let request = ProofRequest {
-            disclose: vec!["firstName".to_string()],
-            predicates: vec![],
-            trusted_issuers: vec![issuer.public_key().to_hex()],
-            challenge: challenge2.clone(),
-        };
-        let token = Token::generate(&mut proof_doc, &request, &owner2, 3600).unwrap();
-        (issuer.public_key(), owner2, token.to_compact().unwrap(), rh)
-    };
-
-    // This new token has a different root_hash, so it won't be revoked
-    // But the ORIGINAL token's root_hash IS revoked
-    // Let's check the revocation status
-    let check_resp = server
-        .post_verify("/revocations/check", &json!({"credential_id": &root_hash}))
-        .await;
-    let check_body: Value = check_resp.json().await.unwrap();
-    assert_eq!(check_body["status"], "revoked", "Step 5: Credential should be revoked");
-
-    // 6. Check metrics show our verifications
-    let metrics_resp = server.get_auth("/metrics").await;
-    let metrics: Value = metrics_resp.json().await.unwrap();
-    assert!(
-        metrics["total_verifications"].as_u64().unwrap_or(0) > 0,
-        "Step 6: Metrics should show verifications"
-    );
-}
-
-// ==========================================================================
-// T-003: Non-admin API key gets 403 on admin routes
-// ==========================================================================
-
-/// T-003: Verify that a non-admin API key cannot access admin routes
-/// This tests the permission-based auth middleware
-#[tokio::test]
-#[ignore]
-async fn test_t003_non_admin_key_rejected_on_write_routes() {
-    let server = TestServer::new().await;
-    // The dev key has admin now, but we test that auth is enforced
-    // by using an invalid key (which should get 401, not 200)
-    let resp = server.client
-        .post(format!("{}/trusted-issuers", server.base_url))
-        .header("X-API-Key", "some_random_non_existent_key_value_here")
-        .json(&json!({"public_key": "abc", "name": "test"}))
+async fn es256_p256_holder_oid4vp_e2e() {
+    use owl_crypto::SignatureAlgorithm;
+    use sha2::{Digest, Sha256};
+
+    let http = Client::new();
+    let holder = KeyPair::generate_with_algorithm(SignatureAlgorithm::EcdsaP256);
+
+    // OID4VCI: session -> auto-verify -> /token -> /credential (p256 cnf).
+    let created: Value = http
+        .post(format!("{}/sessions", issuer_url()))
+        .json(&json!({ "providerId": "mock-digid" }))
         .send()
         .await
-        .unwrap();
-    assert_eq!(resp.status(), 401, "T-003: Non-existent key should be rejected on admin route");
-}
-
-/// T-003: Admin routes for revocation require auth
-#[tokio::test]
-#[ignore]
-async fn test_t003_revoke_requires_auth() {
-    let server = TestServer::new().await;
-    let resp = server.client
-        .post(format!("{}/revocations/revoke", server.base_url))
-        .json(&json!({"credential_id": "test", "issuer_public_key": "test"}))
+        .expect("create session")
+        .json()
+        .await
+        .expect("session json");
+    let sid = created["sessionId"].as_str().unwrap();
+    let stoken = created["sessionToken"].as_str().unwrap();
+    http.post(format!("{}/sessions/{sid}/auto-verify", issuer_url()))
+        .bearer_auth(stoken)
+        .json(&json!({}))
         .send()
         .await
-        .unwrap();
-    assert_eq!(resp.status(), 401, "T-003: Revoke without auth should return 401");
-}
-
-/// T-003: GDPR erasure requires auth
-#[tokio::test]
-#[ignore]
-async fn test_t003_gdpr_erasure_requires_auth() {
-    let server = TestServer::new().await;
-    let resp = server.client
-        .delete(format!("{}/admin/gdpr-erasure/some_key", server.base_url))
+        .expect("auto-verify");
+    let tok: Value = http
+        .post(format!("{}/token", issuer_url()))
+        .json(&json!({ "pre-authorized_code": sid }))
         .send()
         .await
-        .unwrap();
-    assert_eq!(resp.status(), 401, "T-003: GDPR erasure without auth should return 401");
-}
+        .expect("token")
+        .json()
+        .await
+        .expect("token json");
+    let cred: Value = http
+        .post(format!("{}/credential", issuer_url()))
+        .bearer_auth(tok["access_token"].as_str().unwrap())
+        .json(&json!({
+            "ownerPublicKey": holder.public_key().to_hex(),
+            "keyAlgorithm": "p256",
+        }))
+        .send()
+        .await
+        .expect("credential")
+        .json()
+        .await
+        .expect("credential json");
+    let sd_jwt_vc = cred["credential"].as_str().expect("SD-JWT VC");
 
-// ==========================================================================
-// T-005: P-256 signing correctness
-// ==========================================================================
-
-/// T-005: P-256 signing delegates correctly to the library
-#[tokio::test]
-#[ignore]
-async fn test_t005_p256_signature_correctness() {
-    use owl_crypto::signature::{KeyPair as SigKeyPair, SignatureAlgorithm};
-    // Generate P-256 keypair
-    let kp = SigKeyPair::generate_with_algorithm(SignatureAlgorithm::EcdsaP256);
-    let message = b"test message for P-256 signing";
-    let sig = kp.sign(message);
-    // Verify with the public key
-    assert!(kp.public_key().verify(message, &sig).is_ok(), "T-005: P-256 signature should verify");
-    // Wrong message should fail
-    assert!(kp.public_key().verify(b"wrong message", &sig).is_err(), "T-005: Wrong message should fail P-256 verify");
-}
-
-// ==========================================================================
-// T-006: Token serialization round-trip with leaf hashes
-// ==========================================================================
-
-/// T-006: ProofDocument serialization preserves leaf hashes for reconstruction
-#[tokio::test]
-#[ignore]
-async fn test_t006_proof_document_serialization_round_trip() {
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("name".to_string(), json!("Round Trip Test"));
-    attrs.insert("age".to_string(), json!(30));
-
-    let doc = Document::new(attrs).unwrap();
-    let proof_doc = doc.issue(&issuer);
-    let original_root = proof_doc.root_hash().to_string();
-
-    // Serialize and deserialize
-    let json_str = serde_json::to_string(&proof_doc).unwrap();
-    let mut restored: owl_proof_system::ProofDocument = serde_json::from_str(&json_str).unwrap();
-
-    // Root hash must match
-    assert_eq!(restored.root_hash(), original_root, "T-006: Root hash must survive serialization");
-
-    // Signature verification must still work
-    assert!(restored.verify(&issuer.public_key()).is_ok(), "T-006: Signature must verify after deserialization");
-
-    // Proof generation must work after deserialization
-    let proof = restored.generate_proof(&["name".to_string()]);
-    assert!(proof.is_ok(), "T-006: Proof generation must work after deserialization");
-}
-
-// ==========================================================================
-// T-009: DB-backed revocation cache
-// ==========================================================================
-
-/// T-009: Revocation persists across requests (DB-backed, not just in-memory)
-#[tokio::test]
-#[ignore]
-async fn test_t009_revocation_persists_in_db() {
-    let server = TestServer::new().await;
-    let cred_id = format!("e2e_persist_{}", uuid::Uuid::new_v4());
-    let issuer = KeyPair::generate();
-
-    // Revoke
-    let resp = server.post_auth("/revocations/revoke", &json!({
-        "credential_id": &cred_id,
-        "issuer_public_key": issuer.public_key().to_hex(),
-        "reason": "Persistence test"
-    })).await;
-    assert_eq!(resp.status(), 200);
-
-    // Check status - should be revoked (proves DB persistence, not just memory)
-    let check = server.post_verify("/revocations/check", &json!({"credential_id": &cred_id})).await;
-    let body: Value = check.json().await.unwrap();
-    assert_eq!(body["status"], "revoked", "T-009: Revocation must persist in DB");
-
-    // List should include it
-    let list = server.get_auth("/revocations/list").await;
-    let list_body: Vec<Value> = list.json().await.unwrap();
-    assert!(list_body.iter().any(|r| r["credential_id"] == cred_id), "T-009: Revoked credential must appear in list");
-}
-
-// ==========================================================================
-// T-014: Encryption at rest
-// ==========================================================================
-
-/// T-014: Encryption at rest module works correctly
-#[tokio::test]
-#[ignore]
-async fn test_t014_encryption_at_rest_roundtrip() {
-    let key = [42u8; 32];
-    let plaintext = b"sensitive credential data with PII";
-
-    let (ciphertext, nonce) = owl_crypto::encrypt(plaintext, &key).unwrap();
-
-    // Ciphertext must differ from plaintext
-    assert_ne!(ciphertext.as_bytes(), plaintext, "T-014: Ciphertext must differ from plaintext");
-
-    // Decrypt must recover plaintext
-    let decrypted = owl_crypto::decrypt(&ciphertext, &nonce, &key).unwrap();
-    assert_eq!(decrypted, plaintext, "T-014: Decrypted must match original");
-
-    // Wrong key must fail
-    let wrong_key = [99u8; 32];
-    assert!(owl_crypto::decrypt(&ciphertext, &nonce, &wrong_key).is_err(), "T-014: Wrong key must fail decryption");
-
-    // Different encryptions of same plaintext produce different ciphertexts (unique nonces)
-    let (ct2, n2) = owl_crypto::encrypt(plaintext, &key).unwrap();
-    assert_ne!(ciphertext, ct2, "T-014: Same plaintext must produce different ciphertexts (random nonce)");
-    assert_ne!(nonce, n2, "T-014: Nonces must differ");
-}
-
-/// T-014: Key parsing from hex
-#[tokio::test]
-#[ignore]
-async fn test_t014_key_from_hex() {
-    let hex_key = "a".repeat(64); // 32 bytes in hex
-    let key = owl_crypto::key_from_hex(&hex_key);
-    assert!(key.is_ok(), "T-014: Valid 64-char hex should parse as key");
-
-    assert!(owl_crypto::key_from_hex("short").is_err(), "T-014: Short key should fail");
-    assert!(owl_crypto::key_from_hex("zz").is_err(), "T-014: Invalid hex should fail");
-}
-
-// ==========================================================================
-// T-013: mTLS configuration
-// ==========================================================================
-
-/// T-013: Service runs on plain HTTP when TLS is not configured
-#[tokio::test]
-#[ignore]
-async fn test_t013_tls_config_not_enabled_by_default() {
-    // The service starts without TLS by default - verified by running on plain HTTP
-    let server = TestServer::new().await;
-    let resp = server.get("/health").await;
-    assert_eq!(resp.status(), 200, "T-013: Service runs on HTTP when TLS not configured");
-}
-
-// ==========================================================================
-// T-016: ZK circuits - nationality and KYC predicates
-// ==========================================================================
-
-/// T-016: ZK nationality predicate (EU citizenship)
-#[tokio::test]
-#[ignore]
-async fn test_t016_zk_nationality_predicate() {
-    let server = TestServer::new().await;
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-    let challenge = format!("e2e_nat_{}", uuid::Uuid::new_v4());
-
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("nationality".to_string(), json!("NL"));
-    attrs.insert("firstName".to_string(), json!("Test"));
-
-    let doc = Document::new(attrs).unwrap();
-    let mut proof_doc = doc.issue(&issuer);
-
-    let request = ProofRequest {
-        disclose: vec![],
-        predicates: vec![PredicateRequest {
-            attribute: "nationality".to_string(),
-            op: PredicateOp::InSet,
-            value: json!("eu"),
-        }],
-        trusted_issuers: vec![issuer.public_key().to_hex()],
-        challenge: challenge.clone(),
+    // Verifier nonce.
+    let challenge: String = {
+        let c: Value = http
+            .get(format!("{}/verify/challenge", verify_url()))
+            .bearer_auth(api_key())
+            .send()
+            .await
+            .expect("challenge")
+            .json()
+            .await
+            .expect("challenge json");
+        c["challenge"].as_str().unwrap().to_string()
     };
 
-    let token = Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
-    let compact = token.to_compact().unwrap();
-
-    // Register issuer
-    server.post_auth("/trusted-issuers", &json!({
-        "public_key": issuer.public_key().to_hex(),
-        "name": "E2E Nationality Issuer"
-    })).await;
-
-    let resp = server.post_verify("/verify", &json!({"token": compact, "challenge": challenge})).await;
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["valid"], true, "T-016: Nationality predicate should verify: {:?}", body);
-    // nationality must NOT be disclosed
-    assert!(body["subjects"]["nationality"].is_null() || body["subjects"].get("nationality").is_none(),
-        "T-016: Nationality must not be disclosed when only predicate is used");
-}
-
-/// T-016: ZK KYC status predicate
-#[tokio::test]
-#[ignore]
-async fn test_t016_zk_kyc_predicate() {
-    let server = TestServer::new().await;
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-    let challenge = format!("e2e_kyc_{}", uuid::Uuid::new_v4());
-
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("verificationLevel".to_string(), json!(3));
-    attrs.insert("firstName".to_string(), json!("KYC"));
-
-    let doc = Document::new(attrs).unwrap();
-    let mut proof_doc = doc.issue(&issuer);
-
-    let request = ProofRequest {
-        disclose: vec!["firstName".to_string()],
-        predicates: vec![PredicateRequest {
-            attribute: "verificationLevel".to_string(),
-            op: PredicateOp::GreaterOrEqual,
-            value: json!(2),
-        }],
-        trusted_issuers: vec![issuer.public_key().to_hex()],
-        challenge: challenge.clone(),
-    };
-
-    let token = Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
-    let compact = token.to_compact().unwrap();
-
-    server.post_auth("/trusted-issuers", &json!({
-        "public_key": issuer.public_key().to_hex(),
-        "name": "E2E KYC Issuer"
-    })).await;
-
-    let resp = server.post_verify("/verify", &json!({"token": compact, "challenge": challenge})).await;
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["valid"], true, "T-016: KYC predicate should verify: {:?}", body);
-}
-
-/// T-016: Multiple predicates in one token (age + nationality)
-#[tokio::test]
-#[ignore]
-async fn test_t016_multiple_predicates() {
-    let server = TestServer::new().await;
-    let issuer = KeyPair::generate();
-    let owner = KeyPair::generate();
-    let challenge = format!("e2e_multi_pred_{}", uuid::Uuid::new_v4());
-
-    let mut attrs = BTreeMap::new();
-    attrs.insert("issuerKey".to_string(), json!(issuer.public_key().to_hex()));
-    attrs.insert("ownerKey".to_string(), json!(owner.public_key().to_hex()));
-    attrs.insert("dateOfBirth".to_string(), json!("1990-01-01"));
-    attrs.insert("nationality".to_string(), json!("NL"));
-    attrs.insert("verificationLevel".to_string(), json!(3));
-
-    let doc = Document::new(attrs).unwrap();
-    let mut proof_doc = doc.issue(&issuer);
-
-    let request = ProofRequest {
-        disclose: vec![],
-        predicates: vec![
-            PredicateRequest {
-                attribute: "dateOfBirth".to_string(),
-                op: PredicateOp::GreaterOrEqual,
-                value: json!(18),
-            },
-            PredicateRequest {
-                attribute: "nationality".to_string(),
-                op: PredicateOp::InSet,
-                value: json!(["Dutch", "German", "French"]),
-            },
-            PredicateRequest {
-                attribute: "verificationLevel".to_string(),
-                op: PredicateOp::GreaterOrEqual,
-                value: json!(2),
-            },
-        ],
-        trusted_issuers: vec![issuer.public_key().to_hex()],
-        challenge: challenge.clone(),
-    };
-
-    let token = Token::generate(&mut proof_doc, &request, &owner, 3600).unwrap();
-    let compact = token.to_compact().unwrap();
-
-    server.post_auth("/trusted-issuers", &json!({
-        "public_key": issuer.public_key().to_hex(),
-        "name": "E2E Multi-Pred Issuer"
-    })).await;
-
-    let resp = server.post_verify("/verify", &json!({"token": compact, "challenge": challenge})).await;
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["valid"], true, "T-016: Multiple predicates should verify: {:?}", body);
-}
-
-// ==========================================================================
-// T-018: WebSocket revocation events
-// ==========================================================================
-
-/// T-018: WebSocket endpoint is accessible
-#[tokio::test]
-#[ignore]
-async fn test_t018_websocket_endpoint_exists() {
-    let server = TestServer::new().await;
-    // We can't easily test WebSocket upgrade with reqwest, but we can verify
-    // the endpoint exists by checking it doesn't 404
-    let resp = server.get("/ws/revocations").await;
-    // WebSocket endpoints typically return 400 or 426 (Upgrade Required) for non-WS requests
-    assert!(
-        resp.status() != 404,
-        "T-018: /ws/revocations endpoint should exist (got {})",
-        resp.status()
+    // Holder: disclosure prefix (unsigned) + ES256 KB-JWT.
+    let (vc, _kb) = SdJwtVc::parse(sd_jwt_vc).expect("parse");
+    let prefix = vc.present(&["given_name"], None).expect("present prefix");
+    let aud = "https://verifier.owlid.example";
+    let sd_hash = b64url_enc(&Sha256::digest(prefix.as_bytes()));
+    let h = b64url_enc(&serde_json::to_vec(&json!({ "typ": "kb+jwt", "alg": "ES256" })).unwrap());
+    let p = b64url_enc(
+        &serde_json::to_vec(
+            &json!({ "iat": 1, "aud": aud, "nonce": challenge, "sd_hash": sd_hash }),
+        )
+        .unwrap(),
     );
+    let signing_input = format!("{h}.{p}");
+    let sig = holder.sign(signing_input.as_bytes());
+    let presentation = format!("{prefix}{signing_input}.{}", b64url_enc(sig.bytes()));
+
+    // OID4VP direct_post — must verify under the ES256 holder key.
+    let vr: Value = http
+        .post(format!("{}/openid4vp/response", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({ "vp_token": {"cred0": presentation}, "state": challenge }))
+        .send()
+        .await
+        .expect("openid4vp/response")
+        .json()
+        .await
+        .expect("verify json");
+    assert_eq!(vr["valid"], true, "ES256 holder presentation failed: {vr}");
+    assert_eq!(vr["subjects"]["cred0"]["given_name"], "Jan");
 }
 
-// ==========================================================================
-// T-019: GDPR erasure - thorough test
-// ==========================================================================
+// ---------------------------------------------------------------------------
+// Unlinkability via OpenID4VCI Batch Credential issuance.
+// Two presentations of the "same identity" use distinct one-time-use
+// credentials with distinct `credential_id`s, so a colluding pair of
+// verifiers cannot correlate them. Each is independently revocable on
+// Midnight (the revocation_registry is keyed by credential_id).
+// ---------------------------------------------------------------------------
 
-/// T-019: GDPR erasure revokes credentials and returns receipt
-#[tokio::test]
-#[ignore]
-async fn test_t019_gdpr_erasure_with_credentials() {
-    let server = TestServer::new().await;
-    let owner = KeyPair::generate();
-    let owner_pk = owner.public_key().to_hex();
-
-    // Create and revoke a credential for this owner (simulates having data)
-    let cred_id = format!("gdpr_test_{}", uuid::Uuid::new_v4());
-    let issuer = KeyPair::generate();
-    server.post_auth("/revocations/revoke", &json!({
-        "credential_id": &cred_id,
-        "issuer_public_key": issuer.public_key().to_hex(),
-        "reason": "GDPR pre-existing"
-    })).await;
-
-    // Execute GDPR erasure
-    let resp = server.delete_auth(&format!("/admin/gdpr-erasure/{}", owner_pk)).await;
-    let status = resp.status();
-    assert!(status == 200 || status == 404, "T-019: GDPR erasure should return 200 or 404, got {}", status);
+async fn present_with_kb(http: &Client, vc: &SdJwtVc, holder: &KeyPair) -> (String, String) {
+    let challenge: String = {
+        let c: Value = http
+            .get(format!("{}/verify/challenge", verify_url()))
+            .bearer_auth(api_key())
+            .send()
+            .await
+            .expect("challenge")
+            .json()
+            .await
+            .expect("challenge json");
+        c["challenge"].as_str().unwrap().to_string()
+    };
+    let presentation = vc
+        .present(
+            &["given_name"],
+            Some(KbParams {
+                holder,
+                aud: "https://verifier.owlid.example".to_string(),
+                nonce: challenge.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present");
+    (presentation, challenge)
 }
 
-// ==========================================================================
-// T-020: Observability metrics recorded
-// ==========================================================================
-
-/// T-020: Prometheus endpoint returns actual metric data after operations
-#[tokio::test]
-#[ignore]
-async fn test_t020_prometheus_records_after_verify() {
-    let server = TestServer::new().await;
-    let challenge = format!("e2e_prom_{}", uuid::Uuid::new_v4());
-    let (issuer, _owner, compact, _root_hash) = create_test_credential_and_token(&challenge);
-
-    server.post_auth("/trusted-issuers", &json!({
-        "public_key": issuer.public_key().to_hex(),
-        "name": "E2E Prometheus Issuer"
-    })).await;
-
-    // Do a verification to generate metrics
-    server.post_verify("/verify", &json!({"token": compact, "challenge": challenge})).await;
-
-    // Check prometheus
-    let resp = server.get("/prometheus").await;
-    let body = resp.text().await.unwrap();
-    assert!(body.contains("tokens_verified_total"), "T-020: Prometheus should have tokens_verified_total metric");
-    assert!(body.contains("http_requests_total"), "T-020: Prometheus should have http_requests_total metric");
+async fn oid4vp_verify(http: &Client, presentation: &str, state_nonce: &str) -> Value {
+    http.post(format!("{}/openid4vp/response", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({ "vp_token": {"cred0": presentation}, "state": state_nonce }))
+        .send()
+        .await
+        .expect("openid4vp/response")
+        .json()
+        .await
+        .expect("verify json")
 }
 
-/// T-020: Correlation ID is returned in response headers
 #[tokio::test]
 #[ignore]
-async fn test_t020_correlation_id_in_response() {
-    let server = TestServer::new().await;
-    let resp = server.get("/health").await;
-    let correlation_id = resp.headers().get("x-correlation-id");
-    assert!(correlation_id.is_some(), "T-020: Response must include x-correlation-id header");
-    let id_str = correlation_id.unwrap().to_str().unwrap();
-    assert!(!id_str.is_empty(), "T-020: Correlation ID must not be empty");
-}
+async fn oid4vci_batch_issuance_unlinkability_e2e() {
+    let http = Client::new();
+    let holder = KeyPair::generate();
 
-// ==========================================================================
-// T-015: Rate limiting
-// ==========================================================================
+    // Establish a verified issuance session, then exchange the
+    // pre-authorized code for the OID4VCI access token.
+    let created: Value = http
+        .post(format!("{}/sessions", issuer_url()))
+        .json(&json!({ "providerId": "mock-digid" }))
+        .send()
+        .await
+        .expect("create session")
+        .json()
+        .await
+        .expect("session json");
+    let sid = created["sessionId"].as_str().unwrap();
+    let stoken = created["sessionToken"].as_str().unwrap();
+    http.post(format!("{}/sessions/{sid}/auto-verify", issuer_url()))
+        .bearer_auth(stoken)
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("auto-verify");
+    let tok: Value = http
+        .post(format!("{}/token", issuer_url()))
+        .json(&json!({ "pre-authorized_code": sid }))
+        .send()
+        .await
+        .expect("token")
+        .json()
+        .await
+        .expect("token json");
 
-/// T-015: Rate limiting config loads (env-based)
-/// Note: Rate limiting is disabled in test to avoid flaky tests,
-/// but we verify the middleware compiles and is wired.
-#[tokio::test]
-#[ignore]
-async fn test_t015_rate_limiting_config_exists() {
-    // When RATE_LIMIT_ENABLED=false, requests go through without limit
-    let server = TestServer::new().await;
-    // Multiple rapid requests should all succeed when rate limiting is off
-    for _ in 0..5 {
-        let resp = server.get("/health").await;
-        assert_eq!(resp.status(), 200);
+    // OID4VCI Batch Credential Endpoint — request 3 one-time-use VCs.
+    let cred: Value = http
+        .post(format!("{}/credential", issuer_url()))
+        .bearer_auth(tok["access_token"].as_str().unwrap())
+        .json(&json!({
+            "ownerPublicKey": holder.public_key().to_hex(),
+            "keyAlgorithm": "ed25519",
+            "batchSize": 3,
+        }))
+        .send()
+        .await
+        .expect("credential")
+        .json()
+        .await
+        .expect("credential json");
+    let batch = cred["credentials"]
+        .as_array()
+        .expect("batch credentials array");
+    assert_eq!(batch.len(), 3, "batchSize honoured");
+
+    // Each batch credential has a distinct credential_id and a distinct
+    // statusIdx — Midnight anchors them independently.
+    let ids: std::collections::HashSet<String> = batch
+        .iter()
+        .map(|v| sd_jwt::credential_id(v.as_str().unwrap()))
+        .collect();
+    assert_eq!(ids.len(), 3, "credential_ids must be distinct (unlinkable)");
+    let idxs: std::collections::HashSet<u64> = batch
+        .iter()
+        .map(|v| status_idx(v.as_str().unwrap()))
+        .collect();
+    assert_eq!(idxs.len(), 3, "statusIdx must be distinct per credential");
+
+    // Each credential presents standardly and discloses the same claim
+    // (the holder uses each at most once — that is the unlinkability
+    // contract; the verifier cannot tell two presentations share an
+    // underlying identity from the SD-JWT VC alone).
+    let mut presented: Vec<String> = Vec::new();
+    for v in batch {
+        let (vc, _kb) = SdJwtVc::parse(v.as_str().unwrap()).expect("parse");
+        let (p, c) = present_with_kb(&http, &vc, &holder).await;
+        let vr = oid4vp_verify(&http, &p, &c).await;
+        assert_eq!(vr["valid"], true, "batch credential failed verify: {vr}");
+        assert_eq!(vr["subjects"]["cred0"]["given_name"], "Jan");
+        presented.push(sd_jwt::credential_id(v.as_str().unwrap()));
     }
+    let unique: std::collections::HashSet<&String> = presented.iter().collect();
+    assert_eq!(
+        unique.len(),
+        3,
+        "two presentations cannot share a credential_id"
+    );
+
+    // Independent revocation: revoking one batch credential leaves the
+    // others valid. Midnight's revocation_registry is keyed by
+    // credential_id, so this is correct by construction.
+    let issuer_pk_hex = issuer_pubkey_hex(&http).await;
+    let revoke_id = sd_jwt::credential_id(batch[0].as_str().unwrap());
+    let r = http
+        .post(format!("{}/revocations/revoke", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({
+            "credentialId": revoke_id,
+            "issuerPublicKey": issuer_pk_hex,
+            "reason": "unlinkability-e2e",
+        }))
+        .send()
+        .await
+        .expect("revoke");
+    assert!(r.status().is_success());
+
+    // batch[0] now rejected.
+    let (vc0, _) = SdJwtVc::parse(batch[0].as_str().unwrap()).expect("parse");
+    let (p0, c0) = present_with_kb(&http, &vc0, &holder).await;
+    let v0 = oid4vp_verify(&http, &p0, &c0).await;
+    assert_eq!(v0["valid"], false, "revoked batch credential must reject");
+
+    // batch[1] still valid — independent on-chain handle.
+    let (vc1, _) = SdJwtVc::parse(batch[1].as_str().unwrap()).expect("parse");
+    let (p1, c1) = present_with_kb(&http, &vc1, &holder).await;
+    let v1 = oid4vp_verify(&http, &p1, &c1).await;
+    assert_eq!(v1["valid"], true, "sibling batch credential must stay valid");
+}
+
+// ---------------------------------------------------------------------------
+// OpenID4VP 1.0 §5 Authorization Request flow.
+// External wallets bootstrap by scanning `openid4vp://?request_uri=…`,
+// GETing the Request Object, building a vp_token, POSTing it back as
+// form-encoded `application/x-www-form-urlencoded`. The same response
+// endpoint that takes the OwlID JSON shape also accepts the standard
+// form-encoded body.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore]
+async fn openid4vp_authorization_request_flow_e2e() {
+    let http = Client::new();
+    let holder = KeyPair::generate();
+    let sd_jwt_vc = issue_sd_jwt_vc(&http, &holder).await;
+
+    // 1. Verifier creates a presentation session WITH a DCQL query.
+    let create: Value = http
+        .post(format!("{}/presentation/sessions", verify_url()))
+        .json(&json!({
+            "dcql": {
+                "credentials": [
+                    {
+                        "id": "passport",
+                        "format": "dc+sd-jwt",
+                        "claims": [{ "path": ["given_name"] }]
+                    }
+                ]
+            },
+            "verifierName": "OwlID E2E Test",
+            "audience": "https://verifier.owlid.example"
+        }))
+        .send()
+        .await
+        .expect("create session")
+        .json()
+        .await
+        .expect("session json");
+    let session_id = create["sessionId"].as_str().expect("sessionId");
+    let nonce = create["nonce"].as_str().expect("nonce").to_string();
+    let request_uri = create["requestUri"].as_str().expect("requestUri");
+    let response_uri = create["responseUri"].as_str().expect("responseUri");
+    let openid4vp_uri = create["openid4vpUri"].as_str().expect("openid4vpUri");
+    assert!(
+        openid4vp_uri.starts_with("openid4vp://?request_uri="),
+        "deeplink shape (got {openid4vp_uri})"
+    );
+    assert!(
+        request_uri.ends_with(&format!("/openid4vp/request/{session_id}")),
+        "request_uri (got {request_uri})"
+    );
+
+    // 2. Wallet fetches the Request Object.
+    let req_obj: Value = http
+        .get(request_uri)
+        .send()
+        .await
+        .expect("request_uri GET")
+        .json()
+        .await
+        .expect("request object json");
+    assert_eq!(req_obj["client_id_scheme"], "redirect_uri");
+    assert_eq!(req_obj["response_type"], "vp_token");
+    assert_eq!(req_obj["response_mode"], "direct_post");
+    assert_eq!(req_obj["response_uri"], response_uri);
+    assert_eq!(req_obj["nonce"], nonce);
+    assert_eq!(req_obj["client_id"], response_uri);
+    assert_eq!(req_obj["client_metadata"]["client_name"], "OwlID E2E Test");
+    let vp_formats = &req_obj["client_metadata"]["vp_formats"];
+    assert!(
+        vp_formats.get("dc+sd-jwt").is_some(),
+        "vp_formats lists dc+sd-jwt"
+    );
+    let dcql = &req_obj["dcql_query"];
+    assert_eq!(dcql["credentials"][0]["id"], "passport");
+
+    // 3. Wallet builds vp_token bound to the published nonce + aud.
+    let (vc, _) = SdJwtVc::parse(&sd_jwt_vc).expect("parse");
+    let presentation = vc
+        .present(
+            &["given_name"],
+            Some(KbParams {
+                holder: &holder,
+                aud: "https://verifier.owlid.example".to_string(),
+                nonce: nonce.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present");
+
+    // 4. Wallet POSTs form-encoded body to /openid4vp/response
+    //    (the standard OpenID4VP §8.2 wire format).
+    let vp_token_json = serde_json::to_string(&json!({ "passport": presentation })).unwrap();
+    let form_body = format!(
+        "vp_token={}&state={}&presentation_submission={}",
+        urlencoding(&vp_token_json),
+        urlencoding(&nonce),
+        urlencoding("{\"id\":\"submission-1\",\"definition_id\":\"...\",\"descriptor_map\":[]}")
+    );
+    let vr: Value = http
+        .post(response_uri)
+        .bearer_auth(api_key())
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(form_body)
+        .send()
+        .await
+        .expect("direct_post")
+        .json()
+        .await
+        .expect("verify json");
+    assert_eq!(
+        vr["valid"], true,
+        "form-encoded direct_post must verify: {vr}"
+    );
+    assert_eq!(vr["subjects"]["passport"]["given_name"], "Jan");
+}
+
+#[tokio::test]
+#[ignore]
+async fn openid4vp_request_uri_404_for_unknown_session() {
+    let http = Client::new();
+    let r = http
+        .get(format!("{}/openid4vp/request/does-not-exist", verify_url()))
+        .send()
+        .await
+        .expect("GET");
+    assert_eq!(r.status(), 404);
+}
+
+fn urlencoding(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => out.push(c),
+            _ => {
+                let mut buf = [0u8; 4];
+                let bytes = c.encode_utf8(&mut buf).as_bytes();
+                for b in bytes {
+                    out.push_str(&format!("%{b:02X}"));
+                }
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Multi-credential DCQL composition.
+// Two credentials issued under DISTINCT holder keys are presented in one
+// vp_token (OpenID4VP 1.0 §8.1). Each entry's KB-JWT signs the same
+// audience + nonce with its OWN cnf key — the "contextual same-person"
+// model. The verifier returns per-credential verdicts + subjects merged
+// under DCQL ids.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore]
+async fn dcql_multi_credential_composition_e2e() {
+    let http = Client::new();
+
+    // Two independent holder keys — different `cnf` per credential, so
+    // the wire mirrors the multi-IdP wallet's per-credential key story.
+    let holder_a = KeyPair::generate();
+    let holder_b = KeyPair::generate();
+
+    let sd_jwt_a = issue_sd_jwt_vc(&http, &holder_a).await;
+    let sd_jwt_b = issue_sd_jwt_vc(&http, &holder_b).await;
+    assert_ne!(
+        sd_jwt::credential_id(&sd_jwt_a),
+        sd_jwt::credential_id(&sd_jwt_b),
+        "two issuances yield distinct credential_ids"
+    );
+
+    // Single one-shot nonce binds every KB-JWT in the bundle.
+    let challenge: String = {
+        let c: Value = http
+            .get(format!("{}/verify/challenge", verify_url()))
+            .bearer_auth(api_key())
+            .send()
+            .await
+            .expect("challenge")
+            .json()
+            .await
+            .expect("challenge json");
+        c["challenge"].as_str().unwrap().to_string()
+    };
+    let aud = "https://verifier.owlid.example".to_string();
+
+    let (vc_a, _) = SdJwtVc::parse(&sd_jwt_a).expect("parse a");
+    let (vc_b, _) = SdJwtVc::parse(&sd_jwt_b).expect("parse b");
+
+    let pres_a = vc_a
+        .present(
+            &["given_name"],
+            Some(KbParams {
+                holder: &holder_a,
+                aud: aud.clone(),
+                nonce: challenge.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present a");
+    let pres_b = vc_b
+        .present(
+            &["age_over_18"],
+            Some(KbParams {
+                holder: &holder_b,
+                aud: aud.clone(),
+                nonce: challenge.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present b");
+
+    // OID4VP direct_post with a multi-entry vp_token map.
+    let vr: Value = http
+        .post(format!("{}/openid4vp/response", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({
+            "vp_token": { "passport": pres_a, "age": pres_b },
+            "state": challenge,
+        }))
+        .send()
+        .await
+        .expect("openid4vp/response")
+        .json()
+        .await
+        .expect("verify json");
+
+    assert_eq!(
+        vr["valid"], true,
+        "every credential in the vp_token must verify: {vr}"
+    );
+    assert_eq!(
+        vr["perCredential"]["passport"]["valid"], true,
+        "per-cred passport valid"
+    );
+    assert_eq!(
+        vr["perCredential"]["age"]["valid"], true,
+        "per-cred age valid"
+    );
+    assert_eq!(
+        vr["subjects"]["passport"]["given_name"], "Jan",
+        "merged subjects namespaced by DCQL id"
+    );
+    assert_eq!(
+        vr["subjects"]["age"]["age_over_18"], true,
+        "merged subjects namespaced by DCQL id"
+    );
+    assert!(
+        vr["subjects"]["passport"].get("age_over_18").is_none(),
+        "claim only disclosed in entry B must NOT leak into entry A"
+    );
+
+    // Replay of the SAME challenge with a new vp_token must fail —
+    // the nonce was consumed exactly once when the multi-cred bundle
+    // verified.
+    let replay = vc_a
+        .present(
+            &["given_name"],
+            Some(KbParams {
+                holder: &holder_a,
+                aud: aud.clone(),
+                nonce: challenge.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present replay");
+    let vr2: Value = http
+        .post(format!("{}/openid4vp/response", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({
+            "vp_token": { "passport": replay },
+            "state": challenge,
+        }))
+        .send()
+        .await
+        .expect("openid4vp/response replay")
+        .json()
+        .await
+        .expect("verify json");
+    assert_eq!(vr2["valid"], false, "replayed nonce must be rejected");
+}
+
+// ---------------------------------------------------------------------------
+// DCQL claim-path + credential_sets enforcement.
+// `/verify/dcql` should accept a query that constrains the disclosed
+// claim values and run the credential_sets solver across responses.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore]
+async fn dcql_credential_sets_solver_e2e() {
+    let http = Client::new();
+    let holder = KeyPair::generate();
+    let sd_jwt_vc = issue_sd_jwt_vc(&http, &holder).await;
+
+    let challenge: String = {
+        let c: Value = http
+            .get(format!("{}/verify/challenge", verify_url()))
+            .bearer_auth(api_key())
+            .send()
+            .await
+            .expect("challenge")
+            .json()
+            .await
+            .expect("challenge json");
+        c["challenge"].as_str().unwrap().to_string()
+    };
+    let aud = "https://verifier.owlid.example".to_string();
+
+    let (vc, _) = SdJwtVc::parse(&sd_jwt_vc).expect("parse");
+    let presentation = vc
+        .present(
+            &["given_name", "age_over_18"],
+            Some(KbParams {
+                holder: &holder,
+                aud: aud.clone(),
+                nonce: challenge.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present");
+
+    // 1-entry vp_token + DCQL query that REQUIRES an age>=18 attestation.
+    let vr: Value = http
+        .post(format!("{}/verify/dcql", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({
+            "vpToken": { "passport": presentation },
+            "challenge": challenge,
+            "audience": aud,
+            "query": {
+                "credentials": [
+                    {
+                        "id": "passport",
+                        "format": "dc+sd-jwt",
+                        "claims": [
+                            { "path": ["age_over"], "values": [18] }
+                        ]
+                    }
+                ],
+                "credential_sets": [
+                    { "options": [["passport"]], "required": true }
+                ]
+            }
+        }))
+        .send()
+        .await
+        .expect("verify/dcql")
+        .json()
+        .await
+        .expect("verify json");
+    assert_eq!(vr["valid"], true, "DCQL with values match must accept: {vr}");
+    assert_eq!(vr["perCredential"]["passport"]["valid"], true);
+
+    // Mint a fresh nonce, present a NEW vp_token, run DCQL with an
+    // age threshold the credential cannot satisfy.
+    let challenge2: String = {
+        let c: Value = http
+            .get(format!("{}/verify/challenge", verify_url()))
+            .bearer_auth(api_key())
+            .send()
+            .await
+            .expect("challenge2")
+            .json()
+            .await
+            .expect("challenge2 json");
+        c["challenge"].as_str().unwrap().to_string()
+    };
+    let presentation2 = vc
+        .present(
+            &["given_name", "age_over_18"],
+            Some(KbParams {
+                holder: &holder,
+                aud: aud.clone(),
+                nonce: challenge2.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present2");
+    let vr_fail: Value = http
+        .post(format!("{}/verify/dcql", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({
+            "vpToken": { "passport": presentation2 },
+            "challenge": challenge2,
+            "audience": aud,
+            "query": {
+                "credentials": [
+                    {
+                        "id": "passport",
+                        "format": "dc+sd-jwt",
+                        "claims": [
+                            { "path": ["age_over"], "values": [200] }
+                        ]
+                    }
+                ]
+            }
+        }))
+        .send()
+        .await
+        .expect("verify/dcql fail")
+        .json()
+        .await
+        .expect("verify json");
+    assert_eq!(
+        vr_fail["valid"], false,
+        "DCQL claim-value mismatch must reject the entry"
+    );
 }

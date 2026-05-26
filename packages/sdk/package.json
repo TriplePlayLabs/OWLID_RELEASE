@@ -1,7 +1,7 @@
 {
   "name": "@owlid/sdk",
   "version": "1.0.0",
-  "description": "OwlID SDK - Complete identity SDK with WebAuthn, cryptography, and native bindings",
+  "description": "OwlID SDK — standards-conformant SD-JWT VC + OID4VCI/OID4VP holder/verifier helpers (pure TypeScript).",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -12,16 +12,16 @@
       "import": "./dist/index.js"
     },
     "./verifier": {
-      "types": "./dist/verifier.d.ts",
-      "import": "./dist/verifier.js"
+      "types": "./dist/verifier/index.d.ts",
+      "import": "./dist/verifier/index.js"
     },
     "./issuer": {
       "types": "./dist/issuer.d.ts",
       "import": "./dist/issuer.js"
     },
-    "./native": {
-      "types": "./dist/native.d.ts",
-      "import": "./dist/native.js"
+    "./midnight": {
+      "types": "./dist/midnight/public.d.ts",
+      "import": "./dist/midnight/public.js"
     }
   },
   "files": [
@@ -29,17 +29,30 @@
     "src"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && bun run copy:midnight-contracts",
     "dev": "tsc --watch",
     "check": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "test": "bun test tests/",
+    "clean": "rm -rf dist",
+    "copy:midnight-contracts": "bun run scripts/midnight-contracts.ts",
+    "sync:midnight-assets": "bun run ../../scripts/sync-midnight-assets.ts"
   },
   "dependencies": {
+    "@midnight-ntwrk/compact-js": "2.5.0",
+    "@midnight-ntwrk/compact-runtime": "0.16.0",
+    "@midnight-ntwrk/ledger-v8": "8.0.3",
+    "@midnight-ntwrk/midnight-js-contracts": "4.0.4",
+    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "4.0.4",
+    "@midnight-ntwrk/midnight-js-network-id": "4.0.4",
+    "@midnight-ntwrk/midnight-js-types": "4.0.4",
+    "@midnight-ntwrk/zkir-v2": "2.1.0",
+    "@noble/ed25519": "^2.1.0",
+    "@noble/hashes": "^1.5.0",
     "@owlid/config": "workspace:*",
     "@owlid/issuer-client": "workspace:*",
-    "@owlid/native-sdk": "workspace:*",
     "@owlid/verifier-client": "workspace:*",
-    "cbor-x": "^1.6.4"
+    "cbor-x": "^1.6.4",
+    "countries-list": "^3.3.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

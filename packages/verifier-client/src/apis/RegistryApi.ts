@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * OwlID Verification Service
- * Token verification, trusted issuer management, and credential revocation
+ * SD-JWT VC presentation verification, trusted issuer management, and credential revocation
  *
  * The version of the OpenAPI document: 1.0.0
  *
@@ -25,6 +25,10 @@ import {
 
 export interface GetCircuitDatasetRequest {
   name: string
+}
+
+export interface GetPredicateAssetRequest {
+  filename: string
 }
 
 export interface GetProvingKeyRequest {
@@ -58,6 +62,27 @@ export interface RegistryApiInterface {
     requestParameters: GetCircuitDatasetRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<CircuitDataset>
+
+  /**
+   *
+   * @summary Serve a raw per-kind predicate Compact artifact (zkir / prover / verifier). Public — Compact ZK material is public; integrity, not secrecy, is what matters. Immutable-cached: a contract change ships a new artifact set behind a new build. Mirrors [`get_proving_key`].
+   * @param {string} filename &lt;circuit&gt;.{bzkir|prover|verifier}
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof RegistryApiInterface
+   */
+  getPredicateAssetRaw(
+    requestParameters: GetPredicateAssetRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<void>>
+
+  /**
+   * Serve a raw per-kind predicate Compact artifact (zkir / prover / verifier). Public — Compact ZK material is public; integrity, not secrecy, is what matters. Immutable-cached: a contract change ships a new artifact set behind a new build. Mirrors [`get_proving_key`].
+   */
+  getPredicateAsset(
+    requestParameters: GetPredicateAssetRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<void>
 
   /**
    * Path is `/zk-keys/{circuit}.pk.bin`. Cached aggressively (immutable): when the circuit changes, the key changes and a new artifact is shipped behind a new build hash; clients pick that up on next deploy.
@@ -98,6 +123,24 @@ export interface RegistryApiInterface {
   listCircuitData(
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<Array<CircuitDatasetInfo>>
+
+  /**
+   *
+   * @summary Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`. Same role as `/zk-keys` for Groth16: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof RegistryApiInterface
+   */
+  listPredicateAssetsRaw(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<Array<string>>>
+
+  /**
+   * Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`. Same role as `/zk-keys` for Groth16: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
+   */
+  listPredicateAssets(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<Array<string>>
 
   /**
    *
@@ -186,6 +229,50 @@ export class RegistryApi extends runtime.BaseAPI implements RegistryApiInterface
   }
 
   /**
+   * Serve a raw per-kind predicate Compact artifact (zkir / prover / verifier). Public — Compact ZK material is public; integrity, not secrecy, is what matters. Immutable-cached: a contract change ships a new artifact set behind a new build. Mirrors [`get_proving_key`].
+   */
+  async getPredicateAssetRaw(
+    requestParameters: GetPredicateAssetRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<void>> {
+    if (requestParameters['filename'] == null) {
+      throw new runtime.RequiredError(
+        'filename',
+        'Required parameter "filename" was null or undefined when calling getPredicateAsset().',
+      )
+    }
+
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    const response = await this.request(
+      {
+        path: `/predicate-zk/{filename}`.replace(
+          `{${'filename'}}`,
+          encodeURIComponent(String(requestParameters['filename'])),
+        ),
+        method: 'GET',
+        headers: headerParameters,
+        query: queryParameters,
+      },
+      initOverrides,
+    )
+
+    return new runtime.VoidApiResponse(response)
+  }
+
+  /**
+   * Serve a raw per-kind predicate Compact artifact (zkir / prover / verifier). Public — Compact ZK material is public; integrity, not secrecy, is what matters. Immutable-cached: a contract change ships a new artifact set behind a new build. Mirrors [`get_proving_key`].
+   */
+  async getPredicateAsset(
+    requestParameters: GetPredicateAssetRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<void> {
+    await this.getPredicateAssetRaw(requestParameters, initOverrides)
+  }
+
+  /**
    * Path is `/zk-keys/{circuit}.pk.bin`. Cached aggressively (immutable): when the circuit changes, the key changes and a new artifact is shipped behind a new build hash; clients pick that up on next deploy.
    * Serve the raw Groth16 proving key for a given circuit. Public — the keys are public cryptographic material; integrity is what matters, not secrecy.
    */
@@ -263,6 +350,39 @@ export class RegistryApi extends runtime.BaseAPI implements RegistryApiInterface
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<Array<CircuitDatasetInfo>> {
     const response = await this.listCircuitDataRaw(initOverrides)
+    return await response.value()
+  }
+
+  /**
+   * Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`. Same role as `/zk-keys` for Groth16: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
+   */
+  async listPredicateAssetsRaw(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<Array<string>>> {
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    const response = await this.request(
+      {
+        path: `/predicate-zk`,
+        method: 'GET',
+        headers: headerParameters,
+        query: queryParameters,
+      },
+      initOverrides,
+    )
+
+    return new runtime.JSONApiResponse<any>(response)
+  }
+
+  /**
+   * Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`. Same role as `/zk-keys` for Groth16: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
+   */
+  async listPredicateAssets(
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<Array<string>> {
+    const response = await this.listPredicateAssetsRaw(initOverrides)
     return await response.value()
   }
 

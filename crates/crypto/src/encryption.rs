@@ -1,7 +1,12 @@
-//! T-014: AES-256-GCM encryption at rest
-//!
-//! Provides authenticated encryption for sensitive data storage.
-//! Uses AES-256-GCM with random 96-bit nonces.
+//! AES-256-GCM authenticated encryption with random 96-bit nonces.
+//! Used for at-rest encryption of sensitive stored data.
+
+// `aes_gcm` 0.10 / `generic-array` 0.14 exposes `GenericArray::from_slice`
+// as deprecated in favour of `generic-array` 1.x; upgrading the
+// dependency is the proper fix but is left to a workspace-wide crypto
+// bump. The current usage is safe (slice length is checked by the caller
+// through fixed-size buffers).
+#![allow(deprecated)]
 
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},

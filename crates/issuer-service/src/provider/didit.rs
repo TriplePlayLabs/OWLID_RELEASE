@@ -98,10 +98,7 @@ impl DiditProvider {
 
     /// Create session with Didit API
     async fn create_didit_session(&self, session_id: Uuid) -> Result<DiditSessionResponse> {
-        let callback_url = format!(
-            "{}/callback?session={}",
-            self.config.app_url, session_id
-        );
+        let callback_url = format!("{}/callback?session={}", self.config.app_url, session_id);
 
         let request_body = DiditCreateSessionRequest {
             workflow_id: self.config.workflow_id.clone(),
@@ -129,10 +126,9 @@ impl DiditProvider {
             )));
         }
 
-        let didit_response: DiditSessionResponse = response
-            .json()
-            .await
-            .map_err(|e| IdpError::Serialization(format!("Failed to parse Didit response: {}", e)))?;
+        let didit_response: DiditSessionResponse = response.json().await.map_err(|e| {
+            IdpError::Serialization(format!("Failed to parse Didit response: {}", e))
+        })?;
 
         info!(
             "Created Didit session {} for internal session {}",
@@ -143,10 +139,7 @@ impl DiditProvider {
     }
 
     /// Get session decision from Didit API
-    async fn get_session_decision(
-        &self,
-        didit_session_id: &str,
-    ) -> Result<DiditDecisionResponse> {
+    async fn get_session_decision(&self, didit_session_id: &str) -> Result<DiditDecisionResponse> {
         debug!("Fetching Didit decision for session {}", didit_session_id);
 
         let response = self
@@ -176,12 +169,24 @@ impl DiditProvider {
 
         debug!("Didit decision response: {}", response_text);
 
-        let decision: DiditDecisionResponse = serde_json::from_str(&response_text)
-            .map_err(|e| IdpError::Serialization(format!("Failed to parse Didit decision: {} - Response: {}", e, response_text)))?;
+        let decision: DiditDecisionResponse =
+            serde_json::from_str(&response_text).map_err(|e| {
+                IdpError::Serialization(format!(
+                    "Failed to parse Didit decision: {} - Response: {}",
+                    e, response_text
+                ))
+            })?;
 
         let has_id_data = decision.id_verification.is_some()
-            || decision.id_verifications.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
-        debug!("Didit decision status: {}, id_verification present: {}", decision.status, has_id_data);
+            || decision
+                .id_verifications
+                .as_ref()
+                .map(|v| !v.is_empty())
+                .unwrap_or(false);
+        debug!(
+            "Didit decision status: {}, id_verification present: {}",
+            decision.status, has_id_data
+        );
 
         Ok(decision)
     }
@@ -253,6 +258,16 @@ impl DiditProvider {
             None
         };
 
+        // Address: lift everything from the geographic-lookup result so
+        // the normaliser can decide residency on `parsed_address.is_verified`.
+        let parsed = id_verification.parsed_address.as_ref();
+        let parsed_country = parsed.and_then(|p| p.country.clone()).map(|c| {
+            // Didit sometimes returns full country name; trim to ISO-alpha-2.
+            let upper = c.to_uppercase();
+            upper.chars().take(2).collect::<String>()
+        });
+        let parsed_is_verified = parsed.and_then(|p| p.is_verified).unwrap_or(false);
+
         Ok(crate::normalizer::DiditVerificationData {
             first_name: id_verification.first_name.clone().unwrap_or_default(),
             last_name: id_verification.last_name.clone().unwrap_or_default(),
@@ -266,12 +281,20 @@ impl DiditProvider {
             expiration_date: id_verification.expiration_date.clone(),
             date_of_issue: id_verification.date_of_issue.clone(),
             portrait_image: portrait_base64,
+            address: id_verification.address.clone(),
+            formatted_address: id_verification
+                .formatted_address
+                .clone()
+                .or_else(|| parsed.and_then(|p| p.formatted_address.clone())),
+            place_of_birth: id_verification.place_of_birth.clone(),
+            resident_country: parsed_country,
+            address_verified: parsed_is_verified,
         })
     }
 
     /// Fetch portrait image from URL and convert to base64 data URI
     async fn fetch_portrait_as_base64(&self, url: &str) -> Result<String> {
-        use base64::{engine::general_purpose::STANDARD, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD};
 
         debug!("Fetching portrait image from URL");
 
@@ -298,16 +321,23 @@ impl DiditProvider {
             .to_string();
 
         // Extract just the mime type (e.g., "image/jpeg" from "image/jpeg; charset=utf-8")
-        let mime_type = content_type.split(';').next().unwrap_or("image/jpeg").trim();
+        let mime_type = content_type
+            .split(';')
+            .next()
+            .unwrap_or("image/jpeg")
+            .trim();
 
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| IdpError::Network(format!("Failed to read portrait image bytes: {}", e)))?;
+        let bytes = response.bytes().await.map_err(|e| {
+            IdpError::Network(format!("Failed to read portrait image bytes: {}", e))
+        })?;
 
         let base64_data = STANDARD.encode(&bytes);
 
-        debug!("Portrait image fetched: {} bytes, type: {}", bytes.len(), mime_type);
+        debug!(
+            "Portrait image fetched: {} bytes, type: {}",
+            bytes.len(),
+            mime_type
+        );
 
         Ok(format!("data:{};base64,{}", mime_type, base64_data))
     }
@@ -360,8 +390,15 @@ impl DigitalIdentityProvider for DiditProvider {
             webhook_data.session_id, webhook_data.status
         );
 
-        // Check if verification was approved
-        if webhook_data.decision.as_deref() != Some("Approved") {
+        // The webhook only signals "a decision is ready" — the source of
+        // truth is the decision endpoint (which carries the face-match
+        // result the webhook envelope does not). A "Declined" envelope
+        // can fail fast; everything else routes through the decision
+        // evaluator so face_match is honoured.
+        if matches!(
+            webhook_data.decision.as_deref(),
+            Some("Declined") | Some("Rejected")
+        ) {
             let reason = webhook_data
                 .decision
                 .unwrap_or_else(|| "Unknown".to_string());
@@ -371,147 +408,179 @@ impl DigitalIdentityProvider for DiditProvider {
             )));
         }
 
-        // Fetch full decision data
+        // Fetch full decision data and apply the same gate as the polling
+        // path — id_verification AND face_match must both be approved.
         let decision = self.get_session_decision(&webhook_data.session_id).await?;
-
-        // Parse verification data
-        let verification_data = self.parse_verification_data(&decision).await?;
-
-        Ok(RawProviderClaims::Didit(verification_data))
+        match evaluate_decision(&decision) {
+            DiditOutcome::Approved => {
+                let verification_data = self.parse_verification_data(&decision).await?;
+                Ok(RawProviderClaims::Didit(verification_data))
+            }
+            DiditOutcome::Failed(reason) => Err(IdpError::VerificationFailed(reason)),
+            DiditOutcome::Pending(details) => Err(IdpError::VerificationPendingWithDetails(details)),
+        }
     }
 
-    async fn get_verification_result(&self, external_session_id: &str) -> Result<RawProviderClaims> {
+    async fn get_verification_result(
+        &self,
+        external_session_id: &str,
+    ) -> Result<RawProviderClaims> {
         debug!(
             "Fetching verification result for Didit session {}",
             external_session_id
         );
 
-        // Fetch decision from Didit API
         let decision = self.get_session_decision(external_session_id).await?;
-
-        // Check if ID verification part is approved (may differ from overall session status)
-        let id_verification_status = decision
-            .id_verifications
-            .as_ref()
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.status.as_deref());
-
-        // Check face match status - may be approved even when session is "In Review"
-        let face_match_approved = decision
-            .face_matches
-            .as_ref()
-            .and_then(|arr| arr.first())
-            .map(|fm| fm.status.as_deref() == Some("Approved"))
-            .unwrap_or(false);
-
-        let face_match_score = decision
-            .face_matches
-            .as_ref()
-            .and_then(|arr| arr.first())
-            .and_then(|fm| fm.score);
-
-        debug!(
-            "Didit session {} - id_verification_status: {:?}, face_match_approved: {}, face_match_score: {:?}",
-            external_session_id, id_verification_status, face_match_approved, face_match_score
-        );
-
-        // If ID verification is explicitly approved, extract claims
-        if id_verification_status == Some("Approved") {
-            info!(
-                "Didit session {} ID verification approved, extracting claims",
-                external_session_id
-            );
-            let verification_data = self.parse_verification_data(&decision).await?;
-            return Ok(RawProviderClaims::Didit(verification_data));
-        }
-
-        // Check if face match is approved with high confidence, even if session is "In Review"
-        // This handles cases where Didit flags for manual review but the verification is valid
-        // Face match approved + score > 90% + data present = accept
-        let has_id_data = decision.id_verification.is_some()
-            || decision.id_verifications.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
-
-        if face_match_approved && face_match_score.map(|s| s >= 90.0).unwrap_or(false) && has_id_data {
-            info!(
-                "Didit session {} face match approved with score {:?}, extracting claims despite '{}' status",
-                external_session_id, face_match_score, decision.status
-            );
-            let verification_data = self.parse_verification_data(&decision).await?;
-            return Ok(RawProviderClaims::Didit(verification_data));
-        }
-
-        // Check overall session status
-        match decision.status.as_str() {
-            "Approved" => {
-                if !has_id_data {
-                    debug!(
-                        "Didit session {} approved but no verification data yet",
-                        external_session_id
-                    );
-                    return Err(IdpError::VerificationPending(
-                        "Verification approved, waiting for data".to_string(),
-                    ));
-                }
+        match evaluate_decision(&decision) {
+            DiditOutcome::Approved => {
                 info!(
-                    "Didit session {} approved, extracting claims",
+                    "Didit session {} approved (id + face match), extracting claims",
                     external_session_id
                 );
                 let verification_data = self.parse_verification_data(&decision).await?;
                 Ok(RawProviderClaims::Didit(verification_data))
             }
-            "Declined" | "Rejected" => {
-                let reason = decision.decision.unwrap_or_else(|| "Verification rejected".to_string());
-                Err(IdpError::VerificationFailed(format!(
-                    "Didit verification declined: {}",
-                    reason
-                )))
-            }
-            "In Review" | "Pending" | "Processing" => {
-                debug!(
-                    "Didit session {} still pending (status: {})",
-                    external_session_id, decision.status
-                );
-
-                // Extract warnings from id_verifications to inform the user
-                let warnings = decision
-                    .id_verifications
-                    .as_ref()
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.warnings.as_ref())
-                    .map(|warns| {
-                        warns
-                            .iter()
-                            .map(|w| VerificationWarning {
-                                code: w.risk.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
-                                short_description: w
-                                    .short_description
-                                    .clone()
-                                    .unwrap_or_else(|| "Review required".to_string()),
-                                long_description: w.long_description.clone(),
-                                risk: w.risk.clone(),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                Err(IdpError::VerificationPendingWithDetails(PendingDetails {
-                    message: format!("Verification requires review (status: {})", decision.status),
-                    provider_status: decision.status.clone(),
-                    warnings,
-                    retry_after_secs: 5, // Will be used for exponential backoff
-                }))
-            }
-            _ => {
-                warn!(
-                    "Unknown Didit status: {} for session {}",
-                    decision.status, external_session_id
-                );
-                Err(IdpError::VerificationPending(format!(
-                    "Unknown status: {}",
-                    decision.status
-                )))
-            }
+            DiditOutcome::Failed(reason) => Err(IdpError::VerificationFailed(reason)),
+            DiditOutcome::Pending(details) => Err(IdpError::VerificationPendingWithDetails(details)),
         }
+    }
+}
+
+// ============================================================================
+// Decision evaluation — pure, unit-testable.
+// ============================================================================
+
+#[derive(Debug)]
+enum DiditOutcome {
+    Approved,
+    Failed(String),
+    Pending(PendingDetails),
+}
+
+/// Decide the outcome of a Didit decision response. The contract is the
+/// standard KYC + liveness contract: every component check must pass.
+/// In particular, an explicit face-match failure rejects the whole
+/// verification *regardless of* an "Approved" id_verification or session
+/// status — a face-match decline means the document holder is not the
+/// person presenting, so the id-extracted claims must not be issued.
+///
+/// Ordering of checks:
+///   1. Face match: present and explicitly non-pass → fail fast.
+///   2. id_verification status: explicitly non-pass → fail fast.
+///   3. Approve only when (id approved) AND (face match approved OR absent).
+///   4. Otherwise route on overall session status (pending / declined).
+fn evaluate_decision(decision: &DiditDecisionResponse) -> DiditOutcome {
+    let face_match = decision
+        .face_matches
+        .as_ref()
+        .and_then(|arr| arr.first());
+    let face_match_status = face_match.and_then(|fm| fm.status.as_deref());
+    let face_match_score = face_match.and_then(|fm| fm.score);
+    let face_match_pending = matches!(
+        face_match_status,
+        Some("In Review") | Some("Pending") | Some("Processing")
+    );
+    let face_match_approved = face_match_status == Some("Approved");
+    let face_match_present = face_match.is_some();
+
+    // (1) Face-match REJECT path. Anything other than approved/pending is
+    // a hard fail — this is the bug the previous code missed.
+    if let Some(status) = face_match_status {
+        if !face_match_approved && !face_match_pending {
+            let score = face_match_score
+                .map(|s| format!(", score: {s}"))
+                .unwrap_or_default();
+            return DiditOutcome::Failed(format!(
+                "Didit face match {status} (face does not match the document portrait{score})"
+            ));
+        }
+    }
+
+    let id_first = decision
+        .id_verifications
+        .as_ref()
+        .and_then(|arr| arr.first())
+        .or(decision.id_verification.as_ref());
+    let id_status = id_first.and_then(|v| v.status.as_deref());
+    let has_id_data = id_first.is_some();
+
+    // (2) Explicit id_verification reject → fail.
+    if let Some(s) = id_status {
+        if matches!(s, "Declined" | "Rejected" | "Failed") {
+            return DiditOutcome::Failed(format!("Didit id verification {s}"));
+        }
+    }
+
+    // (3) Explicit session-level reject trumps any component "Approved"
+    // — the overall Didit decision can downgrade a per-component pass
+    // (e.g. for cross-component risk signals).
+    if matches!(decision.status.as_str(), "Declined" | "Rejected") {
+        return DiditOutcome::Failed(format!(
+            "Didit verification declined: {}",
+            decision
+                .decision
+                .clone()
+                .unwrap_or_else(|| "Verification rejected".to_string())
+        ));
+    }
+
+    // (4) Component approval path — both id AND face-match (if present)
+    // must be approved.
+    if id_status == Some("Approved") && (face_match_approved || !face_match_present) {
+        return DiditOutcome::Approved;
+    }
+
+    // (4) Fall back to overall session status. Face-match rejection has
+    // already short-circuited above, so an "Approved" session status is
+    // safe here only when both components actually approved.
+    match decision.status.as_str() {
+        "Approved" if has_id_data && (face_match_approved || !face_match_present) => {
+            DiditOutcome::Approved
+        }
+        "Approved" => DiditOutcome::Pending(PendingDetails {
+            message: "Verification approved, waiting for data".to_string(),
+            provider_status: decision.status.clone(),
+            warnings: Vec::new(),
+            retry_after_secs: 5,
+        }),
+        "Declined" | "Rejected" => DiditOutcome::Failed(format!(
+            "Didit verification declined: {}",
+            decision
+                .decision
+                .clone()
+                .unwrap_or_else(|| "Verification rejected".to_string())
+        )),
+        "In Review" | "Pending" | "Processing" => {
+            let warnings = id_first
+                .and_then(|v| v.warnings.as_ref())
+                .map(|warns| {
+                    warns
+                        .iter()
+                        .map(|w| VerificationWarning {
+                            code: w.risk.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
+                            short_description: w
+                                .short_description
+                                .clone()
+                                .unwrap_or_else(|| "Review required".to_string()),
+                            long_description: w.long_description.clone(),
+                            risk: w.risk.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            DiditOutcome::Pending(PendingDetails {
+                message: format!("Verification requires review (status: {})", decision.status),
+                provider_status: decision.status.clone(),
+                warnings,
+                retry_after_secs: 5,
+            })
+        }
+        _ => DiditOutcome::Pending(PendingDetails {
+            message: format!("Unknown status: {}", decision.status),
+            provider_status: decision.status.clone(),
+            warnings: Vec::new(),
+            retry_after_secs: 5,
+        }),
     }
 }
 
@@ -593,8 +662,37 @@ struct DiditIdVerification {
     expiration_date: Option<String>,
     date_of_issue: Option<String>,
     portrait_image: Option<String>,
+    /// Raw address text as printed on the document.
+    address: Option<String>,
+    /// Standardised full address (Didit's normaliser).
+    formatted_address: Option<String>,
+    /// Place of birth.
+    place_of_birth: Option<String>,
+    /// Region (admin-1 unit, e.g. state/province) — may be null.
+    region: Option<String>,
+    /// Structured address from geographic lookup. Carries the
+    /// `is_verified` boolean used as the residency truth source.
+    parsed_address: Option<DiditParsedAddress>,
     /// Warnings from ID verification
     warnings: Option<Vec<DiditWarning>>,
+}
+
+/// Structured address returned by Didit's geographic-lookup pass.
+/// `is_verified == true` ⇒ the address was successfully matched against
+/// a real-world geo dataset (the field we use to drive residency).
+#[derive(Debug, Deserialize)]
+struct DiditParsedAddress {
+    street_1: Option<String>,
+    street_2: Option<String>,
+    city: Option<String>,
+    postal_code: Option<String>,
+    region: Option<String>,
+    /// ISO 3166-1 alpha-2 country code (or full country name in some
+    /// older payloads — caller upper-cases + truncates to 2 chars).
+    country: Option<String>,
+    /// Whether the address was validated through geographic lookup.
+    is_verified: Option<bool>,
+    formatted_address: Option<String>,
 }
 
 #[cfg(test)]
@@ -631,5 +729,124 @@ mod tests {
         let result = DiditConfig::from_env();
         // Just verify it returns an error when env vars aren't set
         assert!(result.is_err());
+    }
+
+    // ----- evaluate_decision -----
+
+    fn decision(v: serde_json::Value) -> DiditDecisionResponse {
+        serde_json::from_value(v).expect("decision deserializes")
+    }
+
+    /// id_verification "Approved" + face_match "Declined" → FAIL.
+    /// Regression for the production bug: the old code returned success
+    /// from the `id_verification_status == Some("Approved")` branch
+    /// without ever consulting `face_matches`.
+    #[test]
+    fn face_match_declined_rejects_even_when_id_approved() {
+        let d = decision(serde_json::json!({
+            "status": "Approved",
+            "decision": "Approved",
+            "id_verifications": [{ "status": "Approved", "first_name": "Jan" }],
+            "face_matches": [{ "status": "Declined", "score": 12.0 }],
+        }));
+        match evaluate_decision(&d) {
+            DiditOutcome::Failed(reason) => {
+                assert!(reason.contains("face match"));
+                assert!(reason.contains("Declined"));
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    /// Same defect surface from the session-level "Approved" path.
+    #[test]
+    fn face_match_declined_rejects_even_when_session_approved() {
+        let d = decision(serde_json::json!({
+            "status": "Approved",
+            "decision": "Approved",
+            "id_verifications": [{ "status": "In Review" }],
+            "face_matches": [{ "status": "Declined" }],
+        }));
+        assert!(matches!(evaluate_decision(&d), DiditOutcome::Failed(_)));
+    }
+
+    /// id approved + face_match approved (any score) → success.
+    #[test]
+    fn id_and_face_match_approved_passes() {
+        let d = decision(serde_json::json!({
+            "status": "Approved",
+            "id_verifications": [{ "status": "Approved", "first_name": "Jan" }],
+            "face_matches": [{ "status": "Approved", "score": 99.5 }],
+        }));
+        assert!(matches!(evaluate_decision(&d), DiditOutcome::Approved));
+    }
+
+    /// No face_match component (id-only workflow) + id approved → success.
+    #[test]
+    fn id_approved_without_face_match_passes() {
+        let d = decision(serde_json::json!({
+            "status": "Approved",
+            "id_verifications": [{ "status": "Approved" }],
+        }));
+        assert!(matches!(evaluate_decision(&d), DiditOutcome::Approved));
+    }
+
+    /// id "Declined" → fail, regardless of face match.
+    #[test]
+    fn id_declined_rejects() {
+        let d = decision(serde_json::json!({
+            "status": "Approved",
+            "id_verifications": [{ "status": "Declined" }],
+            "face_matches": [{ "status": "Approved", "score": 99.0 }],
+        }));
+        assert!(matches!(evaluate_decision(&d), DiditOutcome::Failed(_)));
+    }
+
+    /// Overall session "Declined" → fail.
+    #[test]
+    fn session_declined_rejects() {
+        let d = decision(serde_json::json!({
+            "status": "Declined",
+            "decision": "fraud",
+            "id_verifications": [{ "status": "Approved" }],
+            "face_matches": [{ "status": "Approved" }],
+        }));
+        match evaluate_decision(&d) {
+            DiditOutcome::Failed(r) => assert!(r.contains("declined") || r.contains("fraud")),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    /// Both id and face match "In Review" → pending.
+    #[test]
+    fn in_review_is_pending() {
+        let d = decision(serde_json::json!({
+            "status": "In Review",
+            "id_verifications": [{ "status": "In Review" }],
+            "face_matches": [{ "status": "In Review" }],
+        }));
+        assert!(matches!(evaluate_decision(&d), DiditOutcome::Pending(_)));
+    }
+
+    /// Session approved but no id data yet → pending (not silently accepted).
+    #[test]
+    fn session_approved_without_id_data_is_pending() {
+        let d = decision(serde_json::json!({
+            "status": "Approved",
+        }));
+        assert!(matches!(evaluate_decision(&d), DiditOutcome::Pending(_)));
+    }
+
+    /// Unknown / future face-match status (not Approved, not a known
+    /// pending state) is treated as a hard fail rather than silently
+    /// accepted — KYC must be fail-closed on unknown.
+    #[test]
+    fn unknown_face_match_status_rejects() {
+        let d = decision(serde_json::json!({
+            "status": "Approved",
+            "id_verifications": [{ "status": "Approved" }],
+            "face_matches": [{ "status": "Quarantined" }],
+        }));
+        assert!(matches!(evaluate_decision(&d), DiditOutcome::Failed(_)));
     }
 }

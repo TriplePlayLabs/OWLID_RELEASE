@@ -1,4 +1,5 @@
-use crate::db::{models::ApiKey, DatabaseError, DbPool, Result};
+#![allow(dead_code)] // intentional API surface / serde fields
+use crate::db::{DatabaseError, DbPool, Result, models::ApiKey};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;

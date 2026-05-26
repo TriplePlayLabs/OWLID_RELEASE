@@ -1,4 +1,5 @@
-use crate::db::{models::Revocation, DatabaseError, DbPool, Result};
+#![allow(dead_code)] // intentional API surface / serde fields
+use crate::db::{DatabaseError, DbPool, Result, models::Revocation};
 use chrono::Utc;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -35,6 +36,12 @@ impl RevocationCache {
             // In production you'd log this
             false
         }
+    }
+
+    /// Snapshot of all revoked credential ids (for the Token Status List
+    /// projection — `draft-ietf-oauth-status-list`).
+    pub async fn snapshot(&self) -> Vec<String> {
+        self.revoked_hashes.read().await.iter().cloned().collect()
     }
 }
 
@@ -264,7 +271,7 @@ impl RevocationRepository {
 
 // Implement RevocationChecker trait for the cache
 impl owl_proof_system::revocation::RevocationChecker for RevocationCache {
-    fn is_revoked(&self, root_hash: &str) -> bool {
-        self.is_revoked(root_hash)
+    fn is_revoked(&self, credential_id: &str) -> bool {
+        self.is_revoked(credential_id)
     }
 }

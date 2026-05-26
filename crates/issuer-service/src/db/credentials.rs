@@ -6,7 +6,7 @@ use sqlx::types::Uuid;
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct IssuedCredential {
     pub id: Uuid,
-    pub root_hash: String,
+    pub credential_id: String,
     pub issuer_public_key: String,
     pub owner_public_key: String,
     pub credential_data: JsonValue,
@@ -29,7 +29,7 @@ impl CredentialRepository {
     /// Store a newly issued credential
     pub async fn store(
         &self,
-        root_hash: String,
+        credential_id: String,
         issuer_public_key: String,
         owner_public_key: String,
         credential_data: JsonValue,
@@ -39,12 +39,12 @@ impl CredentialRepository {
         let record = sqlx::query_as::<_, IssuedCredential>(
             r#"
             INSERT INTO issued_credentials
-            (root_hash, issuer_public_key, owner_public_key, credential_data, expires_at, metadata)
+            (credential_id, issuer_public_key, owner_public_key, credential_data, expires_at, metadata)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING *
             "#,
         )
-        .bind(&root_hash)
+        .bind(&credential_id)
         .bind(&issuer_public_key)
         .bind(&owner_public_key)
         .bind(&credential_data)
@@ -55,8 +55,8 @@ impl CredentialRepository {
         .map_err(|e| match e {
             sqlx::Error::Database(db_err) if db_err.is_unique_violation() => {
                 DatabaseError::Duplicate(format!(
-                    "Credential with root_hash {} already exists",
-                    root_hash
+                    "Credential with credential_id {} already exists",
+                    credential_id
                 ))
             }
             _ => DatabaseError::from(e),
@@ -65,15 +65,18 @@ impl CredentialRepository {
         Ok(record)
     }
 
-    /// Get a credential by root hash
-    pub async fn get_by_root_hash(&self, root_hash: &str) -> Result<Option<IssuedCredential>> {
+    /// Get a credential by credential_id
+    pub async fn get_by_credential_id(
+        &self,
+        credential_id: &str,
+    ) -> Result<Option<IssuedCredential>> {
         let record = sqlx::query_as::<_, IssuedCredential>(
             r#"
             SELECT * FROM issued_credentials
-            WHERE root_hash = $1
+            WHERE credential_id = $1
             "#,
         )
-        .bind(root_hash)
+        .bind(credential_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -137,26 +140,36 @@ impl CredentialRepository {
     }
 
     /// Deactivate a credential
-    pub async fn deactivate(&self, root_hash: &str) -> Result<()> {
+    pub async fn deactivate(&self, credential_id: &str) -> Result<()> {
         let result = sqlx::query(
             r#"
             UPDATE issued_credentials
             SET is_active = false
-            WHERE root_hash = $1
+            WHERE credential_id = $1
             "#,
         )
-        .bind(root_hash)
+        .bind(credential_id)
         .execute(&self.pool)
         .await?;
 
         if result.rows_affected() == 0 {
             return Err(DatabaseError::NotFound(format!(
-                "Credential with root_hash {} not found",
-                root_hash
+                "Credential with credential_id {} not found",
+                credential_id
             )));
         }
 
         Ok(())
+    }
+
+    /// Allocate the next IETF Token Status List index. Monotonic and
+    /// unique (Postgres sequence) — no birthday collision, so revoking
+    /// one credential never flips another credential's status bit.
+    pub async fn next_status_idx(&self) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as("SELECT nextval('credential_status_idx_seq')")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.0)
     }
 
     /// Get count of credentials issued by a specific issuer

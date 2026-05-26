@@ -16,33 +16,110 @@ mod config;
 mod midnight;
 mod provider_admin;
 
+use owl_issuer_service::did_web;
+
 use crate::config::Config as IssuerConfig;
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::{HeaderValue, Method, StatusCode, header},
     middleware as axum_middleware,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use owl_issuer_service::{
-    db::{create_pool, CredentialRepository, ProviderSettingsRepository},
     BridgeConfig, CredentialBridge, DiditConfig, DiditProvider, FlowState, FormConfig, FormField,
-    FormFieldType, IdpDatabase, IdentitySubmissionForm, MockBankIdProvider, MockDigiDProvider,
+    FormFieldType, IdentitySubmissionForm, IdpDatabase, MockBankIdProvider, MockDigiDProvider,
     MockProviderFactory, ProviderDescriptor, ProviderFlowType, ProviderInfo, ProviderRegistry,
     SessionStatus, VerificationLevel, VerificationStart, VerifiedIdentityClaims, WebhookPayload,
+    db::{CredentialRepository, ProviderSettingsRepository, create_pool},
     middleware::{InMemoryRateLimiter, RateLimitConfig, rate_limit, validate_session_bearer},
 };
 use serde::{Deserialize, Serialize};
-use utoipa::OpenApi;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use utoipa::OpenApi;
 use uuid::Uuid;
+
+/// Register the issuer's public key with the verification-service, which
+/// writes it on-chain (`issuer_registry`) before mirroring it to Postgres.
+///
+/// The verification call drives a Midnight transaction (proof gen + submit
+/// + confirm), so a single attempt can legitimately take ~30-90 s. The HTTP
+/// client timeout is therefore generous (4 min) and the call is retried
+/// with capped backoff so a transient blip during startup does not abort
+/// the whole service.
+async fn register_trusted_issuer(
+    verification_url: &str,
+    admin_key: &str,
+    pubkey_hex: &str,
+    issuer_name: &str,
+) -> anyhow::Result<()> {
+    const ATTEMPTS: u32 = 5;
+    // On-chain registration is slow — give each attempt room to finish.
+    const PER_ATTEMPT_TIMEOUT_SECS: u64 = 240;
+    // Capped backoff between attempts (transient failures fail fast).
+    const BACKOFF_SECS: [u64; 4] = [3, 8, 15, 30];
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(PER_ATTEMPT_TIMEOUT_SECS))
+        .build()?;
+    let body = serde_json::json!({
+        "publicKey": pubkey_hex,
+        "name": issuer_name,
+    });
+    let url = format!("{}/trusted-issuers", verification_url.trim_end_matches('/'));
+
+    info!(
+        "Startup: registering issuer pubkey on-chain via {} \
+         (Midnight tx — may take ~30-90s per attempt)",
+        url
+    );
+
+    let mut last_error = None;
+    for attempt in 1..=ATTEMPTS {
+        info!("Startup: issuer on-chain registration attempt {attempt}/{ATTEMPTS}...");
+        match client
+            .post(&url)
+            .bearer_auth(admin_key)
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                info!("Startup: ✓ issuer registered on-chain + verification cache ({pubkey_hex})");
+                return Ok(());
+            }
+            Ok(response) => {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                last_error = Some(anyhow::anyhow!(
+                    "verification-service returned {status}: {text}"
+                ));
+            }
+            Err(err) => {
+                last_error = Some(err.into());
+            }
+        }
+
+        if attempt < ATTEMPTS {
+            let backoff = BACKOFF_SECS[(attempt as usize - 1).min(BACKOFF_SECS.len() - 1)];
+            tracing::warn!(
+                "Startup: issuer registration attempt {attempt}/{ATTEMPTS} failed: {} \
+                 — retrying in {backoff}s",
+                last_error.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("issuer registration failed")))
+}
 
 #[derive(OpenApi)]
 #[openapi(
@@ -68,6 +145,7 @@ use uuid::Uuid;
         oidc_callback,
         list_oidc_providers,
         poll_session,
+        provider_admin::list_all_providers,
         provider_admin::enable_provider,
         provider_admin::disable_provider,
     ),
@@ -162,10 +240,17 @@ struct AppState {
     credential_bridge: Arc<CredentialBridge>,
     /// Issuer private key for credential issuance
     issuer_private_key: String,
-    /// Midnight sidecar client (None if MIDNIGHT_ENABLED=false)
-    midnight: Option<Arc<midnight::MidnightSidecar>>,
+    /// Public base URL of this issuer (drives `did:web` + Status List uri).
+    issuer_public_url: String,
+    /// verification-service base URL (revoked-set source for the Status List).
+    verification_service_url: String,
+    /// Midnight sidecar client. Required.
+    midnight: Arc<midnight::MidnightSidecar>,
     /// In-flight OIDC authorization requests, keyed by `state`.
     oidc_state: owl_issuer_service::oidc_state::OidcStateStore,
+    /// Holder app base URL. OAuth/OIDC + webhook callbacks 302 here so the
+    /// user lands on the same `/callback` success page across providers.
+    app_url: String,
 }
 
 #[tokio::main]
@@ -211,6 +296,35 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => {
             info!("Didit provider not configured (DIDIT_API_KEY/DIDIT_WORKFLOW_ID not set)");
         }
+    }
+
+    // Shared store for in-flight OIDC authorization requests. Used by
+    // both the session-aware OidcProvider (writes state at session
+    // create, reads it on callback) and the standalone /auth/login
+    // path. Cleanup task spawned later when AppState owns the clone.
+    let oidc_state = owl_issuer_service::oidc_state::OidcStateStore::default();
+
+    // Register OIDC providers (Google, Microsoft, Apple, custom). Each
+    // is exposed via the `/sessions { providerId }` flow exactly like
+    // the mock + KYC providers; the authorization redirect comes back
+    // through `/auth/callback/{providerId}` which then bridges into
+    // the same `IdpDatabase` session this provider opened.
+    for oidc_cfg in owl_issuer_service::oidc::load_oidc_providers() {
+        let pid = oidc_cfg.provider_id.clone();
+        let display = match pid.as_str() {
+            "google" => "Google",
+            "microsoft" => "Microsoft",
+            "apple" => "Apple",
+            _ => pid.as_str(),
+        };
+        registry.register(owl_issuer_service::provider::OidcProvider::new(
+            oidc_cfg,
+            display.to_string(),
+            "Global".to_string(),
+            owl_issuer_service::VerificationLevel::Low,
+            oidc_state.clone(),
+        ));
+        info!("Registered OIDC provider: {}", pid);
     }
 
     let registry = Arc::new(RwLock::new(registry));
@@ -291,8 +405,8 @@ async fn main() -> anyhow::Result<()> {
     // Without (2), every restart minted a new key and credentials issued
     // before the restart became "Untrusted issuer" against the
     // verification-service's `trusted_issuers` registry.
-    let issuer_private_key = if let Ok(env_key) = std::env::var("ISSUER_PRIVATE_KEY")
-        .or_else(|_| std::env::var("IDP_ISSUER_PRIVATE_KEY"))
+    let issuer_private_key = if let Ok(env_key) =
+        std::env::var("ISSUER_PRIVATE_KEY").or_else(|_| std::env::var("IDP_ISSUER_PRIVATE_KEY"))
     {
         env_key
     } else if let Some(ref pool) = db_pool {
@@ -349,87 +463,100 @@ async fn main() -> anyhow::Result<()> {
         hex::encode(keypair.to_bytes())
     };
 
-    // Auto-register the active pubkey with the verification-service so
-    // freshly-issued credentials verify out of the box. The call uses an
-    // admin-permission API key (env: VERIFICATION_ADMIN_API_KEY, falling
-    // back to the seeded dev key for local development). Idempotent: the
-    // verification-service's `add_trusted_issuer` upserts on
-    // `public_key`, so multiple boots don't pollute the table.
-    {
+    // Register the active pubkey with the verification-service BEFORE
+    // accepting issuance requests, so every freshly-issued credential
+    // is recognised on its first verify. The verification-service's
+    // `add_trusted_issuer` now writes to Midnight FIRST (chain is the
+    // source of truth) and only then upserts its Postgres mirror — so
+    // this single call covers both the on-chain registration and the
+    // local cache. Without an admin-permission API key we cannot make
+    // that call, so the boot fails rather than silently allowing the
+    // issuer to mint credentials that verifiers will reject.
+    //
+    // Setting `ISSUER_SKIP_STARTUP_REGISTRATION=true` skips this step
+    // — useful for one-shot dev workflows that just need the binary
+    // bound to a port (e.g. `just generate-api-client` curling
+    // `/openapi.json`) where the verification-service / Midnight
+    // chain might not be reachable, or where re-registering an
+    // ephemeral key in production is undesirable. The bound binary
+    // will still refuse to issue credentials until a real
+    // registration completes.
+    let skip_registration = std::env::var("ISSUER_SKIP_STARTUP_REGISTRATION")
+        .map(|v| matches!(v.as_str(), "true" | "1" | "yes"))
+        .unwrap_or(false);
+    if skip_registration {
+        tracing::warn!(
+            "ISSUER_SKIP_STARTUP_REGISTRATION=true — skipping issuer pubkey \
+             registration. Issued credentials will NOT verify until a real \
+             registration completes."
+        );
+    } else {
         let pubkey_hex = owl_crypto::KeyPair::from_bytes(
             &hex::decode(&issuer_private_key).expect("issuer private key must be hex"),
         )
         .expect("issuer private key must be a valid Ed25519 seed")
         .public_key()
         .to_hex();
-        let verification_url = std::env::var("VERIFICATION_SERVICE_URL")
-            .unwrap_or_else(|_| "http://localhost:8000".to_string());
-        let admin_key = std::env::var("VERIFICATION_ADMIN_API_KEY").unwrap_or_else(|_| {
-            "owlid_sk_test_dev0000000000000000000000000000000000000000".to_string()
-        });
-        let issuer_name = std::env::var("ISSUER_NAME")
-            .unwrap_or_else(|_| "OwlID Issuer Service".to_string());
-        tokio::spawn(async move {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .expect("reqwest client");
-            let body = serde_json::json!({
-                "publicKey": pubkey_hex,
-                "name": issuer_name,
-            });
-            let resp = client
-                .post(format!("{}/trusted-issuers", verification_url.trim_end_matches('/')))
-                .bearer_auth(&admin_key)
-                .json(&body)
-                .send()
-                .await;
-            match resp {
-                Ok(r) if r.status().is_success() => {
-                    info!("Registered issuer pubkey with verification-service: {}", pubkey_hex);
-                }
-                Ok(r) => {
-                    tracing::warn!(
-                        "Auto-register issuer pubkey failed with status {}: {}",
-                        r.status(),
-                        r.text().await.unwrap_or_default()
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Auto-register issuer pubkey unreachable ({}). Add it via /trusted-issuers manually.",
-                        e
-                    );
-                }
-            }
-        });
+        let issuer_name =
+            std::env::var("ISSUER_NAME").unwrap_or_else(|_| "OwlID Issuer Service".to_string());
+        let admin_key = issuer_config
+            .verification_admin_api_key
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "VERIFICATION_ADMIN_API_KEY (or API_KEY_DEV for local dev) is required so the \
+                     issuer can register its pubkey on Midnight + the verification-service before \
+                     issuing any credentials. Refusing to start. Set \
+                     ISSUER_SKIP_STARTUP_REGISTRATION=true to bypass for spec-generation runs."
+                )
+            })?;
+        register_trusted_issuer(
+            &issuer_config.verification_service_url,
+            admin_key,
+            &pubkey_hex,
+            &issuer_name,
+        )
+        .await?;
     }
 
-    // Initialize Midnight sidecar client
-    let midnight_config = midnight::MidnightConfig::from_env();
-    let midnight_client = if midnight_config.enabled {
-        info!("Midnight integration enabled, connecting to sidecar...");
-        let sidecar = midnight::MidnightSidecar::new(midnight_config);
+    // Midnight is required — refuse to start if the sidecar is
+    // unreachable. `ISSUER_SKIP_SIDECAR_PROBE=true` (or the same
+    // skip-registration flag) downgrades the probe to a warning so
+    // spec-generation / dev workflows that don't actually exercise
+    // the chain path can still bring up the HTTP surface.
+    let skip_sidecar_probe = skip_registration
+        || std::env::var("ISSUER_SKIP_SIDECAR_PROBE")
+            .map(|v| matches!(v.as_str(), "true" | "1" | "yes"))
+            .unwrap_or(false);
+    let midnight_client = {
+        let sidecar = midnight::MidnightSidecar::new(midnight::MidnightConfig::from_env());
+        info!("Probing Midnight sidecar at {}", sidecar.base_url());
         match sidecar.health_check().await {
-            Ok(true) => {
-                info!("Midnight sidecar connected and healthy");
-                Some(Arc::new(sidecar))
-            }
-            Ok(false) => {
-                tracing::warn!("Midnight sidecar reachable but not connected to network");
-                Some(Arc::new(sidecar))
-            }
+            Ok(true) => info!("Midnight sidecar connected and healthy"),
+            Ok(false) => tracing::warn!(
+                "Midnight sidecar reachable but not yet connected to the network — proceeding"
+            ),
             Err(e) => {
-                tracing::warn!("Midnight sidecar unreachable: {}. Chain operations disabled.", e);
-                None
+                if skip_sidecar_probe {
+                    tracing::warn!(
+                        "Midnight sidecar unreachable at {}: {} — skipping probe per \
+                         ISSUER_SKIP_SIDECAR_PROBE / ISSUER_SKIP_STARTUP_REGISTRATION",
+                        sidecar.base_url(),
+                        e
+                    );
+                } else {
+                    tracing::error!(
+                        "Midnight sidecar unreachable at {}: {}",
+                        sidecar.base_url(),
+                        e
+                    );
+                    std::process::exit(1);
+                }
             }
         }
-    } else {
-        info!("Midnight integration disabled (MIDNIGHT_ENABLED=false)");
-        None
+        Arc::new(sidecar)
     };
 
-    let oidc_state = owl_issuer_service::oidc_state::OidcStateStore::default();
     {
         let store = oidc_state.clone();
         tokio::spawn(async move {
@@ -450,8 +577,11 @@ async fn main() -> anyhow::Result<()> {
         registry,
         credential_bridge,
         issuer_private_key,
+        issuer_public_url: issuer_config.issuer_public_url.clone(),
+        verification_service_url: issuer_config.verification_service_url.clone(),
         midnight: midnight_client.clone(),
         oidc_state,
+        app_url: issuer_config.app_url.clone(),
     };
 
     // Background cleanup of expired sessions + claims. Without this the
@@ -470,45 +600,75 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // T-003: Self-register issuer on-chain only if explicitly opted in
-    let auto_register = std::env::var("MIDNIGHT_AUTO_REGISTER_ISSUER")
-        .unwrap_or_else(|_| "false".to_string())
-        .parse::<bool>()
-        .unwrap_or(false);
+    // On-chain issuer registration already happened above via
+    // `register_trusted_issuer` → verification-service `add_trusted_issuer`,
+    // which writes Midnight FIRST. No separate direct-to-sidecar
+    // registration is needed (it would double-write the same key).
 
-    if auto_register {
-        if let Some(ref midnight) = midnight_client {
-        let keypair = owl_crypto::KeyPair::from_bytes(
-            &hex::decode(&state.issuer_private_key).expect("Invalid issuer key"),
-        )
-        .expect("Invalid issuer keypair");
-        let pk_hex = keypair.public_key().to_hex();
-        let midnight = midnight.clone();
+    // `did:webs`-style tamper-evidence: anchor sha-256(did_document) on
+    // Midnight's `identity_registry` (commitment slot keyed by
+    // sha-256(did_web_id)) so a verifier can detect a substituted DID
+    // document. Fire-and-forget + idempotent (re-anchoring the same
+    // commitment asserts "already exists" — non-fatal).
+    {
+        let public_url = state.issuer_public_url.clone();
+        let key_hex = state.issuer_private_key.clone();
+        let midnight = midnight_client.clone();
         tokio::spawn(async move {
-            // Check if already registered, if not, register
-            match midnight.is_issuer_trusted(&pk_hex).await {
-                Ok(true) => {
-                    info!("Issuer already registered on-chain: {}", pk_hex);
-                }
-                Ok(false) => {
-                    info!("Registering issuer on-chain: {}", pk_hex);
-                    if let Err(e) = midnight
-                        .register_issuer(&pk_hex, "OwlID Issuer Service")
-                        .await
-                    {
-                        tracing::warn!("Failed to self-register issuer on-chain: {}", e);
-                    } else {
-                        info!("Issuer registered on-chain successfully");
+            use sha2::{Digest, Sha256};
+            let Ok(key_bytes) = hex::decode(&key_hex) else {
+                tracing::warn!("did:web doc anchor skipped: bad issuer key hex");
+                return;
+            };
+            let Ok(kp) = owl_crypto::KeyPair::from_bytes(&key_bytes) else {
+                tracing::warn!("did:web doc anchor skipped: bad issuer keypair");
+                return;
+            };
+            let did = did_web::did_web_id(&public_url);
+            let doc = did_web::did_document(&public_url, &kp.public_key());
+            let Ok(canonical) = serde_json::to_vec(&doc) else {
+                tracing::warn!("did:web doc anchor skipped: canonicalize failed");
+                return;
+            };
+            let did_hash = hex::encode(Sha256::digest(did.as_bytes()));
+            let doc_hash = hex::encode(Sha256::digest(&canonical));
+            let issuer_key_hash = hex::encode(Sha256::digest(kp.public_key().to_hex().as_bytes()));
+            // Retry with backoff: the sidecar serializes witness-bearing
+            // writes through a single private-state LevelDB, so the
+            // anchor can lose to concurrent identity writes with
+            // `Database failed to open`. Eventually-consistent retries
+            // make the anchor land without blocking startup.
+            let mut delay = std::time::Duration::from_secs(3);
+            for attempt in 1..=8u32 {
+                match midnight
+                    .register_identity(&did_hash, &doc_hash, &issuer_key_hash)
+                    .await
+                {
+                    Ok(_) => {
+                        info!("did:web doc-hash anchored on-chain for {did}");
+                        return;
+                    }
+                    Err(e) => {
+                        let s = e.to_string();
+                        if s.contains("already") {
+                            info!("did:web doc-hash already anchored on-chain for {did}");
+                            return;
+                        }
+                        tracing::warn!(
+                            "did:web doc-hash anchor attempt {attempt}/8 failed: {e}; \
+                             retrying in {:?}",
+                            delay
+                        );
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to check issuer status on-chain: {}", e);
-                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_secs(60));
             }
+            tracing::warn!(
+                "did:web doc-hash anchor gave up after 8 attempts; verifier check will be \
+                 best-effort (graceful absence). Anchor will retry on next issuer restart."
+            );
         });
-    }
-    } else if midnight_client.is_some() {
-        tracing::info!("Midnight auto-registration disabled. Set MIDNIGHT_AUTO_REGISTER_ISSUER=true to enable.");
     }
 
     // Build CORS layer from CORS_ALLOWED_ORIGINS, falling back to the
@@ -518,7 +678,6 @@ async fn main() -> anyhow::Result<()> {
     let rate_config = RateLimitConfig::from_env();
     let rate_limiter = InMemoryRateLimiter::new(rate_config);
 
-    // T-017: Load OIDC providers
     let oidc_providers = owl_issuer_service::oidc::load_oidc_providers();
     if oidc_providers.is_empty() {
         info!("No OIDC providers configured");
@@ -553,6 +712,7 @@ async fn main() -> anyhow::Result<()> {
         };
         Some(
             Router::new()
+                .route("/admin/providers", get(provider_admin::list_all_providers))
                 .route(
                     "/admin/providers/{id}/enable",
                     post(provider_admin::enable_provider),
@@ -569,8 +729,19 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let mut app = Router::new()
-        .merge(utoipa_swagger_ui::SwaggerUi::new("/swagger-ui").url("/openapi.json", ApiDoc::openapi()))
+        .merge(
+            utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
+                .url("/openapi.json", ApiDoc::openapi()),
+        )
         .route("/health", get(health))
+        .route("/.well-known/did.json", get(did_json))
+        .route(
+            "/.well-known/openid-credential-issuer",
+            get(openid_credential_issuer_metadata),
+        )
+        .route("/token", post(oid4vci_token))
+        .route("/credential", post(oid4vci_credential))
+        .route("/status/{id}", get(status_list))
         .route("/issuer-info", get(get_issuer_info))
         .route("/providers", get(list_providers))
         .route("/sessions", post(create_session))
@@ -615,6 +786,201 @@ async fn health() -> &'static str {
     "Issuer Service is running"
 }
 
+/// `did:web` DID document for this issuer (DID Core 1.0). The SD-JWT VC
+/// `iss` resolves here; the Ed25519 verification key is also a Midnight
+/// trusted issuer (trust anchor). Not in the typed client — it is a
+/// well-known resolution endpoint consumed by standard DID resolvers.
+async fn did_json(
+    State(state): State<AppState>,
+) -> Result<impl axum::response::IntoResponse, ApiError> {
+    let key_bytes = hex::decode(&state.issuer_private_key)
+        .map_err(|e| ApiError::Internal(format!("issuer key hex: {e}")))?;
+    let kp = owl_crypto::KeyPair::from_bytes(&key_bytes)
+        .map_err(|e| ApiError::Internal(format!("issuer key: {e}")))?;
+    // Public DID document — the did:web spec recommends serving it with
+    // `Access-Control-Allow-Origin: *` so browser-based / universal DID
+    // resolvers can fetch it (the credentialed CORS layer would block
+    // them; this endpoint carries no credentials and no secret).
+    Ok((
+        [(
+            axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            "*",
+        )],
+        Json(did_web::did_document(
+            &state.issuer_public_url,
+            &kp.public_key(),
+        )),
+    ))
+}
+
+/// OpenID4VCI 1.0 Credential Issuer Metadata
+/// (`/.well-known/openid-credential-issuer`). Advertises the SD-JWT VC
+/// (`dc+sd-jwt`) credential this issuer mints + the credential endpoint, so
+/// standard OID4VCI wallets can discover and request it.
+async fn openid_credential_issuer_metadata(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let base = state.issuer_public_url.trim_end_matches('/');
+    Json(serde_json::json!({
+        "credential_issuer": base,
+        "credential_endpoint": format!("{base}/credential"),
+        "token_endpoint": format!("{base}/token"),
+        "credential_configurations_supported": {
+            "owlid_identity": {
+                "format": "dc+sd-jwt",
+                "vct": "https://owlid.dev/credentials/identity",
+                "cryptographic_binding_methods_supported": ["jwk"],
+                "credential_signing_alg_values_supported": ["EdDSA"],
+                "proof_types_supported": { "jwt": { "proof_signing_alg_values_supported": ["EdDSA"] } }
+            }
+        }
+    }))
+}
+
+/// OpenID4VCI 1.0 Token Endpoint — Pre-Authorized Code grant. The
+/// pre-authorized code is a verified issuance session id; the returned
+/// access token is that code (consumed by `/credential`).
+async fn oid4vci_token(
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let code = req
+        .get("pre-authorized_code")
+        .or_else(|| req.get("pre_authorized_code"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ApiError::BadRequest("pre-authorized_code required".into()))?;
+    Ok(Json(serde_json::json!({
+        "access_token": code,
+        "token_type": "bearer",
+        "expires_in": 300
+    })))
+}
+
+/// OpenID4VCI 1.0 Credential Endpoint. `Authorization: Bearer <session-id>`;
+/// body binds the holder key (`ownerPublicKey`/`keyAlgorithm`). Returns the
+/// standard SD-JWT VC. Delegates to the same issuance path as
+/// `/sessions/{id}/issue`.
+async fn oid4vci_credential(
+    state: State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| ApiError::BadRequest("missing Bearer access token".into()))?;
+    let id = uuid::Uuid::parse_str(token.trim())
+        .map_err(|_| ApiError::BadRequest("invalid access token".into()))?;
+    let owner_public_key = body
+        .get("ownerPublicKey")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ApiError::BadRequest("ownerPublicKey required".into()))?
+        .to_string();
+    let key_algorithm: KeyAlgorithm = body
+        .get("keyAlgorithm")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_value(serde_json::json!(s)).ok())
+        .unwrap_or_default();
+
+    // OpenID4VCI Batch Credential issuance for unlinkability: an
+    // optional `batchSize` mints N one-time-use SD-JWT VCs (distinct
+    // `credential_id` each, same holder `cnf`).
+    let batch_size = body
+        .get("batchSize")
+        .or_else(|| body.get("batch_size"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n.clamp(1, 64) as u32);
+
+    let resp = issue_credential(
+        state,
+        axum::extract::Path(id),
+        Json(IssueCredentialRequest {
+            owner_public_key,
+            key_algorithm,
+            batch_size,
+        }),
+    )
+    .await?;
+    if !resp.0.success {
+        return Err(ApiError::Internal(
+            resp.0.error.clone().unwrap_or_else(|| "issuance failed".into()),
+        ));
+    }
+    // OID4VCI Credential Response: single → `credential`; batch →
+    // `credentials` array. We return both so OID4VCI Batch-capable
+    // clients and single-credential clients both work unchanged.
+    Ok(Json(serde_json::json!({
+        "credential": resp.0.credential,
+        "credentials": resp.0.credentials,
+    })))
+}
+
+/// IETF Token Status List (`draft-ietf-oauth-status-list`) for this issuer.
+/// The bitstring is projected from the Midnight `revocation_registry`
+/// (sourced from verification-service, which SSE-mirrors the chain), mapped
+/// through each credential's persisted `statusIdx`, and signed with the
+/// issuer key.
+async fn status_list(
+    State(state): State<AppState>,
+) -> Result<impl axum::response::IntoResponse, ApiError> {
+    let kp = owl_crypto::KeyPair::from_bytes(
+        &hex::decode(&state.issuer_private_key)
+            .map_err(|e| ApiError::Internal(format!("issuer key hex: {e}")))?,
+    )
+    .map_err(|e| ApiError::Internal(format!("issuer key: {e}")))?;
+
+    let url = format!(
+        "{}/status-revoked",
+        state.verification_service_url.trim_end_matches('/')
+    );
+    let body: serde_json::Value = reqwest::get(&url)
+        .await
+        .map_err(|e| ApiError::Internal(format!("revoked-set source: {e}")))?
+        .json()
+        .await
+        .map_err(|e| ApiError::Internal(format!("revoked-set json: {e}")))?;
+    let revoked: Vec<String> = body
+        .get("revoked")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut idxs: Vec<u64> = Vec::new();
+    if let Some(repo) = state.credential_bridge.credential_repo() {
+        for id in &revoked {
+            if let Ok(Some(cred)) = repo.get_by_credential_id(id).await {
+                if let Some(idx) = cred.metadata.get("statusIdx").and_then(|v| v.as_u64()) {
+                    idxs.push(idx);
+                }
+            }
+        }
+    }
+
+    let list = owl_proof_system::status_list::StatusList::from_revoked(&idxs);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let uri = format!(
+        "{}/status/1",
+        state.issuer_public_url.trim_end_matches('/')
+    );
+    let jwt = owl_proof_system::status_list::issue_status_list_jwt(&list, &kp, &uri, now, None)
+        .map_err(|e| ApiError::Internal(format!("status list: {e}")))?;
+
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/statuslist+jwt",
+        )],
+        jwt,
+    ))
+}
+
 /// Issuer info response
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -627,8 +993,9 @@ struct IssuerInfoResponse {
 #[utoipa::path(get, path = "/issuer-info", tag = "info", responses((status = 200, description = "Issuer public key and name", body = IssuerInfoResponse)))]
 async fn get_issuer_info(State(state): State<AppState>) -> Json<IssuerInfoResponse> {
     let keypair = owl_crypto::KeyPair::from_bytes(
-        &hex::decode(&state.issuer_private_key).expect("Invalid issuer key")
-    ).expect("Invalid issuer keypair");
+        &hex::decode(&state.issuer_private_key).expect("Invalid issuer key"),
+    )
+    .expect("Invalid issuer keypair");
 
     Json(IssuerInfoResponse {
         public_key: keypair.public_key().to_hex(),
@@ -646,10 +1013,11 @@ async fn get_issuer_info(State(state): State<AppState>) -> Json<IssuerInfoRespon
     )
 )]
 async fn list_providers(State(state): State<AppState>) -> Json<Vec<ProviderInfo>> {
+    // Public endpoint — only enabled providers are exposed to holders.
+    // Operators see the full list (enabled + disabled) via /admin/providers.
     let registry = state.registry.read().await;
-    Json(registry.list())
+    Json(registry.list().into_iter().filter(|p| p.enabled).collect())
 }
-
 
 /// Request to create a verification session
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -704,13 +1072,20 @@ async fn create_session(
     let start_data = provider.start_verification(session.id).await?;
 
     // For HostedUi responses, store the external session ID in the flow state
-    if let VerificationStart::HostedUi { ref external_session_id, .. } = start_data {
-        state.db.update_flow_state(
-            session.id,
-            FlowState::WebhookPending {
-                external_session_id: Some(external_session_id.clone()),
-            },
-        ).await?;
+    if let VerificationStart::HostedUi {
+        ref external_session_id,
+        ..
+    } = start_data
+    {
+        state
+            .db
+            .update_flow_state(
+                session.id,
+                FlowState::WebhookPending {
+                    external_session_id: Some(external_session_id.clone()),
+                },
+            )
+            .await?;
     }
 
     Ok(Json(CreateSessionResponse {
@@ -843,11 +1218,10 @@ async fn get_claims(
         )));
     }
 
-    let claims = state
-        .db
-        .get_claims(id)
-        .await?
-        .ok_or_else(|| ApiError::Internal("Claims not found for verified session".to_string()))?;
+    let claims =
+        state.db.get_claims(id).await?.ok_or_else(|| {
+            ApiError::Internal("Claims not found for verified session".to_string())
+        })?;
 
     Ok(Json(claims))
 }
@@ -882,6 +1256,13 @@ struct IssueCredentialRequest {
     #[serde(default)]
     #[schema(value_type = String)]
     key_algorithm: KeyAlgorithm,
+    /// OpenID4VCI batch issuance for unlinkability: mint this many
+    /// one-time-use SD-JWT VCs (same holder `cnf`, distinct issuer JWT ⇒
+    /// distinct `credential_id`, each independently revocable). The
+    /// holder presents each to at most one verifier so presentations
+    /// cannot be correlated. Default 1; clamped to 1..=64.
+    #[serde(default)]
+    batch_size: Option<u32>,
 }
 
 /// Response from credential issuance
@@ -889,7 +1270,21 @@ struct IssueCredentialRequest {
 #[serde(rename_all = "camelCase")]
 struct IssueCredentialResponse {
     success: bool,
-    credential: serde_json::Value,
+    /// The issued credential: a standard SD-JWT VC (`application/dc+sd-jwt`).
+    /// For a batch this is the first element of `credentials`.
+    credential: String,
+    /// OpenID4VCI batch: all minted one-time-use SD-JWT VCs (length =
+    /// effective batch size; `[credential]` when 1). Each has a distinct
+    /// `credential_id` and is independently revocable.
+    credentials: Vec<String>,
+    /// Holder-only personhood secret (32-byte hex), HKDF-derived from
+    /// the issuer's salt + the provider's stable subject identifier.
+    /// Used as the private witness for `attestUniquePersonhood`.
+    /// MUST be stored client-side wrapped by the passkey PRF and
+    /// NEVER sent to a verifier — disclosing it breaks the
+    /// per-(epoch, app) collision property.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    personhood_secret_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -904,17 +1299,21 @@ async fn issue_credential(
     // Atomically claim the issuance slot before signing. `try_claim_issuance`
     // verifies the session is `Verified` and flips `credential_issued`
     // false→true inside a single write lock; if two requests race, only one
-    // succeeds. Without this, `Document::issue` produces a fresh salt per
-    // call so the UNIQUE(root_hash) constraint can't dedupe.
-    state.db.try_claim_issuance(id).await.map_err(|err| match err {
-        owl_issuer_service::IdpError::SessionNotFound(_) => {
-            ApiError::NotFound(format!("Session not found: {}", id))
-        }
-        owl_issuer_service::IdpError::InvalidSessionState { actual, .. } => {
-            ApiError::BadRequest(format!("Cannot issue credential: {}", actual))
-        }
-        other => ApiError::Internal(other.to_string()),
-    })?;
+    // succeeds. Without this, the issuer would produce a fresh credential per
+    // call so the UNIQUE(credential_id) constraint can't dedupe.
+    state
+        .db
+        .try_claim_issuance(id)
+        .await
+        .map_err(|err| match err {
+            owl_issuer_service::IdpError::SessionNotFound(_) => {
+                ApiError::NotFound(format!("Session not found: {}", id))
+            }
+            owl_issuer_service::IdpError::InvalidSessionState { actual, .. } => {
+                ApiError::BadRequest(format!("Cannot issue credential: {}", actual))
+            }
+            other => ApiError::Internal(other.to_string()),
+        })?;
 
     let claims = match state.db.get_claims(id).await? {
         Some(c) => c,
@@ -930,71 +1329,102 @@ async fn issue_credential(
 
     let issuer_key = state.issuer_private_key.clone();
 
-    let proof_document = match state
-        .credential_bridge
-        .issue_credential(
-            &claims,
-            &issuer_key,
-            &request.owner_public_key,
-            request.key_algorithm.to_signature_algorithm(),
-        )
-        .await
-    {
-        Ok(doc) => doc,
-        Err(err) => {
-            let _ = state
-                .db
-                .update_session(id, |s| s.credential_issued = false)
-                .await;
-            return Err(err.into());
+    // Unique-personhood: derive the holder-only secret once per request.
+    // `Some` only for document-verified / government-eID identities;
+    // plain OIDC accounts (Google et al) get `None` and no personhood
+    // predicate. The secret is deterministic per real human, so a second
+    // wallet derives the identical secret and the Midnight nullifier
+    // blocks it from claiming any campaign the first already did — the
+    // sybil boundary is on-chain, no issuer-side dedup table exists.
+    let personhood_secret = owl_issuer_service::derive_personhood(&claims, &issuer_key);
+
+    // OpenID4VCI batch issuance for unlinkability: mint N one-time-use
+    // SD-JWT VCs. Each `issue_credential` call uses fresh per-claim salts
+    // and allocates its own status index ⇒ a distinct issuer JWT ⇒ a
+    // distinct `credential_id`, independently revocable. Same holder
+    // `cnf`. Presented at most once each, so two verifiers cannot
+    // correlate them.
+    let batch = request.batch_size.unwrap_or(1).clamp(1, 64) as usize;
+    let mut credentials: Vec<String> = Vec::with_capacity(batch);
+    for _ in 0..batch {
+        match state
+            .credential_bridge
+            .issue_credential(
+                &claims,
+                &issuer_key,
+                &request.owner_public_key,
+                request.key_algorithm.to_signature_algorithm(),
+                &state.issuer_public_url,
+                personhood_secret.is_some(),
+            )
+            .await
+        {
+            Ok(vc) => credentials.push(vc),
+            Err(err) => {
+                if credentials.is_empty() {
+                    let _ = state
+                        .db
+                        .update_session(id, |s| s.credential_issued = false)
+                        .await;
+                    return Err(err.into());
+                }
+                tracing::warn!(
+                    "batch issuance stopped at {}/{}: {}",
+                    credentials.len(),
+                    batch,
+                    err
+                );
+                break;
+            }
         }
-    };
+    }
 
-    let credential = serde_json::to_value(&proof_document)
-        .map_err(|e| ApiError::Internal(format!("Serialization error: {}", e)))?;
-
-    // Fire-and-forget: anchor identity commitment on-chain
-    if let Some(ref midnight) = state.midnight {
-        let owner_pk = request.owner_public_key.clone();
-        let issuer_pk = state.issuer_private_key.clone();
-        let midnight = midnight.clone();
-        let credential_json = credential.clone();
-        tokio::spawn(async move {
-            // Compute DID hash from owner public key
-            use sha2::{Digest, Sha256};
-            let did_hash = hex::encode(Sha256::digest(owner_pk.as_bytes()));
-
-            // Extract rootHash from the credential if available
-            let root_hash = credential_json
-                .get("rootHash")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&did_hash);
-
-            // Compute issuer key hash
-            if let Ok(key_bytes) = hex::decode(&issuer_pk) {
-                if let Ok(keypair) = owl_crypto::KeyPair::from_bytes(&key_bytes) {
-                    let issuer_key_hash =
-                        hex::encode(Sha256::digest(keypair.public_key().to_hex().as_bytes()));
-
-                    if let Err(e) = midnight
-                        .register_identity(root_hash, &did_hash, &issuer_key_hash)
-                        .await
-                    {
-                        tracing::warn!(
-                            "Failed to anchor identity on-chain (non-blocking): {}",
-                            e
-                        );
-                    } else {
-                        tracing::info!("Identity anchored on-chain for DID hash: {}", did_hash);
+    // Midnight stays the trust core: anchor EVERY batch credential
+    // on-chain (each `credential_id` is an independent on-chain handle,
+    // independently revocable via the revocation_registry).
+    {
+        for vc in &credentials {
+            let owner_pk = request.owner_public_key.clone();
+            let issuer_pk = state.issuer_private_key.clone();
+            let midnight = state.midnight.clone();
+            let cred_id = owl_proof_system::sd_jwt::credential_id_hex(
+                &owl_issuer_service::sd_jwt_bridge::credential_id(vc),
+            );
+            tokio::spawn(async move {
+                use sha2::{Digest, Sha256};
+                let Ok(cred_id) = cred_id else {
+                    tracing::warn!("identity anchor skipped: bad credential id");
+                    return;
+                };
+                let did_hash = hex::encode(Sha256::digest(owner_pk.as_bytes()));
+                if let Ok(key_bytes) = hex::decode(&issuer_pk) {
+                    if let Ok(keypair) = owl_crypto::KeyPair::from_bytes(&key_bytes) {
+                        let issuer_key_hash =
+                            hex::encode(Sha256::digest(keypair.public_key().to_hex().as_bytes()));
+                        if let Err(e) = midnight
+                            .register_identity(&cred_id, &did_hash, &issuer_key_hash)
+                            .await
+                        {
+                            tracing::warn!(
+                                "Failed to anchor identity on-chain (non-blocking): {}",
+                                e
+                            );
+                        } else {
+                            tracing::info!("Identity anchored on-chain for DID hash: {}", did_hash);
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
     }
+
+    let credential = credentials.first().cloned().unwrap_or_default();
 
     Ok(Json(IssueCredentialResponse {
         success: true,
         credential,
+        credentials,
+        personhood_secret_hex: personhood_secret.map(hex::encode),
         error: None,
     }))
 }
@@ -1053,10 +1483,17 @@ async fn auto_verify(
             is_over_65: false,
             is_eu_citizen: true,
             is_resident: true,
+            resident_country: Some("NL".to_string()),
             verification_level: VerificationLevel::Substantial,
             provider_id: "mock-digid".to_string(),
+            name: None,
+            picture: None,
+            locale: None,
+            hosted_domain: None,
             verification_method: "simulated_saml".to_string(),
             verified_at: chrono::Utc::now(),
+            email: None,
+            email_verified: None,
         },
         "mock-bankid" => VerifiedIdentityClaims {
             first_name: "Erik".to_string(),
@@ -1084,10 +1521,17 @@ async fn auto_verify(
             is_over_65: false,
             is_eu_citizen: true,
             is_resident: true,
+            resident_country: Some("NL".to_string()),
             verification_level: VerificationLevel::High,
             provider_id: "mock-bankid".to_string(),
+            name: None,
+            picture: None,
+            locale: None,
+            hosted_domain: None,
             verification_method: "simulated_bankid".to_string(),
             verified_at: chrono::Utc::now(),
+            email: None,
+            email_verified: None,
         },
         _ => {
             return Err(ApiError::BadRequest(format!(
@@ -1101,12 +1545,12 @@ async fn auto_verify(
     state.db.store_claims(id, &claims).await?;
 
     // Mark session as verified
-    state
-        .db
-        .mark_session_verified(id, None)
-        .await?;
+    state.db.mark_session_verified(id, None).await?;
 
-    info!("Auto-verified session {} with provider {}", id, session.provider_id);
+    info!(
+        "Auto-verified session {} with provider {}",
+        id, session.provider_id
+    );
 
     Ok(Json(claims))
 }
@@ -1147,11 +1591,9 @@ async fn complete_verification(
 
     // Check if already verified
     if session.status == owl_issuer_service::SessionStatus::Verified {
-        let claims = state
-            .db
-            .get_claims(id)
-            .await?
-            .ok_or_else(|| ApiError::Internal("Claims not found for verified session".to_string()))?;
+        let claims = state.db.get_claims(id).await?.ok_or_else(|| {
+            ApiError::Internal("Claims not found for verified session".to_string())
+        })?;
         return Ok(Json(CompleteVerificationResponse {
             status: "verified".to_string(),
             claims: Some(claims),
@@ -1162,14 +1604,33 @@ async fn complete_verification(
         }));
     }
 
-    // Only for webhook_async providers
-    if session.flow_type != owl_issuer_service::ProviderFlowType::WebhookAsync {
+    // Webhook (Didit) + OIDC (Google/Microsoft/Apple) both rely on this
+    // endpoint to learn that the out-of-band provider finished. For OIDC
+    // the verified state is set by the /auth/callback/{provider} handler
+    // and there is no provider-side polling to do — return pending until
+    // that callback flips the session.
+    use owl_issuer_service::ProviderFlowType;
+    if !matches!(
+        session.flow_type,
+        ProviderFlowType::WebhookAsync | ProviderFlowType::OidcRedirect
+    ) {
         return Err(ApiError::BadRequest(
-            "This endpoint is only for webhook_async providers".to_string(),
+            "This endpoint is only for webhook_async or oidc_redirect providers".to_string(),
         ));
     }
 
-    // Get external session ID
+    if session.flow_type == ProviderFlowType::OidcRedirect {
+        return Ok(Json(CompleteVerificationResponse {
+            status: "pending".to_string(),
+            claims: None,
+            message: Some("Waiting for OIDC provider callback".to_string()),
+            provider_status: None,
+            warnings: None,
+            retry_after_secs: Some(2),
+        }));
+    }
+
+    // Get external session ID (webhook_async only path below)
     let external_session_id = match &session.flow_state {
         owl_issuer_service::FlowState::WebhookPending {
             external_session_id,
@@ -1177,13 +1638,12 @@ async fn complete_verification(
         _ => {
             return Err(ApiError::BadRequest(
                 "Session not waiting for external callback".to_string(),
-            ))
+            ));
         }
     };
 
-    let external_id = external_session_id.ok_or_else(|| {
-        ApiError::Internal("No external session ID stored".to_string())
-    })?;
+    let external_id = external_session_id
+        .ok_or_else(|| ApiError::Internal("No external session ID stored".to_string()))?;
 
     // Get provider and fetch decision
     let registry = state.registry.read().await;
@@ -1203,7 +1663,10 @@ async fn complete_verification(
             // Mark session as verified (raw_claims can be None since we stored normalized claims)
             state.db.mark_session_verified(id, None).await?;
 
-            info!("Completed verification for session {} via {}", id, session.provider_id);
+            info!(
+                "Completed verification for session {} via {}",
+                id, session.provider_id
+            );
 
             Ok(Json(CompleteVerificationResponse {
                 status: "verified".to_string(),
@@ -1249,6 +1712,20 @@ async fn complete_verification(
                 provider_status: Some(details.provider_status),
                 warnings,
                 retry_after_secs: Some(details.retry_after_secs),
+            }))
+        }
+        // Provider returned a terminal "declined / failed KYC" decision.
+        // This is normal user-flow output, not a server error — emit it in
+        // the same 200 envelope the poller already understands so the UI
+        // can stop polling and surface the reason.
+        Err(owl_issuer_service::IdpError::VerificationFailed(reason)) => {
+            Ok(Json(CompleteVerificationResponse {
+                status: "failed".to_string(),
+                claims: None,
+                message: Some(reason),
+                provider_status: None,
+                warnings: None,
+                retry_after_secs: None,
             }))
         }
         Err(e) => Err(ApiError::from(e)),
@@ -1349,8 +1826,8 @@ async fn handle_saml_callback(
     state.db.store_claims(session.id, &claims).await?;
 
     // Mark session as verified
-    let raw_json = serde_json::to_value(&raw_claims)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let raw_json =
+        serde_json::to_value(&raw_claims).map_err(|e| ApiError::Internal(e.to_string()))?;
     state
         .db
         .mark_session_verified(session.id, Some(raw_json))
@@ -1426,7 +1903,9 @@ async fn handle_webhook(
         .or_else(|| body.data.get("applicant_id"))
         .or_else(|| body.data.get("verification_id"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ApiError::BadRequest("Cannot extract session ID from webhook".to_string()))?;
+        .ok_or_else(|| {
+            ApiError::BadRequest("Cannot extract session ID from webhook".to_string())
+        })?;
 
     let session = state
         .db
@@ -1518,14 +1997,17 @@ async fn poll_session(
         _ => {
             return Err(ApiError::BadRequest(
                 "Session not in polling state".to_string(),
-            ))
+            ));
         }
     };
 
     let poll_result = provider.poll_status(session.id, &order_ref).await?;
 
     // Update poll state
-    state.db.update_polling_state(session.id, &order_ref).await?;
+    state
+        .db
+        .update_polling_state(session.id, &order_ref)
+        .await?;
 
     // Handle poll result
     match poll_result {
@@ -1533,8 +2015,8 @@ async fn poll_session(
             let claims = raw_claims.normalize();
             state.db.store_claims(session.id, &claims).await?;
 
-            let raw_json = serde_json::to_value(&raw_claims)
-                .map_err(|e| ApiError::Internal(e.to_string()))?;
+            let raw_json =
+                serde_json::to_value(&raw_claims).map_err(|e| ApiError::Internal(e.to_string()))?;
             state
                 .db
                 .mark_session_verified(session.id, Some(raw_json))
@@ -1591,7 +2073,7 @@ struct PollResponse {
 }
 
 // ============================================================================
-// T-017: OIDC Auth Handlers
+// OIDC Auth Handlers
 // ============================================================================
 
 /// List available OIDC providers
@@ -1665,6 +2147,7 @@ async fn oidc_login(
             nonce: nonce.clone(),
             provider_id: provider_id.clone(),
             created_at: std::time::Instant::now(),
+            session_id: None,
         })
         .await;
 
@@ -1728,32 +2211,95 @@ async fn oidc_callback(
     State(app): State<AppState>,
     Path(provider_id): Path<String>,
     Query(query): Query<OidcCallbackQuery>,
-) -> Result<Json<OidcCallbackResponse>, ApiError> {
-    if let Some(error) = query.error {
-        let desc = query.error_description.unwrap_or_default();
-        return Err(ApiError::BadRequest(format!(
-            "OIDC error from {}: {} - {}",
-            provider_id, error, desc
-        )));
+) -> Result<axum::response::Response, ApiError> {
+    // Helper: HTTP 302 back to the app `/callback` so every provider
+    // (Didit / OIDC / future) finishes on the same success/error page.
+    let redirect_back = |session: Option<&uuid::Uuid>, err: Option<&str>| {
+        use axum::response::Redirect;
+        let base = app.app_url.trim_end_matches('/');
+        let url = match (session, err) {
+            (_, Some(e)) => format!(
+                "{}/callback?error={}",
+                base,
+                urlencode(e)
+            ),
+            (Some(id), None) => format!("{}/callback?session={}", base, id),
+            (None, None) => format!("{}/callback?error=missing_session", base),
+        };
+        Redirect::to(&url).into_response()
+    };
+
+    if let Some(error) = query.error.clone() {
+        let desc = query.error_description.clone().unwrap_or_default();
+        let msg = format!("{}: {}", error, desc);
+        return Ok(redirect_back(None, Some(&msg)));
     }
 
-    let code = query
-        .code
-        .ok_or_else(|| ApiError::BadRequest("Missing authorization code".to_string()))?;
-    let received_state = query
-        .state
-        .ok_or_else(|| ApiError::BadRequest("Missing state parameter".to_string()))?;
+    let code = match query.code {
+        Some(c) => c,
+        None => return Ok(redirect_back(None, Some("Missing authorization code"))),
+    };
+    let received_state = match query.state {
+        Some(s) => s,
+        None => return Ok(redirect_back(None, Some("Missing state parameter"))),
+    };
 
+    let preview = match app.oidc_state.peek(&received_state).await {
+        Some(p) => p,
+        None => return Ok(redirect_back(None, Some("Invalid or expired state"))),
+    };
+    if preview.provider_id != provider_id {
+        return Ok(redirect_back(None, Some("State / provider mismatch")));
+    }
+
+    if let Some(session_id) = preview.session_id {
+        let registry = app.registry.read().await;
+        let provider = match registry.get(&provider_id) {
+            Some(p) => p,
+            None => {
+                return Ok(redirect_back(
+                    Some(&session_id),
+                    Some("Provider not registered"),
+                ));
+            }
+        };
+        let raw_claims = match provider
+            .handle_oidc_callback(session_id, &code, &received_state)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(redirect_back(
+                    Some(&session_id),
+                    Some(&format!("OIDC callback failed: {}", e)),
+                ));
+            }
+        };
+
+        let verified = raw_claims.normalize();
+        if let Err(e) = app.db.store_claims(session_id, &verified).await {
+            return Ok(redirect_back(
+                Some(&session_id),
+                Some(&format!("store_claims: {}", e)),
+            ));
+        }
+        if let Err(e) = app.db.mark_session_verified(session_id, None).await {
+            return Ok(redirect_back(
+                Some(&session_id),
+                Some(&format!("mark_session_verified: {}", e)),
+            ));
+        }
+
+        return Ok(redirect_back(Some(&session_id), None));
+    }
+
+    // Standalone path: consume the entry + return JSON. Unchanged
+    // legacy behaviour.
     let stored = app
         .oidc_state
         .take(&received_state)
         .await
         .ok_or_else(|| ApiError::BadRequest("Invalid or expired state".to_string()))?;
-    if stored.provider_id != provider_id {
-        return Err(ApiError::BadRequest(
-            "State does not match callback provider".to_string(),
-        ));
-    }
 
     let providers = owl_issuer_service::oidc::load_oidc_providers();
     let config = providers
@@ -1778,7 +2324,12 @@ async fn oidc_callback(
         .id_token
         .as_ref()
         .ok_or_else(|| ApiError::BadRequest("Provider returned no id_token".to_string()))?;
-    verify_id_token(id_token, &config.client_id, &discovery.issuer, &stored.nonce)?;
+    verify_id_token(
+        id_token,
+        &config.client_id,
+        &discovery.issuer,
+        &stored.nonce,
+    )?;
 
     let claims = if let Some(ref userinfo_endpoint) = discovery.userinfo_endpoint {
         owl_issuer_service::oidc::fetch_userinfo(userinfo_endpoint, &token_response.access_token)
@@ -1795,7 +2346,23 @@ async fn oidc_callback(
         claims: mapped_claims,
         has_id_token: true,
         message: "Authentication successful. Claims extracted from provider.".to_string(),
-    }))
+    })
+    .into_response())
+}
+
+/// Minimal RFC 3986 percent-encoding for the small set of characters we
+/// stuff into a redirect URL.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 #[derive(Debug, Deserialize)]
@@ -1852,9 +2419,9 @@ fn verify_id_token(
 
     let aud_ok = match &claims.aud {
         serde_json::Value::String(s) => s == expected_audience,
-        serde_json::Value::Array(items) => items
-            .iter()
-            .any(|v| v.as_str() == Some(expected_audience)),
+        serde_json::Value::Array(items) => {
+            items.iter().any(|v| v.as_str() == Some(expected_audience))
+        }
         _ => false,
     };
     if !aud_ok {

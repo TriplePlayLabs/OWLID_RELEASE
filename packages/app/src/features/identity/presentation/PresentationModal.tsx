@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
-import { QRCodeSVG } from 'qrcode.react'
-import { AlertTriangle, CheckCircle2, QrCode, RefreshCw, Send, ShieldOff } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, QrCode, RefreshCw, XCircle } from 'lucide-react'
+import { OwlQrCode } from '~/components/identity/OwlQrCode'
+import { formatPresentationError } from '~/lib/presentation-errors'
 import { Button } from '@owlid/ui/components/ui/button'
 import {
   Dialog,
@@ -13,29 +14,11 @@ import {
 import { Skeleton } from '@owlid/ui/components/ui/skeleton'
 import { Spinner } from '@owlid/ui/components/ui/spinner'
 
-const QR_SIZE = 220
-import { registerModal, toRadixDialogProps, type ModalRenderProps } from '@owlid/ui/modal'
+const QR_SIZE = 280
+import { registerModal, type ModalRenderProps } from '@owlid/ui/modal'
 import { ConsentScreen } from '~/components/identity/ConsentScreen'
+import { ProvingSteps } from '~/components/identity/ProvingSteps'
 import { usePresentation } from '~/hooks/use-presentation'
-
-/**
- * Map an attribute name to a generic, value-free message. The verifier asked
- * about this field, so naming it back is fine; the value MUST never appear.
- */
-function unmetAttributeMessage(attribute: string | null): string {
-  switch (attribute) {
-    case 'dateOfBirth':
-      return "You don't meet the age requirement for this verification."
-    case 'nationality':
-      return "Your nationality isn't accepted for this verification."
-    case 'verificationLevel':
-      return 'Your KYC level is below what this verifier requires.'
-    case 'isResident':
-      return "You aren't a verified resident for this verifier."
-    default:
-      return "You don't meet the requirements for this verification."
-  }
-}
 
 function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
   const { isOpen, close } = props
@@ -43,9 +26,11 @@ function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
     state,
     sessionQr,
     request,
-    predicateChecks,
+    matchSummary,
+    overrides,
+    setOverride,
+    attestProgress,
     error,
-    unmetAttribute,
     startPresentation,
     approve,
     deny,
@@ -63,9 +48,38 @@ function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
     close()
   }
 
+  // States during which the modal MUST NOT close on accidental
+  // click-outside / Escape — the user is actively presenting their ID
+  // and an accidental dismiss either drops their consent decision
+  // mid-decryption (`consent`), throws away the in-flight proof
+  // (`generating`, `sending`), or aborts a session the verifier is
+  // already connected to (`waiting`). Terminal states (`complete`,
+  // `denied`, `error`) are dismissable normally.
+  const locked =
+    state === 'consent' ||
+    state === 'generating' ||
+    state === 'sending' ||
+    state === 'waiting' ||
+    state === 'showing_qr' ||
+    state === 'creating'
+  const guardDismiss = (e: Event) => {
+    if (locked) e.preventDefault()
+  }
+  const handleOpenChange = (open: boolean) => {
+    if (open) return
+    if (locked) return // ignore programmatic close attempts while locked
+    handleClose()
+  }
+
   return (
-    <Dialog {...toRadixDialogProps({ ...props, close: handleClose })}>
-      <DialogContent className="sm:max-w-sm">
+    <Dialog open={isOpen} modal onOpenChange={handleOpenChange}>
+      <DialogContent
+        className="sm:max-w-sm"
+        showCloseButton={!locked}
+        onPointerDownOutside={guardDismiss}
+        onInteractOutside={guardDismiss}
+        onEscapeKeyDown={guardDismiss}
+      >
         {state === 'idle' ||
         state === 'creating' ||
         state === 'showing_qr' ||
@@ -82,16 +96,13 @@ function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
                 {sessionQr ? 'Show this QR code to the verifier.' : 'Setting up secure session…'}
               </DialogDescription>
             </DialogHeader>
-            <div
-              className="bg-white p-4 rounded-xl flex items-center justify-center"
-              style={{ minHeight: QR_SIZE + 32 }}
-            >
+            <div className="flex items-center justify-center" style={{ minHeight: QR_SIZE + 40 }}>
               {sessionQr ? (
-                <QRCodeSVG value={sessionQr} size={QR_SIZE} level="M" />
+                <OwlQrCode value={sessionQr} size={QR_SIZE} ariaLabel="Presentation session QR" />
               ) : (
                 <Skeleton
-                  className="rounded-md bg-zinc-200/60"
-                  style={{ width: QR_SIZE, height: QR_SIZE }}
+                  className="rounded-2xl bg-zinc-200/60"
+                  style={{ width: QR_SIZE + 40, height: QR_SIZE + 40 }}
                 />
               )}
             </div>
@@ -110,51 +121,25 @@ function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
         ) : state === 'consent' && request ? (
           <ConsentScreen
             request={request}
-            predicateChecks={predicateChecks}
+            matchSummary={matchSummary}
+            overrides={overrides}
+            onSelectCredential={setOverride}
             isGenerating={false}
             onApprove={approve}
             onDeny={deny}
           />
-        ) : state === 'generating' ? (
+        ) : state === 'generating' || state === 'sending' ? (
           <>
             <DialogHeader>
-              <DialogTitle>Creating proof</DialogTitle>
-              <DialogDescription>Generating zero-knowledge proof…</DialogDescription>
+              <DialogTitle>Building your proof</DialogTitle>
+              <DialogDescription>
+                Each predicate the verifier asked for is proven on your device. First time takes
+                ~20–30s on Midnight; subsequent presentations are instant.
+              </DialogDescription>
             </DialogHeader>
-            <div className="flex flex-col items-center gap-3 py-6">
-              <span className="w-14 h-14 rounded-full bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/20 flex items-center justify-center">
-                <Spinner className="w-6 h-6" />
-              </span>
+            <div className="py-4 max-h-[60vh] overflow-y-auto">
+              <ProvingSteps progress={attestProgress} sending={state === 'sending'} />
             </div>
-          </>
-        ) : state === 'sending' ? (
-          <>
-            <DialogHeader>
-              <DialogTitle>Sending proof</DialogTitle>
-              <DialogDescription>Transmitting to verifier…</DialogDescription>
-            </DialogHeader>
-            <div className="flex flex-col items-center gap-3 py-6">
-              <span className="w-14 h-14 rounded-full bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/20 flex items-center justify-center">
-                <Send className="w-6 h-6 animate-pulse" />
-              </span>
-            </div>
-          </>
-        ) : state === 'not_satisfied' ? (
-          <>
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <span className="p-1.5 rounded-full bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/20">
-                  <ShieldOff className="w-4 h-4" />
-                </span>
-                Verification failed
-              </DialogTitle>
-              <DialogDescription>{unmetAttributeMessage(unmetAttribute)}</DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button className="w-full" onClick={handleClose}>
-                Done
-              </Button>
-            </DialogFooter>
           </>
         ) : state === 'complete' ? (
           <>
@@ -173,27 +158,64 @@ function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
               </Button>
             </DialogFooter>
           </>
-        ) : state === 'error' ? (
+        ) : state === 'denied' ? (
           <>
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
-                <span className="p-1.5 rounded-full bg-red-500/10 text-red-400 ring-1 ring-red-500/20">
-                  <AlertTriangle className="w-4 h-4" />
+                <span className="p-1.5 rounded-full bg-zinc-500/15 text-zinc-400 ring-1 ring-zinc-500/20">
+                  <XCircle className="w-4 h-4" />
                 </span>
-                Something went wrong
+                Request denied
               </DialogTitle>
-              {error && <DialogDescription>{error}</DialogDescription>}
+              <DialogDescription>
+                Nothing was sent to the verifier. They&apos;ll see a denial — no claim values or
+                credentials crossed your device.
+              </DialogDescription>
             </DialogHeader>
-            <DialogFooter className="gap-2 sm:gap-2">
-              <Button variant="outline" className="flex-1" onClick={handleClose}>
+            <DialogFooter>
+              <Button className="w-full" onClick={handleClose}>
                 Close
-              </Button>
-              <Button className="flex-1" onClick={startPresentation}>
-                <RefreshCw className="w-4 h-4 mr-2" />
-                Retry
               </Button>
             </DialogFooter>
           </>
+        ) : state === 'error' ? (
+          (() => {
+            const friendly = formatPresentationError(error ?? new Error('Unknown error'))
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2">
+                    <span className="p-1.5 rounded-full bg-red-500/10 text-red-400 ring-1 ring-red-500/20">
+                      <AlertTriangle className="w-4 h-4" />
+                    </span>
+                    {friendly.title}
+                  </DialogTitle>
+                  <DialogDescription>{friendly.body}</DialogDescription>
+                </DialogHeader>
+                {friendly.hint && (
+                  <p className="text-xs text-amber-200/90 leading-relaxed -mt-2">{friendly.hint}</p>
+                )}
+                <div className="py-2 max-h-[40vh] overflow-y-auto">
+                  <ProvingSteps progress={attestProgress} errored errorMessage={friendly.body} />
+                </div>
+                <details className="text-[11px] text-muted-foreground/70 -mt-1">
+                  <summary className="cursor-pointer select-none">Technical details</summary>
+                  <p className="mt-1 font-mono break-words leading-snug">{friendly.raw}</p>
+                </details>
+                <DialogFooter className="gap-2 sm:gap-2">
+                  <Button variant="outline" className="flex-1" onClick={handleClose}>
+                    Close
+                  </Button>
+                  {friendly.retryable && (
+                    <Button className="flex-1" onClick={startPresentation}>
+                      <RefreshCw className="w-4 h-4 mr-2" />
+                      Try again
+                    </Button>
+                  )}
+                </DialogFooter>
+              </>
+            )
+          })()
         ) : null}
       </DialogContent>
     </Dialog>

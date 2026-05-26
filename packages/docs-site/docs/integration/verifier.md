@@ -1,8 +1,6 @@
-<!-- AUTO-GENERATED — do not edit. Source: docs/integration/verifier.md -->
-
 # Verifier integration
 
-You receive a token from a holder and need to confirm it. Two flows: direct verification (you already hold the token) and presentation (you show a QR and the holder pushes a token to you).
+You receive an SD-JWT VC presentation from a holder and need to confirm it. Two flows: direct verification (you already hold the presentation string) and presentation (you show a QR and the holder pushes one to you).
 
 If you don't need a custom UI, the [OwlID Verifier](/apps#owlid-verifier--for-relying-parties) is a hosted browser scanner that does this end-to-end — useful for kiosks, door checks, and one-off verifications.
 
@@ -20,18 +18,19 @@ const verifier = new OwlVerifier({ apiKey: process.env.OWLID_API_KEY! })
 
 API keys go server-side — never bundle them into a browser build. Use a publishable key (`owlid_pk_…`) if you need to verify from the browser; secret keys (`owlid_sk_…`) stay on the server.
 
-## Flow A — direct token verification
+## Flow A — direct presentation verification
 
 ```ts
-const result = await verifier.verify(token, challenge)
+const challenge = await verifier.mintChallenge()
+const result = await verifier.verify(presentation, challenge.challenge)
 
 if (result.valid) {
   console.log(result.subjects)
-  // { firstName: "Jan", isOver18: true }
+  // { given_name: "Jan", age_over_18: true }
 }
 ```
 
-`challenge` must match the random string the holder bound into the token. Either mint a server-managed single-use challenge with `verifier.mintChallenge()` or pass your own cryptographically random string.
+`challenge` must match the random nonce the holder bound into the KB-JWT. Either mint a server-managed single-use challenge with `verifier.mintChallenge()` or pass your own cryptographically random string.
 
 ```mermaid
 sequenceDiagram
@@ -43,28 +42,34 @@ sequenceDiagram
     V->>Owl: mintChallenge()
     Owl-->>V: { challenge, expiresIn }
     V->>H: present challenge (HTTP / QR / push)
-    H->>H: build Token locally
-    H-->>V: Token (OID1:…)
-    V->>Owl: verify(token, challenge)
+    H->>H: build SD-JWT VC presentation (KB-JWT bound to challenge)
+    H-->>V: presentation
+    V->>Owl: verify(presentation, challenge)
     Owl-->>V: { valid, subjects }
 ```
 
 ## Flow B — QR presentation session (one call)
 
-For the common case, use `requestPresentation` — the helper opens a session, renders the QR via your callback, manages the WebSocket, awaits the holder's response, runs verification, and returns the result.
+Use `requestPredicates` — declarative, typed, autocomplete-friendly. Helper opens a session, renders the QR via your callback, manages the WebSocket, awaits the holder's response, runs verification, and returns the result.
 
 ```ts
-const result = await verifier.requestPresentation({
+import { OwlVerifier, Predicates } from '@owlid/sdk'
+
+const result = await verifier.requestPredicates({
   verifierName: 'Acme Bar',
-  predicates: [{ id: 'isOver18', label: 'Over 18' }],
+  predicates: [Predicates.ageOver(18), Predicates.residencyIn(['NL', 'BE', 'DE'])],
   onQr: (qrPayload) => showQr(qrPayload),
   timeoutMs: 60_000,
 })
 
 if (result.valid) {
-  console.log(result.subjects)
+  console.log(result.perCredential.cred0?.subjects)
 }
 ```
+
+`requestPredicates` returns a `VerifyDcqlResponse` — `valid`, plus a `perCredential` map keyed by the DCQL `credentials[].id` with each entry's `subjects` and `error`.
+
+If you need the raw DCQL (external wallets via `request_uri`, custom `credential_sets`), use `verifier.buildDcqlRequest(predicates)` to compile the predicates, then hand the result to `requestPresentation`.
 
 If you need to manage the WebSocket yourself (e.g. server-side flow, custom retry logic), drop down to `openPresentation()` + raw WS:
 
@@ -88,13 +93,36 @@ sequenceDiagram
     and
         H->>Owl: WS holder
     end
-    V->>H: presentation_request<br/>(disclose, predicates, challenge)
-    H-->>V: presentation_response { token }
-    V->>Owl: verify(token, session.nonce)
+    V->>H: presentation_request<br/>(claims, challenge)
+    H-->>V: presentation_response { presentation }
+    V->>Owl: verify(presentation, session.nonce)
     Owl-->>V: { valid, subjects }
 ```
 
 The platform consumes `nonce` atomically when you call `verify()` — replays fail.
+
+## Flow C — OpenID4VP `direct_post`
+
+Plain HTTPS verifier-side: holders push the presentation via OpenID4VP `direct_post`:
+
+```
+POST /openid4vp/response
+Content-Type: application/x-www-form-urlencoded
+
+vp_token=<sd-jwt-vc presentation>&state=<verifier-managed state>
+```
+
+The verification service decodes, runs the full verify path (issuer trust, key binding, audience, nonce, status list, on-chain revocation), and returns `{ valid, subjects }` keyed off `state` on the next session poll.
+
+## Status list (revocation)
+
+The issuer publishes an IETF Token Status List at `/status/<id>`. The verification service:
+
+1. Checks the local revocation cache (SSE-mirrored from the Midnight `revocation_registry`).
+2. Cross-checks the credential's `status.uri` + `statusIdx` against the live signed `statuslist+jwt`.
+3. Confirms the on-chain `is_credential_revoked` projection.
+
+All three must agree.
 
 ## Live revocation feed
 
@@ -113,35 +141,68 @@ In Node, use `verifier.revocationFeedUrl()` with your own WebSocket client (`nod
 
 ## Trusted issuers
 
-OwlID's hosted platform manages the trusted issuer registry for you — issuer keys are anchored on-chain via the Midnight `IssuerRegistry` contract and your verification calls automatically consult it. List the issuers visible to your account:
+OwlID anchors issuer keys on-chain via the Midnight `issuer_registry` Compact contract; the verification service mirrors that state and resolves `did:web` issuer identifiers against it. Your verification calls automatically consult both. List the issuers visible to your account:
 
 ```ts
 const issuers = await verifier.listIssuers()
 // [{ publicKey, name, description, isActive }]
 ```
 
-## Serving Groth16 proving keys to wallets
+## Predicates
 
-The verification service exposes the Groth16 proving keys at:
-
-```
-GET /zk-keys                      → ["age_range", "kyc_status", "nationality"]
-GET /zk-keys/<circuit>.pk.bin     → key bytes (ark-serialize compressed)
-                                    Cache-Control: public, immutable
-```
-
-Wallet builds that ship as WASM (browser PWAs, embedded webviews) don't bundle the proving keys — they fetch them from this endpoint on first proof and cache them in IndexedDB. The keys are public cryptographic material; integrity (HTTPS + immutable cache) is what matters, not secrecy.
-
-The endpoints are unauthenticated and CORS-enabled for the same origin set as `/verify`. No configuration needed — turning on the verification service exposes them automatically.
-
-If you self-host the proving keys elsewhere (CDN, app's own origin, IPFS), wallets can be told via:
+A predicate (`age over 18`, `residency in {NL, BE, DE}`, `verification level >= substantial`, `unique person per campaign`, …) is a fact the holder proves without revealing the underlying attribute. The holder's wallet generates a zero-knowledge proof on-device and Midnight records an attestation; your verify call confirms that attestation. You do nothing extra — list the predicates you want and `requestPredicates` enforces them. There are no proving keys to download verifier-side.
 
 ```ts
-import { configureProvingKeys } from '@owlid/sdk/native'
-configureProvingKeys({ baseUrl: 'https://my-cdn.example.com/zk' })
+import { Predicates } from '@owlid/sdk'
+
+const result = await verifier.requestPredicates({
+  verifierName: 'Acme Bar',
+  predicates: [
+    Predicates.ageOver(21),
+    Predicates.residencyIn(['NL', 'BE', 'DE']),
+    Predicates.kycLevel('substantial'),
+  ],
+  onQr,
+})
 ```
 
-See [Holder integration → Proving keys](/integration/holder#proving-keys-wasm-only) for the full wallet-side story.
+Full factory:
+
+| Factory                                               | What it proves                                                                                                            |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `Predicates.ageOver(threshold)`                       | Holder's age ≥ `threshold` years. Actual age never disclosed.                                                             |
+| `Predicates.ageRange(min, max)`                       | `min ≤ holder_age ≤ max`.                                                                                                 |
+| `Predicates.kycLevel('basic'\|'substantial'\|'high')` | eIDAS-style identity verification tier the issuer attested.                                                               |
+| `Predicates.residencyIn(['NL', …])`                   | Holder's residence country is in the set you supplied. Set is private to (verifier, holder), only a hash lands on chain.  |
+| `Predicates.nationalityIn(['NL', …])`                 | Same for nationality.                                                                                                     |
+| `Predicates.emailVerified()`                          | Holder's email was provider-verified at issuance.                                                                         |
+| `Predicates.uniquePerson({ epoch, appId })`           | Sybil-resistant per-campaign nullifier; same human → same nullifier per `(epoch, appId)`, unlinkable across other scopes. |
+
+`residencyIn` / `nationalityIn` are per-verifier salted: two verifiers asking for the same allowed-set produce distinct on-chain attestation keys, so a third party watching the chain can't link credentials across verifiers based on which policy they satisfied.
+
+You can also discover the predicates the platform can prove at runtime and render your proof selector / consent UI from the list rather than hard-coding:
+
+```ts
+const predicates = await verifier.listPredicates()
+// [{ id, attribute, label, op, value }]
+```
+
+### Verifier dashboards — recompute the on-chain key
+
+If you build a dashboard that counts attestations under your own policy without round-tripping the verification-service:
+
+```ts
+const key = await verifier.attestationKeyFor(
+  credentialId, // 32-byte hex from the SD-JWT VC
+  Predicates.residencyIn(['NL', 'BE', 'DE']),
+)
+// '06d8de25a0...' — the attestation set membership key
+
+const setHash = await verifier.computeAllowedSetHash(['NL', 'BE', 'DE'])
+// '8f12...' — the off-chain commitment your policy maps to
+```
+
+Both helpers automatically fold your `verifier.verifierId()` into per-verifier salts.
 
 ## Reference
 
