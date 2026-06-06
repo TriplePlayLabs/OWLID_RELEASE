@@ -6,9 +6,9 @@
 //! any standard verifier can check status without OwlID infra.
 use crate::error::ProofSystemError;
 use base64::prelude::*;
-use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
+use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use owl_crypto::{KeyPair, PublicKey, Signature, SignatureAlgorithm};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 
 const TYP: &str = "statuslist+jwt";
@@ -21,7 +21,9 @@ fn b64(d: &[u8]) -> String {
     BASE64_URL_SAFE_NO_PAD.encode(d)
 }
 fn unb64(s: &str) -> Result<Vec<u8>, ProofSystemError> {
-    BASE64_URL_SAFE_NO_PAD.decode(s).map_err(|e| err(format!("base64url: {e}")))
+    BASE64_URL_SAFE_NO_PAD
+        .decode(s)
+        .map_err(|e| err(format!("base64url: {e}")))
 }
 
 /// A 1-bit-per-entry status list. `bit = 1` ⇒ the credential at that index is
@@ -173,8 +175,7 @@ mod tests {
     fn wrong_issuer_rejected() {
         let issuer = KeyPair::generate();
         let attacker = KeyPair::generate();
-        let jwt =
-            issue_status_list_jwt(&StatusList::new(64), &issuer, "u", 1, None).unwrap();
+        let jwt = issue_status_list_jwt(&StatusList::new(64), &issuer, "u", 1, None).unwrap();
         assert!(verify_status_list_jwt(&jwt, &attacker.public_key()).is_err());
     }
 
@@ -182,10 +183,13 @@ mod tests {
     fn tamper_rejected() {
         let issuer = KeyPair::generate();
         let mut jwt =
-            issue_status_list_jwt(&StatusList::from_revoked(&[1]), &issuer, "u", 1, None)
-                .unwrap();
-        jwt.pop();
-        jwt.push(if jwt.ends_with('A') { 'B' } else { 'A' });
+            issue_status_list_jwt(&StatusList::from_revoked(&[1]), &issuer, "u", 1, None).unwrap();
+        // Flip the last char to a guaranteed-different one. Basing the
+        // replacement on the *removed* char (not the new tail) ensures the
+        // tamper is always a real change — otherwise a JWT whose last two
+        // chars happened to line up could be "tampered" back to itself.
+        let last = jwt.pop().unwrap();
+        jwt.push(if last == 'A' { 'B' } else { 'A' });
         assert!(verify_status_list_jwt(&jwt, &issuer.public_key()).is_err());
     }
 
@@ -259,10 +263,8 @@ mod tests {
         let parts: Vec<&str> = jwt.split('.').collect();
         assert_eq!(parts.len(), 3);
         use base64::prelude::*;
-        let payload: serde_json::Value = serde_json::from_slice(
-            &BASE64_URL_SAFE_NO_PAD.decode(parts[1]).unwrap(),
-        )
-        .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&BASE64_URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
         assert_eq!(payload["iat"], 1_700_000_000);
         assert_eq!(payload["exp"], 1_800_000_000);
     }

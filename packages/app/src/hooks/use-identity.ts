@@ -8,7 +8,7 @@ const PASSKEY_KEY = ['identity', 'passkey'] as const
 /**
  * Bootstrap-state hook for the holder app. Reads:
  *   - username       — wallet display label
- *   - passkey        — WebAuthn credentialId (the unlock gate)
+ *   - passkey        — local WebAuthn credentialId hint for the unlock gate
  *   - has-credential — at least one wallet credential present
  *
  * Always refetches on mount + window focus so the cache can't lie after
@@ -45,9 +45,9 @@ export function useIdentity() {
 
   return {
     username: usernameQuery.data ?? '',
-    /** WebAuthn passkey credentialId — required by `authenticate()` calls. */
+    /** Local WebAuthn credentialId hint. Null lets the browser show the passkey picker. */
     credentialId: passkey.data?.credentialId ?? null,
-    isRegistered: !!usernameQuery.data,
+    isRegistered: !!passkey.data,
     isIdentityCreated: !!hasCredential.data,
     isBootstrapping: usernameQuery.isPending || hasCredential.isPending || passkey.isPending,
 

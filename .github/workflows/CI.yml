@@ -1,10 +1,7 @@
 name: CI
 
 env:
-  DEBUG: napi:*
-  APP_NAME: owl-id
-  MACOSX_DEPLOYMENT_TARGET: '10.13'
-  CARGO_INCREMENTAL: '1'
+  CARGO_TERM_COLOR: always
 
 on:
   push:
@@ -74,6 +71,13 @@ jobs:
   test-rust:
     name: Test Rust
     runs-on: ubuntu-latest
+    # The Midnight-heavy crates (proof-system, issuer/verification-service)
+    # link very large test binaries; debug info made the linker OOM
+    # (SIGBUS) on the runner. Drop debug info + incremental for the test
+    # build to keep the link step within the runner's memory.
+    env:
+      CARGO_INCREMENTAL: '0'
+      RUSTFLAGS: '-C debuginfo=0'
     steps:
       - uses: actions/checkout@v5
 
@@ -95,305 +99,8 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-  build-sdk:
-    name: Build SDK - ${{ matrix.settings.target }}
-    needs: [lint]
-    strategy:
-      fail-fast: false
-      matrix:
-        settings:
-          - host: macos-latest
-            target: x86_64-apple-darwin
-            build: bun run --filter @owlid/native-sdk build --target x86_64-apple-darwin
-          - host: windows-latest
-            target: x86_64-pc-windows-msvc
-            build: bun run --filter @owlid/native-sdk build --target x86_64-pc-windows-msvc
-          - host: windows-latest
-            target: i686-pc-windows-msvc
-            build: bun run --filter @owlid/native-sdk build --target i686-pc-windows-msvc
-          - host: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            build: bun run --filter @owlid/native-sdk build --target x86_64-unknown-linux-gnu --use-napi-cross
-          - host: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            build: bun run --filter @owlid/native-sdk build --target x86_64-unknown-linux-musl -x
-          - host: macos-latest
-            target: aarch64-apple-darwin
-            build: bun run --filter @owlid/native-sdk build --target aarch64-apple-darwin
-          - host: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            build: bun run --filter @owlid/native-sdk build --target aarch64-unknown-linux-gnu --use-napi-cross
-          - host: ubuntu-latest
-            target: armv7-unknown-linux-gnueabihf
-            build: bun run --filter @owlid/native-sdk build --target armv7-unknown-linux-gnueabihf --use-napi-cross
-          - host: ubuntu-latest
-            target: aarch64-linux-android
-            build: bun run --filter @owlid/native-sdk build --target aarch64-linux-android
-          - host: ubuntu-latest
-            target: armv7-linux-androideabi
-            build: bun run --filter @owlid/native-sdk build --target armv7-linux-androideabi
-          - host: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            build: bun run --filter @owlid/native-sdk build --target aarch64-unknown-linux-musl -x
-          - host: windows-latest
-            target: aarch64-pc-windows-msvc
-            build: bun run --filter @owlid/native-sdk build --target aarch64-pc-windows-msvc
-          - host: ubuntu-latest
-            target: wasm32-wasip1-threads
-            setup: |
-              wget https://github.com/aspect-build/aspect-cli/releases/download/5.13.1/wasi-sdk-25.0-x86_64-linux.tar.gz || \
-              wget https://github.com/aspect-build/aspect-cli/releases/download/5.13.0/wasi-sdk-25.0-x86_64-linux.tar.gz || \
-              wget https://github.com/aspect-build/aspect-cli/releases/download/5.12.2/wasi-sdk-25.0-x86_64-linux.tar.gz || \
-              wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-27/wasi-sdk-27.0-x86_64-linux.tar.gz
-              tar -xvf wasi-sdk-*.tar.gz
-            build: |
-              export WASI_SDK_PATH="$(pwd)/$(ls -d wasi-sdk-*-x86_64-linux 2>/dev/null | head -1)"
-              export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$WASI_SDK_PATH/share/wasi-sysroot"
-              bun run --filter @owlid/native-sdk build --target wasm32-wasip1-threads
-    runs-on: ${{ matrix.settings.host }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.settings.target }}
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            ~/.napi-rs
-            .cargo-cache
-            target/
-          key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
-
-      - uses: mlugg/setup-zig@v2
-        if: ${{ contains(matrix.settings.target, 'musl') }}
-        with:
-          version: 0.14.1
-
-      - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@v2
-        if: ${{ contains(matrix.settings.target, 'musl') }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          tool: cargo-zigbuild
-
-      - name: Setup toolchain
-        run: ${{ matrix.settings.setup }}
-        if: ${{ matrix.settings.setup }}
-        shell: bash
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Build
-        run: ${{ matrix.settings.build }}
-        shell: bash
-        working-directory: packages/native-sdk
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v5
-        with:
-          name: bindings-${{ matrix.settings.target }}
-          path: |
-            packages/native-sdk/${{ env.APP_NAME }}.*.node
-            packages/native-sdk/${{ env.APP_NAME }}.*.wasm
-          if-no-files-found: error
-
-  build-freebsd:
-    name: Build FreeBSD
-    needs: [lint]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Build
-        id: build
-        uses: cross-platform-actions/action@v0.30.0
-        env:
-          DEBUG: napi:*
-          RUSTUP_IO_THREADS: 1
-        with:
-          operating_system: freebsd
-          version: '14.3'
-          memory: 8G
-          cpu_count: 3
-          environment_variables: DEBUG RUSTUP_IO_THREADS
-          shell: bash
-          run: |
-            sudo pkg install -y -f curl node libnghttp2 npm cmake
-            sudo npm install -g yarn --ignore-scripts
-            curl https://sh.rustup.rs -sSf --output rustup.sh
-            sh rustup.sh -y --profile minimal --default-toolchain stable
-            source "$HOME/.cargo/env"
-            echo "~~~~ rustc --version ~~~~"
-            rustc --version
-            echo "~~~~ node -v ~~~~"
-            node -v
-            pwd
-            ls -lah
-            cd packages/native-sdk
-            yarn install
-            yarn build
-            rm -rf node_modules
-            rm -rf target
-            rm -rf .yarn/cache
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v5
-        with:
-          name: bindings-freebsd
-          path: packages/native-sdk/${{ env.APP_NAME }}.*.node
-          if-no-files-found: error
-
-  test-sdk-macos-windows:
-    name: Test SDK on ${{ matrix.settings.target }} - node@${{ matrix.node }}
-    needs: [build-sdk]
-    strategy:
-      fail-fast: false
-      matrix:
-        settings:
-          - host: windows-latest
-            target: x86_64-pc-windows-msvc
-            architecture: x64
-          - host: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            architecture: arm64
-          - host: macos-latest
-            target: aarch64-apple-darwin
-            architecture: arm64
-          - host: macos-latest
-            target: x86_64-apple-darwin
-            architecture: x64
-        node:
-          - '20'
-          - '22'
-    runs-on: ${{ matrix.settings.host }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node }}
-          architecture: ${{ matrix.settings.architecture }}
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v6
-        with:
-          name: bindings-${{ matrix.settings.target }}
-          path: packages/native-sdk
-
-      - name: List packages
-        run: ls -R packages/native-sdk
-        shell: bash
-
-      - name: Test bindings
-        run: bun run --filter @owlid/native-sdk test
-
-  test-sdk-linux:
-    name: Test SDK ${{ matrix.target }} - node@${{ matrix.node }}
-    needs: [build-sdk]
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-gnu
-          - aarch64-unknown-linux-musl
-          - armv7-unknown-linux-gnueabihf
-        node:
-          - '20'
-          - '22'
-    runs-on: ${{ contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node }}
-
-      - name: Output docker params
-        id: docker
-        run: |
-          node -e "
-            if ('${{ matrix.target }}'.startsWith('aarch64')) {
-              console.log('PLATFORM=linux/arm64')
-            } else if ('${{ matrix.target }}'.startsWith('armv7')) {
-              console.log('PLATFORM=linux/arm/v7')
-            } else {
-              console.log('PLATFORM=linux/amd64')
-            }
-          " >> $GITHUB_OUTPUT
-          node -e "
-            if ('${{ matrix.target }}'.endsWith('-musl')) {
-              console.log('IMAGE=node:${{ matrix.node }}-alpine')
-            } else {
-              console.log('IMAGE=node:${{ matrix.node }}-slim')
-            }
-          " >> $GITHUB_OUTPUT
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v6
-        with:
-          name: bindings-${{ matrix.target }}
-          path: packages/native-sdk
-
-      - name: List packages
-        run: ls -R packages/native-sdk
-        shell: bash
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        if: ${{ contains(matrix.target, 'armv7') }}
-        with:
-          platforms: all
-
-      - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-        if: ${{ contains(matrix.target, 'armv7') }}
-
-      - name: Test bindings
-        uses: addnab/docker-run-action@v3
-        with:
-          image: ${{ steps.docker.outputs.IMAGE }}
-          options: '-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/packages/native-sdk --platform ${{ steps.docker.outputs.PLATFORM }}'
-          run: |
-            npm install -g bun
-            bun test
-
-  test-sdk-wasi:
-    name: Test SDK WASI
-    needs: [build-sdk]
+  typecheck:
+    name: Typecheck (tsc)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -403,42 +110,21 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
       - name: Install dependencies
         run: bun install
 
-      - name: Download artifacts
-        uses: actions/download-artifact@v6
-        with:
-          name: bindings-wasm32-wasip1-threads
-          path: packages/native-sdk
+      - name: Build workspace libraries
+        run: bun run ci:build-libs
 
-      - name: List packages
-        run: ls -R packages/native-sdk
-        shell: bash
+      # midnight-sidecar is excluded: it imports compactc-generated contract
+      # artifacts (packages/midnight-sidecar/managed/, built by `just compact`)
+      # that aren't checked in and need the Compact toolchain to produce.
+      - name: Typecheck packages
+        run: bun run ci:typecheck
 
-      - name: Test bindings
-        run: bun run --filter @owlid/native-sdk test
-        env:
-          NAPI_RS_FORCE_WASI: 1
-
-  publish:
-    name: Publish
+  test-js:
+    name: Test JS
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
-    needs:
-      - lint
-      - test-rust
-      - build-freebsd
-      - test-sdk-macos-windows
-      - test-sdk-linux
-      - test-sdk-wasi
     steps:
       - uses: actions/checkout@v5
 
@@ -447,71 +133,44 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build workspace libraries
+        run: bun run ci:build-libs
+
+      - name: Unit tests (sdk, app, verifier-app, sidecar)
+        run: |
+          bun run --filter @owlid/sdk test
+          bun run --filter @owlid/app test
+          bun run --filter @owlid/verifier-app test
+          bun run --filter @owlid/midnight-sidecar test
+
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: 24
+          bun-version: latest
 
       - name: Install dependencies
         run: bun install
 
-      - name: Create npm dirs
-        run: bun run --filter @owlid/native-sdk napi create-npm-dirs
+      - name: Build workspace libraries
+        run: bun run ci:build-libs
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v6
-        with:
-          path: artifacts
+      - name: Install ffmpeg (verifier fake-camera QR video)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      - name: Move artifacts
-        run: |
-          cd packages/native-sdk
-          npx napi artifacts -d ../../artifacts
-        shell: bash
+      - name: Install Playwright browser
+        run: bunx playwright install --with-deps chromium
 
-      - name: List packages
-        run: ls -R packages/native-sdk/npm
-        shell: bash
+      - name: Verifier-app e2e
+        run: bun run --filter @owlid/verifier-app test:e2e
 
-      - name: Prepublish (generate platform packages)
-        run: |
-          cd packages/native-sdk
-          npx napi prepublish -t npm
-
-      - name: Publish
-        run: |
-          cd packages/native-sdk
-          npm config set provenance true
-          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
-          if git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+$";
-          then
-            echo "Publishing release version..."
-            npm publish --access public
-            # Publish platform-specific packages
-            for dir in npm/*/; do
-              if [ -d "$dir" ]; then
-                echo "Publishing $dir..."
-                cd "$dir"
-                npm publish --access public || true
-                cd ../..
-              fi
-            done
-          elif git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+";
-          then
-            echo "Publishing next tag..."
-            npm publish --tag next --access public
-            # Publish platform-specific packages with next tag
-            for dir in npm/*/; do
-              if [ -d "$dir" ]; then
-                echo "Publishing $dir..."
-                cd "$dir"
-                npm publish --tag next --access public || true
-                cd ../..
-              fi
-            done
-          else
-            echo "Not a release, skipping publish"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Holder-app e2e
+        run: bun run --filter @owlid/app test:e2e

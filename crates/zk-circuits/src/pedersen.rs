@@ -74,10 +74,10 @@ pub fn build_merkle_tree(leaves: &[Fr], depth: usize) -> (Fr, Vec<Vec<(Fr, bool)
     for leaf_idx in 0..leaves.len() {
         let mut path = Vec::new();
         let mut idx = leaf_idx;
-        for d in 0..depth {
+        for level in levels.iter().take(depth) {
             let sibling_idx = idx ^ 1;
             let is_right = (idx & 1) == 1;
-            path.push((levels[d][sibling_idx], is_right));
+            path.push((level[sibling_idx], is_right));
             idx >>= 1;
         }
         all_paths.push(path);

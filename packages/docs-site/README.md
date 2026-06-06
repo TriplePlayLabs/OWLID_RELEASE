@@ -1,6 +1,6 @@
 # @owlid/docs-site
 
-Marketing site and customer-facing documentation for OwlID. Built with [rspress](https://rspress.rs).
+Marketing site and customer-facing documentation for Owl ID. Built with [rspress](https://rspress.rs).
 
 ```bash
 bun run dev        # → http://localhost:4001
@@ -27,11 +27,11 @@ packages/docs-site/
 ├── tsconfig.json
 └── docs/
     ├── index.md             # marketing landing (rspress home page)
-    ├── overview.md          # what is OwlID
+    ├── overview.md          # what is Owl ID
     ├── quickstart.md        # developer getting started
     ├── _meta.json           # top-level sidebar order
     ├── apps.md
-    ├── architecture/        # how OwlID works (concept tour)
+    ├── architecture/        # how Owl ID works (concept tour)
     ├── integration/         # verifier / issuer / holder / bundler guides
     ├── sdk/                 # OwlVerifier / OwlIssuer / SD-JWT VC primitives
     └── examples/            # real-world scenarios

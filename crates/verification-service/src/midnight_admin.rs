@@ -75,6 +75,7 @@ pub async fn get_midnight_status(
 
 #[derive(Debug)]
 pub enum MidnightAdminError {
+    #[allow(dead_code)] // reserved error path; constructed once admin ops land
     Internal(String),
 }
 

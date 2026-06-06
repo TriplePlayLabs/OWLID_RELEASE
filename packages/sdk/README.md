@@ -107,8 +107,8 @@ import {
   registerCredential,
   authenticate,
   isWebAuthnSupported,
-  wrapHolderKey,
-  unwrapHolderKey,
+  sealHolderKey,
+  openHolderKey,
 } from '@owlid/sdk'
 
 if (!isWebAuthnSupported()) throw new Error('WebAuthn not available')
@@ -118,14 +118,53 @@ const cred = await registerCredential({
   rpId: 'wallet.example.com',
   userName: user.email,
   userVerification: 'required',
+  residentKey: 'required', // discoverable passkey → cross-device unlock
 })
 
-// Wrap the holder's signing key with PRF output from the passkey.
-const wrapped = await wrapHolderKey({ holderKey, credentialId: cred.credentialId })
+// Encrypt the holder seed with PRF output from the passkey. Pass the known
+// credentialId, or `null` to let the browser show the discoverable-passkey
+// picker. The call reports which passkey actually supplied the PRF output so
+// you can persist it as the selected credential.
+const { blob, credentialId } = await sealHolderKey(cred.credentialId, holderSeedHex)
 
-// On unlock:
-await authenticate({ credentialId: cred.credentialId, userVerification: 'required' })
-const holderKey = await unwrapHolderKey({ wrapped, credentialId: cred.credentialId })
+// On unlock — `openHolderKey` triggers the UV prompt and returns the seed.
+// A stale/null credentialId falls back once to the picker, so a synced passkey
+// (iCloud Keychain / 1Password) can repair local metadata on a new device.
+const { seedHex } = await openHolderKey(credentialId, blob)
+```
+
+`seal`/`open` derive an AES-GCM key from the passkey PRF extension, so the seed
+is never stored or transmitted in plaintext and every use is gated by user
+verification.
+
+### Batched unlock (multi-credential)
+
+To restore or wrap several seeds without one biometric prompt per item, use the
+batch variants — a single PRF assertion covers the whole set:
+
+```ts
+import { sealHolderKeys, openRecoveryBundles } from '@owlid/sdk'
+
+// One prompt seals every seed (returned blobs match input order):
+const { blobs } = await sealHolderKeys(credentialId, [seedA, seedB, seedC])
+
+// One prompt decrypts every recovery blob; blobs sealed by a different passkey
+// are silently dropped, so the result holds only what this passkey can open:
+const { payloads } = await openRecoveryBundles(credentialId, ciphertexts)
+```
+
+### Encrypted recovery bundles
+
+`sealRecoveryBundle` / `openRecoveryBundle` mirror the holder-key pair but use a
+**separate PRF salt**, so recovery backups are domain-separated from local
+holder-key blobs. Use them to encrypt an opaque recovery payload that a backend
+can store as ciphertext (it learns nothing beyond "a backup exists"):
+
+```ts
+import { sealRecoveryBundle, openRecoveryBundle } from '@owlid/sdk'
+
+const { blob } = await sealRecoveryBundle(credentialId, JSON.stringify(bundle))
+const { payload } = await openRecoveryBundle(credentialId, blob)
 ```
 
 ## Credential storage

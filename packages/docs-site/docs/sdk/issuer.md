@@ -1,6 +1,6 @@
 # OwlIssuer
 
-Server-side client for issuing OwlID SD-JWT VC credentials. Imported from `@owlid/sdk`.
+Server-side client for issuing Owl ID SD-JWT VC credentials. Imported from `@owlid/sdk`.
 
 ```ts
 import { OwlIssuer } from '@owlid/sdk'

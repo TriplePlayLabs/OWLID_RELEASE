@@ -17,7 +17,7 @@ export function VerifierHeader({ serviceOnline }: VerifierHeaderProps) {
             <Owl size={28} />
           </div>
           <div className="flex flex-col leading-none">
-            <span className="font-semibold tracking-tight text-sm uppercase">OwlID</span>
+            <span className="font-semibold tracking-tight text-sm uppercase">Owl ID</span>
             <span className="text-[10px] tracking-wider text-muted-foreground uppercase">
               Verifier
             </span>

@@ -8,6 +8,7 @@ import { storage } from '@owlid/sdk'
 //   no passkey                 → /register
 //   passkey, no credentials    → /add-provider
 //   passkey, ≥1 credential     → /wallet
+//   credentials, no passkey    → /login (discoverable passkey can repair metadata)
 //
 // `unknown` is the SSR sentinel: this app uses @tanstack/react-start,
 // whose `beforeLoad` runs on the server *and* the client. The server
@@ -20,6 +21,7 @@ import { storage } from '@owlid/sdk'
 export type AuthState =
   | { kind: 'unknown' }
   | { kind: 'unregistered' }
+  | { kind: 'needs-passkey-repair' }
   | { kind: 'registered-no-card' }
   | { kind: 'has-wallet' }
 
@@ -31,7 +33,9 @@ export async function readAuthState(): Promise<AuthState> {
   if (!isClient()) return { kind: 'unknown' }
 
   const hasPasskey = await storage.hasWebAuthnCredential()
+  const hasAnyCard = await storage.hasAnyCredential()
   if (!hasPasskey) {
+    if (hasAnyCard) return { kind: 'needs-passkey-repair' }
     // Heal an orphan username: if we have a username string but no
     // passkey, the user is effectively unregistered. Leaving the
     // username around makes the register form look already-completed
@@ -41,15 +45,15 @@ export async function readAuthState(): Promise<AuthState> {
     }
     return { kind: 'unregistered' }
   }
-  const hasAnyCard = await storage.hasAnyCredential()
   return hasAnyCard ? { kind: 'has-wallet' } : { kind: 'registered-no-card' }
 }
 
 export const ROUTE_FOR_STATE: Record<
   Exclude<AuthState['kind'], 'unknown'>,
-  '/register' | '/add-provider' | '/wallet'
+  '/register' | '/login' | '/add-provider' | '/wallet'
 > = {
   unregistered: '/register',
+  'needs-passkey-repair': '/login',
   'registered-no-card': '/add-provider',
   'has-wallet': '/wallet',
 }

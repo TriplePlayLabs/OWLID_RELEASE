@@ -46,4 +46,4 @@ configure({
 })
 ```
 
-Resolution order: explicit override → `configure()` call → `window.__OWLID_CONFIG__` → `import.meta.env.VITE_*` → `process.env.OWLID_*` / `VITE_*` → the hosted OwlID platform.
+Resolution order: explicit override → `configure()` call → `window.__OWLID_CONFIG__` → `import.meta.env.VITE_*` → `process.env.OWLID_*` / `VITE_*` → the hosted Owl ID platform.

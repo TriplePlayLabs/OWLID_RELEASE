@@ -12,10 +12,10 @@ const FRIENDLY: Record<string, string> = {
   resident_in: 'Country of residence',
   residency_verified: 'Verified resident',
   email_verified: 'Verified email',
-  kyc___basic: 'ID verification — basic',
-  kyc___substantial: 'ID verification — substantial',
-  kyc___high: 'ID verification — high',
-  verification_level: 'Identity verification level',
+  kyc___basic: 'ID check: basic',
+  kyc___substantial: 'ID check: substantial',
+  kyc___high: 'ID check: high',
+  verification_level: 'ID verification level',
   unique_person: 'Unique person',
 }
 

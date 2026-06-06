@@ -8,6 +8,7 @@ import { useIdentity } from '~/hooks/use-identity'
 import { useWebAuthn } from '~/hooks/use-webauthn'
 import { storage } from '@owlid/sdk'
 import { readAuthState } from '~/lib/auth-gate'
+import { startWalletSession } from '~/lib/wallet-session'
 
 export const Route = createFileRoute('/_identity/login')({
   beforeLoad: async () => {
@@ -36,6 +37,7 @@ function LoginPage() {
 
       if (assertion) {
         setIsLoggedIn(true)
+        startWalletSession()
         toast.success('Login Successful', {
           description: 'Identity verified via Passkey.',
         })
@@ -67,7 +69,7 @@ function LoginPage() {
           isCompleted={true}
           icon={<Fingerprint className="w-5 h-5" />}
           title="Set up your passkey"
-          description="Set up a secure key on this device for sign in."
+          description="Use the passkey saved for this wallet."
         />
 
         {/* Step 2: Active */}
@@ -76,7 +78,7 @@ function LoginPage() {
           isCompleted={isLoggedIn}
           icon={<Key className="w-5 h-5" />}
           title="Sign in with your device"
-          description="Sign in using your face, fingerprint or device PIN."
+          description="Use your face, fingerprint, device PIN, or password manager."
         >
           {!isLoggedIn && (
             <div className="mt-4">

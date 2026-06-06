@@ -8,8 +8,8 @@
 
 use crate::error::ProofSystemError;
 use base64::prelude::*;
-use owl_crypto::{generate_salt, KeyPair, PublicKey, Signature, SignatureAlgorithm};
-use serde_json::{json, Value};
+use owl_crypto::{KeyPair, PublicKey, Signature, SignatureAlgorithm, generate_salt};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -85,8 +85,14 @@ fn jwk_to_pubkey(jwk: &Value) -> Result<PublicKey, ProofSystemError> {
             PublicKey::from_bytes(&unb64(x)?).map_err(Into::into)
         }
         (Some("EC"), Some("P-256")) => {
-            let x = jwk.get("x").and_then(Value::as_str).ok_or_else(|| err("cnf jwk missing x"))?;
-            let y = jwk.get("y").and_then(Value::as_str).ok_or_else(|| err("cnf jwk missing y"))?;
+            let x = jwk
+                .get("x")
+                .and_then(Value::as_str)
+                .ok_or_else(|| err("cnf jwk missing x"))?;
+            let y = jwk
+                .get("y")
+                .and_then(Value::as_str)
+                .ok_or_else(|| err("cnf jwk missing y"))?;
             let mut sec1 = vec![0x04u8];
             sec1.extend_from_slice(&unb64(x)?);
             sec1.extend_from_slice(&unb64(y)?);
@@ -151,7 +157,9 @@ fn make_disclosure(name: &str, value: &Value) -> String {
         Value::String(name.to_string()),
         value.clone(),
     ]);
-    b64(serde_json::to_string(&arr).expect("array serializes").as_bytes())
+    b64(serde_json::to_string(&arr)
+        .expect("array serializes")
+        .as_bytes())
 }
 
 /// `base64url(sha-256(ASCII(disclosure)))` — digest is over the encoded string.
@@ -351,7 +359,10 @@ pub fn credential_id_hex(cid: &str) -> Result<String, ProofSystemError> {
 /// must read `iss` to resolve which issuer key / trust anchor to verify with;
 /// the signature is then checked by [`verify`] using that key.
 pub fn peek_iss(sd_jwt: &str) -> Result<String, ProofSystemError> {
-    let jwt = sd_jwt.split('~').next().ok_or_else(|| err("empty SD-JWT"))?;
+    let jwt = sd_jwt
+        .split('~')
+        .next()
+        .ok_or_else(|| err("empty SD-JWT"))?;
     let parts: Vec<&str> = jwt.split('.').collect();
     if parts.len() != 3 {
         return Err(err("issuer JWT must have 3 parts"));
@@ -405,7 +416,10 @@ pub fn verify(
             .get(1)
             .and_then(Value::as_str)
             .ok_or_else(|| err("disclosure missing name"))?;
-        let value = arr.get(2).cloned().ok_or_else(|| err("disclosure missing value"))?;
+        let value = arr
+            .get(2)
+            .cloned()
+            .ok_or_else(|| err("disclosure missing value"))?;
         claims.insert(name.to_string(), value);
     }
 
@@ -561,12 +575,14 @@ mod tests {
     fn wrong_issuer_rejected() {
         let (_issuer, _h, vc) = sample();
         let attacker = KeyPair::generate();
-        assert!(verify(
-            &vc.serialize(),
-            &attacker.public_key(),
-            &VerifyParams::default()
-        )
-        .is_err());
+        assert!(
+            verify(
+                &vc.serialize(),
+                &attacker.public_key(),
+                &VerifyParams::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -623,10 +639,7 @@ mod tests {
         assert_eq!(v.cnf_jwk["kty"], json!("EC"));
         assert_eq!(v.cnf_jwk["crv"], json!("P-256"));
         // cnf jwk must round-trip back to the holder's P-256 key.
-        assert_eq!(
-            jwk_to_pubkey(&v.cnf_jwk).unwrap(),
-            holder.public_key()
-        );
+        assert_eq!(jwk_to_pubkey(&v.cnf_jwk).unwrap(), holder.public_key());
         assert_eq!(v.claims["age_over_18"], json!(true));
     }
 
@@ -720,16 +733,18 @@ mod tests {
         let issuer = KeyPair::generate();
         let holder = KeyPair::generate_with_algorithm(SignatureAlgorithm::EcdsaP256);
         let pres = p256_kb_presentation(&issuer, &holder, ALG, "n0nce", "verifier");
-        assert!(verify(
-            &pres,
-            &issuer.public_key(),
-            &VerifyParams {
-                require_kb: true,
-                aud: Some("verifier".into()),
-                nonce: Some("n0nce".into()),
-            },
-        )
-        .is_err());
+        assert!(
+            verify(
+                &pres,
+                &issuer.public_key(),
+                &VerifyParams {
+                    require_kb: true,
+                    aud: Some("verifier".into()),
+                    nonce: Some("n0nce".into()),
+                },
+            )
+            .is_err()
+        );
     }
 
     // -------- credential_id_hex --------
@@ -805,7 +820,7 @@ mod tests {
         let mut s = vc.serialize();
         // Corrupt issuer JWT by stripping its signature → 2 parts instead of 3.
         let first = s.split('~').next().unwrap().to_string();
-        let stripped = first.rsplitn(2, '.').nth(1).unwrap().to_string();
+        let stripped = first.rsplit_once('.').unwrap().0.to_string();
         s = s.replacen(&first, &stripped, 1);
         assert!(verify(&s, &issuer.public_key(), &VerifyParams::default()).is_err());
     }
@@ -875,16 +890,18 @@ mod tests {
         let si = format!("{h}.{p}");
         let sig = holder.sign(si.as_bytes());
         let bad = format!("{prefix}{si}.{}", b64(sig.bytes()));
-        assert!(verify(
-            &bad,
-            &issuer.public_key(),
-            &VerifyParams {
-                require_kb: true,
-                nonce: Some("n".into()),
-                ..Default::default()
-            }
-        )
-        .is_err());
+        assert!(
+            verify(
+                &bad,
+                &issuer.public_key(),
+                &VerifyParams {
+                    require_kb: true,
+                    nonce: Some("n".into()),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
     }
 
     // -------- payload integrity --------

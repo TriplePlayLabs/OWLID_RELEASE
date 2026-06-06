@@ -256,7 +256,6 @@ pub fn spawn_polling_task_with_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::ProviderFlowType;
 
     #[tokio::test]
     async fn test_polling_config_defaults() {

@@ -52,6 +52,7 @@ export interface WebAuthnRegistrationOptions {
   authenticatorAttachment?: AuthenticatorAttachment
   userVerification?: UserVerificationRequirement
   residentKey?: ResidentKeyRequirement
+  excludeCredentialIds?: string[]
 }
 
 /**
@@ -235,14 +236,20 @@ export async function registerCredential(
     authenticatorSelection: {
       authenticatorAttachment: options.authenticatorAttachment ?? 'platform',
       userVerification: options.userVerification ?? 'required',
-      residentKey: options.residentKey ?? 'preferred',
+      residentKey: options.residentKey ?? 'required',
+      requireResidentKey: (options.residentKey ?? 'required') === 'required',
     },
     timeout: options.timeout ?? 60000,
     attestation: options.attestation ?? 'none',
     // Enable the WebAuthn PRF extension at creation so the passkey can
     // later derive a stable per-credential secret used to encrypt the
-    // wallet-held SD-JWT VC holder key at rest. See wrapHolderKey.
+    // wallet-held SD-JWT VC holder key at rest. See sealHolderKey.
     extensions: { prf: {} } as AuthenticationExtensionsClientInputs,
+    excludeCredentials: options.excludeCredentialIds?.map((credentialId) => ({
+      id: base64urlToBuffer(credentialId),
+      type: 'public-key' as const,
+      transports: ['internal', 'hybrid'] as AuthenticatorTransport[],
+    })),
   }
 
   const credential = (await navigator.credentials.create({
@@ -399,21 +406,50 @@ export async function isPlatformAuthenticatorAvailable(): Promise<boolean> {
 // passkey (biometric/UV) — so localStorage theft alone is useless and every
 // presentation is gated by user verification.
 
-const PRF_SALT = new TextEncoder().encode('owlid:sd-jwt-vc:holder-key:v1')
+const HOLDER_KEY_PRF_SALT = new TextEncoder().encode('owlid:sd-jwt-vc:holder-key:v1')
+const RECOVERY_PRF_SALT = new TextEncoder().encode('owlid:credential-recovery:v1')
 
-async function prfSecret(credentialId: string): Promise<Uint8Array> {
+interface PrfMaterial {
+  secret: Uint8Array
+  credentialId: string
+}
+
+function normalizePrfOutput(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) return value
+  if (value instanceof ArrayBuffer) return new Uint8Array(value)
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+  }
+  if (Array.isArray(value) && value.every((n) => typeof n === 'number')) {
+    return new Uint8Array(value as number[])
+  }
+  if (
+    typeof (value as { length?: unknown }).length === 'number' &&
+    Number.isFinite((value as { length: number }).length)
+  ) {
+    return Uint8Array.from(value as ArrayLike<number>)
+  }
+  throw new Error(
+    `Passkey PRF returned an unsupported value type (${Object.prototype.toString.call(value)})`,
+  )
+}
+
+async function prfSecret(credentialId: string | null, salt: Uint8Array): Promise<PrfMaterial> {
   const assertion = (await navigator.credentials.get({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)).buffer as ArrayBuffer,
-      allowCredentials: [{ id: base64urlToBuffer(credentialId), type: 'public-key' }],
+      allowCredentials: credentialId
+        ? [{ id: base64urlToBuffer(credentialId), type: 'public-key' }]
+        : undefined,
       userVerification: 'required',
       timeout: 60000,
       extensions: {
-        prf: { eval: { first: PRF_SALT } },
+        prf: { eval: { first: salt } },
       } as AuthenticationExtensionsClientInputs,
     },
   })) as PublicKeyCredential | null
   if (!assertion) throw new Error('Passkey assertion cancelled')
+  const selectedCredentialId = bufferToBase64url(assertion.rawId)
   const ext = assertion.getClientExtensionResults() as {
     prf?: { results?: { first?: unknown } }
   }
@@ -423,42 +459,17 @@ async function prfSecret(credentialId: string): Promise<Uint8Array> {
       'Passkey does not support the PRF extension; cannot securely store the holder key',
     )
   }
-  // Browsers vary in what they hand back from the PRF extension — some
-  // return an ArrayBuffer, some a Uint8Array, some a DataView, and some
-  // (notably the Bun/WebKit JSON pass-through path) serialize the bytes
-  // as a plain number Array. Normalize to a Uint8Array so
-  // `crypto.subtle.importKey` sees a BufferSource of a known shape.
-  if (first instanceof Uint8Array) return first
-  if (first instanceof ArrayBuffer) return new Uint8Array(first)
-  if (ArrayBuffer.isView(first)) {
-    return new Uint8Array(
-      (first as ArrayBufferView).buffer,
-      (first as ArrayBufferView).byteOffset,
-      (first as ArrayBufferView).byteLength,
-    )
-  }
-  if (Array.isArray(first) && first.every((n) => typeof n === 'number')) {
-    return new Uint8Array(first as number[])
-  }
-  // Some implementations expose `{ [i]: byte, length, byteLength }` — a
-  // duck-typed array-like — without inheriting from `Uint8Array`.
-  if (
-    typeof (first as { length?: unknown }).length === 'number' &&
-    Number.isFinite((first as { length: number }).length)
-  ) {
-    return Uint8Array.from(first as ArrayLike<number>)
-  }
-  throw new Error(
-    `Passkey PRF returned an unsupported value type (${Object.prototype.toString.call(first)})`,
-  )
+  return { secret: normalizePrfOutput(first), credentialId: selectedCredentialId }
 }
 
-async function prfAesKey(credentialId: string): Promise<CryptoKey> {
-  const secret = await prfSecret(credentialId)
-  return crypto.subtle.importKey('raw', secret as BufferSource, 'AES-GCM', false, [
-    'encrypt',
-    'decrypt',
-  ])
+async function prfAesKey(
+  credentialId: string | null,
+  salt: Uint8Array,
+): Promise<{ key: CryptoKey; credentialId: string }> {
+  const { secret, credentialId: selectedCredentialId } = await prfSecret(credentialId, salt)
+  return crypto.subtle
+    .importKey('raw', secret as BufferSource, 'AES-GCM', false, ['encrypt', 'decrypt'])
+    .then((key) => ({ key, credentialId: selectedCredentialId }))
 }
 
 /**
@@ -466,29 +477,173 @@ async function prfAesKey(credentialId: string): Promise<CryptoKey> {
  * Triggers a user-verification prompt. Returns an opaque `<iv>.<ct>` blob to
  * persist instead of the plaintext seed.
  */
-export async function wrapHolderKey(credentialId: string, seedHex: string): Promise<string> {
-  const key = await prfAesKey(credentialId)
+/**
+ * Encrypt a holder seed and report which passkey supplied the PRF output.
+ * Passing `null` lets the browser present the discoverable-passkey picker.
+ */
+export async function sealHolderKey(
+  credentialId: string | null,
+  seedHex: string,
+): Promise<{ blob: string; credentialId: string }> {
+  const { key, credentialId: selectedCredentialId } = await prfAesKey(
+    credentialId,
+    HOLDER_KEY_PRF_SALT,
+  )
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const ct = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
     key,
     hexToBytes(seedHex) as unknown as BufferSource,
   )
-  return `${bufferToBase64url(iv.buffer as ArrayBuffer)}.${bufferToBase64url(ct)}`
+  return {
+    blob: `${bufferToBase64url(iv.buffer as ArrayBuffer)}.${bufferToBase64url(ct)}`,
+    credentialId: selectedCredentialId,
+  }
 }
 
 /**
- * Decrypt a {@link wrapHolderKey} blob. Triggers a passkey user-verification
- * prompt (the holder-binding gate) and returns the Ed25519 seed hex.
+ * Decrypt a wrapped holder key and report which passkey was selected.
+ * When `credentialId` is null, the browser shows the resident-passkey
+ * account picker. When a stale credential id is supplied and decrypting
+ * with it fails, this falls back once to the picker so synced passkeys in
+ * iCloud Keychain / 1Password can repair local metadata.
  */
-export async function unwrapHolderKey(credentialId: string, blob: string): Promise<string> {
+export async function openHolderKey(
+  credentialId: string | null,
+  blob: string,
+): Promise<{ seedHex: string; credentialId: string }> {
   const [ivB64, ctB64] = blob.split('.')
   if (!ivB64 || !ctB64) throw new Error('Malformed wrapped holder key')
-  const key = await prfAesKey(credentialId)
-  const pt = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: new Uint8Array(base64urlToBuffer(ivB64)) },
-    key,
-    base64urlToBuffer(ctB64),
+  const decryptWith = async (id: string | null) => {
+    const { key, credentialId: selectedCredentialId } = await prfAesKey(id, HOLDER_KEY_PRF_SALT)
+    const pt = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: new Uint8Array(base64urlToBuffer(ivB64)) },
+      key,
+      base64urlToBuffer(ctB64),
+    )
+    return { seedHex: bytesToHex(new Uint8Array(pt)), credentialId: selectedCredentialId }
+  }
+
+  try {
+    return await decryptWith(credentialId)
+  } catch (e) {
+    if (!credentialId) throw e
+    return await decryptWith(null)
+  }
+}
+
+/**
+ * Seal several holder seeds under a single PRF assertion. One user-verification
+ * prompt covers every seed, so restoring N credentials at once does not fan out
+ * into N biometric prompts. Order of the returned blobs matches `seedHexes`.
+ */
+export async function sealHolderKeys(
+  credentialId: string | null,
+  seedHexes: string[],
+): Promise<{ blobs: string[]; credentialId: string }> {
+  const { key, credentialId: selectedCredentialId } = await prfAesKey(
+    credentialId,
+    HOLDER_KEY_PRF_SALT,
   )
-  return bytesToHex(new Uint8Array(pt))
+  const blobs: string[] = []
+  for (const seedHex of seedHexes) {
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const ct = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      hexToBytes(seedHex) as unknown as BufferSource,
+    )
+    blobs.push(`${bufferToBase64url(iv.buffer as ArrayBuffer)}.${bufferToBase64url(ct)}`)
+  }
+  return { blobs, credentialId: selectedCredentialId }
+}
+
+/**
+ * Decrypt several recovery blobs under a single PRF assertion. Blobs sealed by a
+ * different passkey simply fail to decrypt and are dropped, so the result holds
+ * only the payloads this passkey can open (order preserved, gaps removed). When
+ * a stale credential id opens nothing, this falls back once to the picker so a
+ * synced passkey can still recover.
+ */
+export async function openRecoveryBundles(
+  credentialId: string | null,
+  blobs: string[],
+): Promise<{ payloads: string[]; credentialId: string }> {
+  const decryptAll = async (id: string | null) => {
+    const { key, credentialId: selectedCredentialId } = await prfAesKey(id, RECOVERY_PRF_SALT)
+    const payloads: string[] = []
+    for (const blob of blobs) {
+      const [ivB64, ctB64] = blob.split('.')
+      if (!ivB64 || !ctB64) continue
+      try {
+        const pt = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: new Uint8Array(base64urlToBuffer(ivB64)) },
+          key,
+          base64urlToBuffer(ctB64),
+        )
+        payloads.push(new TextDecoder().decode(pt))
+      } catch {
+        // Sealed under a different passkey — not recoverable on this device.
+      }
+    }
+    return { payloads, credentialId: selectedCredentialId }
+  }
+
+  const first = await decryptAll(credentialId)
+  if (first.payloads.length > 0 || !credentialId) return first
+  return decryptAll(null)
+}
+
+/**
+ * Encrypt an opaque recovery payload with a passkey-derived key. This uses a
+ * separate PRF salt from holder-key wrapping, so recovery backups are
+ * domain-separated from local wallet key blobs.
+ */
+export async function sealRecoveryBundle(
+  credentialId: string | null,
+  payload: string,
+): Promise<{ blob: string; credentialId: string }> {
+  const { key, credentialId: selectedCredentialId } = await prfAesKey(
+    credentialId,
+    RECOVERY_PRF_SALT,
+  )
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    new TextEncoder().encode(payload) as unknown as BufferSource,
+  )
+  return {
+    blob: `${bufferToBase64url(iv.buffer as ArrayBuffer)}.${bufferToBase64url(ct)}`,
+    credentialId: selectedCredentialId,
+  }
+}
+
+/**
+ * Decrypt an opaque recovery payload and report which passkey was selected.
+ * When a stale credential id is supplied and decrypting fails, this falls back
+ * once to the resident-passkey picker.
+ */
+export async function openRecoveryBundle(
+  credentialId: string | null,
+  blob: string,
+): Promise<{ payload: string; credentialId: string }> {
+  const [ivB64, ctB64] = blob.split('.')
+  if (!ivB64 || !ctB64) throw new Error('Malformed recovery backup')
+  const decryptWith = async (id: string | null) => {
+    const { key, credentialId: selectedCredentialId } = await prfAesKey(id, RECOVERY_PRF_SALT)
+    const pt = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: new Uint8Array(base64urlToBuffer(ivB64)) },
+      key,
+      base64urlToBuffer(ctB64),
+    )
+    return { payload: new TextDecoder().decode(pt), credentialId: selectedCredentialId }
+  }
+
+  try {
+    return await decryptWith(credentialId)
+  } catch (e) {
+    if (!credentialId) throw e
+    return await decryptWith(null)
+  }
 }

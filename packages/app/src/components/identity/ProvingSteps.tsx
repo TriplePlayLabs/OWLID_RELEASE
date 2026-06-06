@@ -1,5 +1,5 @@
 import { Check, Loader2, X, MinusCircle } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { AttestProgress } from '@owlid/sdk'
 
 type PredicateStatus = 'pending' | 'active' | 'done' | 'skipped' | 'failed'
@@ -8,10 +8,11 @@ interface PredicateRow {
   predicate: string
   /** Most recently observed progress event for this predicate. */
   latest: AttestProgress | null
-  /** Wall-clock ms at which `latest.stage` started. Used to render a
-   *  live elapsed timer that ticks every second on the client; the
-   *  server only pushes on phase transitions. */
-  stageStartedAt: number
+  /** Wall-clock ms when this predicate's row first appeared. The elapsed
+   *  timer counts up from here and is NEVER reset on sub-stage changes, so
+   *  it climbs smoothly instead of snapping back to 0 each time the server
+   *  pushes a new phase. */
+  startedAt: number
   status: PredicateStatus
 }
 
@@ -35,8 +36,8 @@ interface ProvingStepsProps {
  *  "unique_personhood" in the loading screen. */
 const FRIENDLY_PREDICATE: Record<string, string> = {
   age: 'Age',
-  kyc: 'Identity verification level',
-  residency: 'Resident status',
+  kyc: 'ID check',
+  residency: 'Where you live',
   email_verified: 'Verified email',
   nationality: 'Nationality',
   age_range: 'Age range',
@@ -54,41 +55,41 @@ function predicateTitle(p: string): string {
 function subStageLabel(event: AttestProgress): string {
   switch (event.stage) {
     case 'check':
-      return 'Checking if a proof already exists'
+      return 'Checking for an existing proof'
     case 'already-attested':
-      return 'Already verified — reusing existing proof'
+      return 'Already done, reusing your proof'
     case 'snapshot':
-      return 'Reading the verifier requirements'
+      return 'Reading what was asked'
     case 'prove':
       return event.mode === 'proof-server'
-        ? 'Generating proof on the proof server'
-        : 'Generating proof on your device'
+        ? 'Creating your proof in the cloud'
+        : 'Creating proof on your device'
     case 'relay':
-      return 'Submitting proof to the sidecar'
+      return 'Sending your proof'
     case 'confirming':
       switch (event.phase) {
         case 'queued':
-          return 'Queued for the sidecar'
+          return 'Waiting in line'
         case 'balancing':
-          return 'Balancing the transaction'
+          return 'Preparing it'
         case 'submitting':
-          return 'Submitting to the chain'
+          return 'Recording it securely'
         case 'pending':
-          return 'Waiting for chain finalization'
+          return 'Almost done'
       }
-      return 'Confirming on-chain'
+      return 'Recording it securely'
     case 'attested':
-      return 'Proof recorded'
+      return 'Proof saved'
     case 'skip-unsupported':
-      return 'Check is not supported yet'
+      return 'This check is not supported yet'
     case 'skip-missing-attribute':
-      return 'Your ID does not carry this attribute'
+      return "Your ID doesn't include this"
     case 'skip-unsatisfiable':
-      return 'Your ID cannot satisfy this check'
+      return "Your ID can't meet this request"
     case 'unlock':
-      return 'Approve with your passkey to unlock your ID'
+      return 'Use your face or fingerprint to unlock'
     case 'sign':
-      return 'Signing the response for the verifier'
+      return 'Finishing your response'
   }
 }
 
@@ -135,13 +136,9 @@ export function ProvingSteps({
       const next: PredicateRow = {
         predicate: progress.predicate,
         latest: progress,
-        // Reset the stage timer whenever the (predicate, stage) tuple
-        // changes — but NOT on intra-stage updates of the same kind,
-        // so the user sees one continuous timer for, e.g. proving.
-        stageStartedAt:
-          idx >= 0 && prev[idx].latest?.stage === progress.stage
-            ? prev[idx].stageStartedAt
-            : Date.now(),
+        // Set once when the row first appears; preserved across every
+        // sub-stage update so the timer is one continuous count-up.
+        startedAt: idx >= 0 ? prev[idx].startedAt : Date.now(),
         status,
       }
       if (idx < 0) return [...prev, next]
@@ -158,28 +155,28 @@ export function ProvingSteps({
       return
     }
     if (complete) {
-      setTrailing({ status: 'done', subtitle: 'Verifier accepted' })
+      setTrailing({ status: 'done', subtitle: 'Accepted' })
       return
     }
     if (sending) {
-      setTrailing({ status: 'active', subtitle: 'Transmitting proof and KB-JWT…' })
+      setTrailing({ status: 'active', subtitle: 'Sending securely…' })
       return
     }
     setTrailing(null)
   }, [sending, complete, errored, errorMessage])
 
-  // Live elapsed-time tick for any active row. Re-rendering once per
-  // second is enough — sub-second precision adds nothing here.
+  // Live elapsed tick. Runs continuously until the flow reaches a terminal
+  // state (complete / errored) — NOT gated on a per-row "active" flag, whose
+  // brief false→true flicker between sub-stages used to tear the interval down
+  // and freeze the counter, then jump on restart. Tick at 500ms so the
+  // displayed whole-second value advances smoothly without skips.
   const [now, setNow] = useState(() => Date.now())
-  const anyActive = useMemo(
-    () => rows.some((r) => r.status === 'active') || trailing?.status === 'active',
-    [rows, trailing],
-  )
+  const ticking = !complete && !errored
   useEffect(() => {
-    if (!anyActive) return
-    const t = setInterval(() => setNow(Date.now()), 1000)
+    if (!ticking) return
+    const t = setInterval(() => setNow(Date.now()), 500)
     return () => clearInterval(t)
-  }, [anyActive])
+  }, [ticking])
 
   if (rows.length === 0 && !trailing) {
     return (
@@ -194,7 +191,7 @@ export function ProvingSteps({
     <ol className="relative space-y-3 pl-6">
       <span aria-hidden className="absolute left-[7px] top-2 bottom-2 w-px bg-white/10" />
       {rows.map((r, i) => {
-        const elapsedMs = r.status === 'active' ? now - r.stageStartedAt : 0
+        const elapsedMs = r.status === 'active' ? now - r.startedAt : 0
         const elapsed = Math.floor(elapsedMs / 1000)
         const subtitle = r.latest
           ? r.status === 'active'
@@ -243,7 +240,7 @@ export function ProvingSteps({
                     : 'text-sm font-medium text-white'
               }
             >
-              Sending to verifier
+              Sending your proof
             </p>
             <p className="text-xs text-muted-foreground mt-0.5 leading-snug truncate">
               {trailing.subtitle}

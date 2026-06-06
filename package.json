@@ -17,6 +17,8 @@
     "build": "bun run --filter '*' build",
     "build:app": "bun run --filter @owlid/app build",
     "build:sdk": "bun run --filter @owlid/sdk build",
+    "ci:build-libs": "bun run --filter @owlid/config build && bun run --filter @owlid/verifier-client build && bun run --filter @owlid/issuer-client build && bun run --filter @owlid/admin-client build && bun run --filter @owlid/sdk build",
+    "ci:typecheck": "bun run --filter @owlid/config --filter @owlid/ui --filter @owlid/verifier-client --filter @owlid/issuer-client --filter @owlid/admin-client --filter @owlid/sdk --filter @owlid/app --filter @owlid/verifier-app --filter @owlid/admin --filter @owlid/docs-site check",
     "build:admin": "bun run --filter @owlid/admin build",
     "build:docs": "bun run --filter @owlid/docs-site build",
     "test": "bun run --filter '*' test",

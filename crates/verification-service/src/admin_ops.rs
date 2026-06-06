@@ -194,12 +194,11 @@ pub async fn create_admin_user(
         )));
     }
 
-    let exists: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM admin_users WHERE username = $1")
-            .bind(username)
-            .fetch_optional(&state.db_pool)
-            .await
-            .map_err(|e| AdminError::Internal(e.to_string()))?;
+    let exists: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM admin_users WHERE username = $1")
+        .bind(username)
+        .fetch_optional(&state.db_pool)
+        .await
+        .map_err(|e| AdminError::Internal(e.to_string()))?;
     if exists.is_some() {
         return Err(AdminError::Conflict("Username already taken".into()));
     }
@@ -261,8 +260,7 @@ pub async fn deactivate_admin_user(
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
-    let uuid =
-        Uuid::parse_str(&id).map_err(|_| AdminError::BadRequest("Invalid UUID".into()))?;
+    let uuid = Uuid::parse_str(&id).map_err(|_| AdminError::BadRequest("Invalid UUID".into()))?;
 
     let target = sqlx::query_as::<_, AdminUserRow>(
         "SELECT id, username, is_active, created_at, last_login_at \

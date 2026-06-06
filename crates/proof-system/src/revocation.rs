@@ -70,25 +70,19 @@ impl RevocationRegistry {
 
     /// Add a revocation entry
     pub fn add(&self, entry: RevocationEntry) {
-        let mut entries = self
-            .entries
-            .write()
-            .unwrap_or_else(|poisoned| {
-                tracing::warn!("RevocationRegistry lock was poisoned, recovering");
-                poisoned.into_inner()
-            });
+        let mut entries = self.entries.write().unwrap_or_else(|poisoned| {
+            tracing::warn!("RevocationRegistry lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
         entries.insert(entry.credential_id.clone(), entry);
     }
 
     /// Check if a credential is revoked
     pub fn is_revoked(&self, credential_id: &str) -> bool {
-        let entries = self
-            .entries
-            .read()
-            .unwrap_or_else(|poisoned| {
-                tracing::warn!("RevocationRegistry lock was poisoned, recovering");
-                poisoned.into_inner()
-            });
+        let entries = self.entries.read().unwrap_or_else(|poisoned| {
+            tracing::warn!("RevocationRegistry lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
         entries
             .get(credential_id)
             .map(|e| e.is_revoked())
@@ -97,26 +91,28 @@ impl RevocationRegistry {
 
     /// Get revocation status
     pub fn get_status(&self, credential_id: &str) -> Option<RevocationEntry> {
-        let entries = self
-            .entries
-            .read()
-            .unwrap_or_else(|poisoned| {
-                tracing::warn!("RevocationRegistry lock was poisoned, recovering");
-                poisoned.into_inner()
-            });
+        let entries = self.entries.read().unwrap_or_else(|poisoned| {
+            tracing::warn!("RevocationRegistry lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
         entries.get(credential_id).cloned()
     }
 
     /// Revoke a credential
     pub fn revoke(&self, credential_id: String, issuer_key: String, reason: Option<String>) {
-        let entry = RevocationEntry::new(credential_id, RevocationStatus::Revoked, issuer_key, reason);
+        let entry =
+            RevocationEntry::new(credential_id, RevocationStatus::Revoked, issuer_key, reason);
         self.add(entry);
     }
 
     /// Suspend a credential
     pub fn suspend(&self, credential_id: String, issuer_key: String, reason: Option<String>) {
-        let entry =
-            RevocationEntry::new(credential_id, RevocationStatus::Suspended, issuer_key, reason);
+        let entry = RevocationEntry::new(
+            credential_id,
+            RevocationStatus::Suspended,
+            issuer_key,
+            reason,
+        );
         self.add(entry);
     }
 
@@ -128,13 +124,10 @@ impl RevocationRegistry {
 
     /// List all revoked/suspended credentials
     pub fn list_revoked(&self) -> Vec<RevocationEntry> {
-        let entries = self
-            .entries
-            .read()
-            .unwrap_or_else(|poisoned| {
-                tracing::warn!("RevocationRegistry lock was poisoned, recovering");
-                poisoned.into_inner()
-            });
+        let entries = self.entries.read().unwrap_or_else(|poisoned| {
+            tracing::warn!("RevocationRegistry lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
         entries
             .values()
             .filter(|e| e.is_revoked())

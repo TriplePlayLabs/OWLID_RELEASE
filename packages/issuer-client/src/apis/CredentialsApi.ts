@@ -13,17 +13,35 @@
  */
 
 import * as runtime from '../runtime.js'
-import type { IssueCredentialRequest, IssueCredentialResponse } from '../models/index.js'
+import type {
+  IssueCredentialRequest,
+  IssueCredentialResponse,
+  RecoveryBackupRequest,
+  RecoveryBackupResponse,
+  RecoveryBackupsResponse,
+} from '../models/index.js'
 import {
   IssueCredentialRequestFromJSON,
   IssueCredentialRequestToJSON,
   IssueCredentialResponseFromJSON,
   IssueCredentialResponseToJSON,
+  RecoveryBackupRequestToJSON,
+  RecoveryBackupResponseFromJSON,
+  RecoveryBackupsResponseFromJSON,
 } from '../models/index.js'
 
 export interface IssueCredentialOperationRequest {
   id: string
   issueCredentialRequest: IssueCredentialRequest
+}
+
+export interface ListRecoveryBackupsOperationRequest {
+  id: string
+}
+
+export interface StoreRecoveryBackupOperationRequest {
+  id: string
+  recoveryBackupRequest: RecoveryBackupRequest
 }
 
 /**
@@ -54,6 +72,16 @@ export interface CredentialsApiInterface {
     requestParameters: IssueCredentialOperationRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<IssueCredentialResponse>
+
+  listRecoveryBackups(
+    requestParameters: ListRecoveryBackupsOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<RecoveryBackupsResponse>
+
+  storeRecoveryBackup(
+    requestParameters: StoreRecoveryBackupOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<RecoveryBackupResponse>
 }
 
 /**
@@ -114,6 +142,87 @@ export class CredentialsApi extends runtime.BaseAPI implements CredentialsApiInt
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<IssueCredentialResponse> {
     const response = await this.issueCredentialRaw(requestParameters, initOverrides)
+    return await response.value()
+  }
+
+  async listRecoveryBackupsRaw(
+    requestParameters: ListRecoveryBackupsOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<RecoveryBackupsResponse>> {
+    if (requestParameters['id'] == null) {
+      throw new runtime.RequiredError(
+        'id',
+        'Required parameter "id" was null or undefined when calling listRecoveryBackups().',
+      )
+    }
+
+    const response = await this.request(
+      {
+        path: `/sessions/{id}/recovery-backups`.replace(
+          `{${'id'}}`,
+          encodeURIComponent(String(requestParameters['id'])),
+        ),
+        method: 'GET',
+        headers: {},
+        query: {},
+      },
+      initOverrides,
+    )
+
+    return new runtime.JSONApiResponse(response, (jsonValue) =>
+      RecoveryBackupsResponseFromJSON(jsonValue),
+    )
+  }
+
+  async listRecoveryBackups(
+    requestParameters: ListRecoveryBackupsOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<RecoveryBackupsResponse> {
+    const response = await this.listRecoveryBackupsRaw(requestParameters, initOverrides)
+    return await response.value()
+  }
+
+  async storeRecoveryBackupRaw(
+    requestParameters: StoreRecoveryBackupOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<RecoveryBackupResponse>> {
+    if (requestParameters['id'] == null) {
+      throw new runtime.RequiredError(
+        'id',
+        'Required parameter "id" was null or undefined when calling storeRecoveryBackup().',
+      )
+    }
+    if (requestParameters['recoveryBackupRequest'] == null) {
+      throw new runtime.RequiredError(
+        'recoveryBackupRequest',
+        'Required parameter "recoveryBackupRequest" was null or undefined when calling storeRecoveryBackup().',
+      )
+    }
+
+    const response = await this.request(
+      {
+        path: `/sessions/{id}/recovery-backups`.replace(
+          `{${'id'}}`,
+          encodeURIComponent(String(requestParameters['id'])),
+        ),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        query: {},
+        body: RecoveryBackupRequestToJSON(requestParameters['recoveryBackupRequest']),
+      },
+      initOverrides,
+    )
+
+    return new runtime.JSONApiResponse(response, (jsonValue) =>
+      RecoveryBackupResponseFromJSON(jsonValue),
+    )
+  }
+
+  async storeRecoveryBackup(
+    requestParameters: StoreRecoveryBackupOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<RecoveryBackupResponse> {
+    const response = await this.storeRecoveryBackupRaw(requestParameters, initOverrides)
     return await response.value()
   }
 }

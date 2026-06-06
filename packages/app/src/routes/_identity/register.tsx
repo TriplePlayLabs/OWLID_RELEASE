@@ -8,7 +8,7 @@ import { Input } from '@owlid/ui/components/ui/input'
 import { StepCard } from '~/components/identity/StepCard'
 import { useIdentity } from '~/hooks/use-identity'
 import { useWebAuthn } from '~/hooks/use-webauthn'
-import { storage, type StoredWebAuthnCredential } from '@owlid/sdk'
+import { storage } from '@owlid/sdk'
 import { readAuthState, ROUTE_FOR_STATE } from '~/lib/auth-gate'
 
 export const Route = createFileRoute('/_identity/register')({
@@ -60,15 +60,6 @@ function RegisterPage() {
       const result = await register(username)
 
       if (result) {
-        // Save full WebAuthn credential for later use in credential issuance
-        const webauthnCred: StoredWebAuthnCredential = {
-          credentialId: result.credentialId,
-          publicKey: result.publicKey,
-          counter: result.counter,
-          transports: result.transports,
-        }
-        await storage.saveWebAuthnCredential(webauthnCred)
-
         completeRegistration(username)
         toast.success('Registration Successful', {
           description: 'Passkey created. You can now login.',
@@ -93,8 +84,8 @@ function RegisterPage() {
           isActive={true}
           isCompleted={isRegistered}
           icon={<Fingerprint className="w-5 h-5" />}
-          title="Set up your passkey"
-          description="Set up a secure key on this device for sign in."
+          title="Create your account"
+          description="Choose a username, then create a saved passkey for this wallet."
         >
           <div className="space-y-4 mt-4">
             <div className="space-y-2">
@@ -128,7 +119,7 @@ function RegisterPage() {
                 ) : (
                   <ChevronRight className="w-4 h-4 mr-2" />
                 )}
-                Set up passkey
+                Create account
               </Button>
             )}
           </div>
@@ -140,7 +131,7 @@ function RegisterPage() {
           isDisabled={true}
           icon={<span className="w-5 h-5 text-muted-foreground">2</span>}
           title="Sign in with your device"
-          description="Sign in using your face, fingerprint or device PIN."
+          description="Use your face, fingerprint, device PIN, or password manager."
         />
 
         <StepCard

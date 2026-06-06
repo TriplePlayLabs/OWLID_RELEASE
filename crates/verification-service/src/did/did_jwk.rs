@@ -7,10 +7,10 @@
 //! Supports OKP/Ed25519 and EC/P-256 — the only key types the OwlID
 //! verify chain consumes.
 
-use super::{canonical_doc_hash, DidMethodResolver, KeyAlgorithm, ResolvedDid};
+use super::{DidMethodResolver, KeyAlgorithm, ResolvedDid, canonical_doc_hash};
 use async_trait::async_trait;
 use base64::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct DidJwkResolver;
 
@@ -27,8 +27,8 @@ impl DidMethodResolver for DidJwkResolver {
         let json_bytes = BASE64_URL_SAFE_NO_PAD
             .decode(suffix)
             .map_err(|e| format!("did:jwk base64url: {e}"))?;
-        let jwk: Value = serde_json::from_slice(&json_bytes)
-            .map_err(|e| format!("did:jwk JSON: {e}"))?;
+        let jwk: Value =
+            serde_json::from_slice(&json_bytes).map_err(|e| format!("did:jwk JSON: {e}"))?;
         let (key_hex, key_alg) = key_from_jwk(&jwk)?;
         let doc = synthesise_did_document(did, &jwk);
         let doc_hash_hex = canonical_doc_hash(&doc)?;
@@ -113,8 +113,7 @@ mod tests {
             "crv": "Ed25519",
             "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
         });
-        let suffix =
-            BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_string(&jwk).unwrap().as_bytes());
+        let suffix = BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_string(&jwk).unwrap().as_bytes());
         let did = format!("did:jwk:{suffix}");
         let resolved = DidJwkResolver.resolve(&did).await.unwrap();
         assert_eq!(resolved.key_alg, KeyAlgorithm::Ed25519);
@@ -129,8 +128,7 @@ mod tests {
             "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
             "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"
         });
-        let suffix =
-            BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_string(&jwk).unwrap().as_bytes());
+        let suffix = BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_string(&jwk).unwrap().as_bytes());
         let did = format!("did:jwk:{suffix}");
         let resolved = DidJwkResolver.resolve(&did).await.unwrap();
         assert_eq!(resolved.key_alg, KeyAlgorithm::EcdsaP256);
@@ -148,8 +146,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_unsupported_kty() {
         let jwk = json!({ "kty": "RSA", "n": "..." });
-        let suffix =
-            BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_string(&jwk).unwrap().as_bytes());
+        let suffix = BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_string(&jwk).unwrap().as_bytes());
         let did = format!("did:jwk:{suffix}");
         let err = DidJwkResolver.resolve(&did).await.unwrap_err();
         assert!(err.contains("unsupported") || err.contains("missing"));

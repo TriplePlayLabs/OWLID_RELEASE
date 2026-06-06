@@ -19,6 +19,7 @@ import { registerModal, type ModalRenderProps } from '@owlid/ui/modal'
 import { ConsentScreen } from '~/components/identity/ConsentScreen'
 import { ProvingSteps } from '~/components/identity/ProvingSteps'
 import { usePresentation } from '~/hooks/use-presentation'
+import { PRESENTATION_SHARED_TITLE, PRESENTATION_SHARED_DESCRIPTION } from './outcome-copy'
 
 function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
   const { isOpen, close } = props
@@ -90,10 +91,10 @@ function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
                 <span className="p-1.5 rounded-full bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/20">
                   <QrCode className="w-4 h-4" />
                 </span>
-                Present your ID
+                Show your ID
               </DialogTitle>
               <DialogDescription>
-                {sessionQr ? 'Show this QR code to the verifier.' : 'Setting up secure session…'}
+                {sessionQr ? 'Let them scan this code to verify you.' : 'Getting your code ready…'}
               </DialogDescription>
             </DialogHeader>
             <div className="flex items-center justify-center" style={{ minHeight: QR_SIZE + 40 }}>
@@ -133,8 +134,8 @@ function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
             <DialogHeader>
               <DialogTitle>Building your proof</DialogTitle>
               <DialogDescription>
-                Each predicate the verifier asked for is proven on your device. First time takes
-                ~20–30s on Midnight; subsequent presentations are instant.
+                We're creating proof of your identity, right here on your device. The first time
+                takes about 20 to 30 seconds. After that it's instant.
               </DialogDescription>
             </DialogHeader>
             <div className="py-4 max-h-[60vh] overflow-y-auto">
@@ -148,9 +149,13 @@ function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
                 <span className="p-1.5 rounded-full bg-green-500/15 text-green-400 ring-1 ring-green-500/20">
                   <CheckCircle2 className="w-4 h-4" />
                 </span>
-                Verified
+                {PRESENTATION_SHARED_TITLE}
               </DialogTitle>
-              <DialogDescription>Proof sent successfully.</DialogDescription>
+              {/* Sending the proof is all the holder can confirm — the verifier
+                  runs the actual check and shows the accept/reject result on
+                  their side. Claiming "Verified" here made the holder and
+                  verifier screens disagree (GH #12). */}
+              <DialogDescription>{PRESENTATION_SHARED_DESCRIPTION}</DialogDescription>
             </DialogHeader>
             <DialogFooter>
               <Button className="w-full" onClick={handleClose}>

@@ -42,6 +42,7 @@ fn extract_api_key(headers: &HeaderMap) -> Option<String> {
 /// handlers. Use `permissions()` / `has_permission()` to gate; do not branch
 /// on the variant unless the handler genuinely needs the underlying API
 /// key (e.g. for audit logging).
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 pub enum Principal {
     /// Service caller authenticated via `Authorization: Bearer <api_key>`.
@@ -158,6 +159,7 @@ impl AuthMiddleware {
 }
 
 /// Helper to create a permission-checking middleware
+#[allow(clippy::type_complexity)] // axum middleware return type is irreducible
 pub fn require_permission(
     permission: &'static str,
 ) -> impl Fn(

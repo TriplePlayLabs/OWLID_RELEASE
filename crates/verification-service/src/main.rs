@@ -1,3 +1,7 @@
+// Intentional `+`-connector prose in doc comments trips clippy's markdown
+// list heuristic; the lint is cosmetic (rustdoc rendering only).
+#![allow(clippy::doc_lazy_continuation)]
+
 mod admin_auth;
 mod admin_ops;
 mod api;
@@ -7,11 +11,11 @@ mod db;
 mod dcql;
 mod did;
 mod gdpr;
-mod openid4vp;
 mod middleware;
 mod midnight;
 mod midnight_admin;
 mod observability;
+mod openid4vp;
 mod predicate_assets;
 mod presentation;
 mod registry;
@@ -93,6 +97,7 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
         api::list_trusted_issuers,
         api::add_trusted_issuer,
         api::revoke_credential,
+        api::revoke_own_credential,
         api::suspend_credential,
         api::reactivate_credential,
         api::check_revocation,
@@ -122,7 +127,7 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
         api::check_predicate_attested,
         api::get_predicate_snapshot,
         api::relay_predicate_proof,
-        api::stream_predicate_tx_events,
+        api::stream_predicate_job_events,
     ),
     components(schemas(
         api::ChallengeResponse,
@@ -140,6 +145,8 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
         api::AddTrustedIssuerResponse,
         api::TrustedIssuerInfo,
         api::RevokeCredentialRequest,
+        api::RevokeOwnCredentialRequest,
+        api::RevokeOwnCredentialResponse,
         api::ReactivateCredentialRequest,
         api::CheckRevocationRequest,
         api::CheckRevocationResponse,
@@ -265,6 +272,14 @@ async fn ensure_configured_api_key(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `--dump-openapi`: print the OpenAPI spec and exit. Generated purely
+    // from the utoipa annotations, so the API client can be regenerated
+    // offline (no DB / chain) — mirrors what `/openapi.json` serves live.
+    if std::env::args().any(|a| a == "--dump-openapi") {
+        println!("{}", ApiDoc::openapi().to_pretty_json()?);
+        return Ok(());
+    }
+
     // Load environment variables
     dotenvy::dotenv().ok();
 
@@ -510,8 +525,8 @@ async fn main() -> anyhow::Result<()> {
             post(api::relay_predicate_proof),
         )
         .route(
-            "/predicates/tx/{tx_id}/events",
-            get(api::stream_predicate_tx_events),
+            "/predicates/job/{job_id}/events",
+            get(api::stream_predicate_job_events),
         )
         // Read-only trust/revocation surface — every verifier needs
         // these to render its own "is this issuer trusted?" / "is this
@@ -520,6 +535,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/trusted-issuers", get(api::list_trusted_issuers))
         .route("/revocations/check", post(api::check_revocation))
         .route("/revocations/list", get(api::list_revoked))
+        // Holder self-revocation: not admin — authorized by a per-credential
+        // proof-of-possession (KB-JWT) carried in the request body, so it
+        // sits under `verify` with the rest of the holder/verifier surface.
+        .route("/revocations/revoke-mine", post(api::revoke_own_credential))
         .layer(axum_middleware::from_fn_with_state(
             Arc::clone(&api_key_repo),
             require_permission("verify"),

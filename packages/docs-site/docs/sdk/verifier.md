@@ -1,6 +1,6 @@
 # OwlVerifier
 
-Server-side client for verifying OwlID SD-JWT VC presentations. Imported from `@owlid/sdk`.
+Server-side client for verifying Owl ID SD-JWT VC presentations. Imported from `@owlid/sdk`.
 
 ```ts
 import { OwlVerifier } from '@owlid/sdk'

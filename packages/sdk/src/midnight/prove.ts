@@ -116,7 +116,7 @@ export async function proveAttestationUnsubmitted(
 
   const publicDataProvider = createSnapshotPublicDataProvider(snapshot)
   const privateStateProvider = inMemoryPrivateStateProvider({})
-  const proofProvider = createProofProviderFor(
+  const proofProvider = await createProofProviderFor(
     zkConfigProvider,
     resolveProvingConfig(provingConfig),
   )

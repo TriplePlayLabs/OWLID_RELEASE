@@ -63,10 +63,9 @@ impl AttestationRepository {
     /// (sidecar SSE replays a snapshot too, but this primes a cold
     /// start before the stream connects).
     pub async fn initialize_cache(&self) -> Result<()> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT attest_key FROM attested_predicates")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT attest_key FROM attested_predicates")
+            .fetch_all(&self.pool)
+            .await?;
         for (k,) in rows {
             self.cache.add(k).await;
         }

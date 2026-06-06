@@ -8,6 +8,7 @@
 import { Hono } from 'hono'
 import { loadConfig } from './config.js'
 import { initClient, getClient, getWalletSupervisor, disconnectClient } from './client.js'
+import { log } from './log.js'
 import { issuer } from './routes/issuer.js'
 import { revocation } from './routes/revocation.js'
 import { identity } from './routes/identity.js'
@@ -18,6 +19,35 @@ const app = new Hono()
 
 // Load config
 const config = loadConfig()
+
+// Structured access log for every request. 2xx is left to Cloud Run's own
+// access logs (no double-logging); 4xx/5xx and slow requests are promoted to
+// queryable `http.request` / `http.slow` events so an incident shows the
+// failing route + status without reproducing it. SSE streams (`/events`,
+// `/predicates/job/*/events`) are long-lived by design — don't flag as slow.
+const SLOW_MS = 5_000
+app.use('*', async (c, next) => {
+  const start = Date.now()
+  await next()
+  const ms = Date.now() - start
+  const status = c.res.status
+  const path = new URL(c.req.url).pathname
+  const fields = { method: c.req.method, path, status, ms }
+  if (status >= 500) log.error('http.request', fields)
+  else if (status >= 400) log.warn('http.request', fields)
+  else if (ms > SLOW_MS && !path.endsWith('/events')) log.warn('http.slow', fields)
+})
+
+// Anything a handler throws without catching lands here — log it as ERROR
+// with the route so it is never just a bare 500 in the access log.
+app.onError((err, c) => {
+  log.error('http.unhandled', {
+    method: c.req.method,
+    path: new URL(c.req.url).pathname,
+    err: err instanceof Error ? err.message : String(err),
+  })
+  return c.json({ error: 'Internal error' }, 500)
+})
 
 // API key auth middleware for /api/* and /events routes
 const auth = async (c: Parameters<Parameters<typeof app.use>[1]>[0], next: () => Promise<void>) => {
@@ -66,6 +96,20 @@ app.get('/health/wallet', async (c) => {
   if (!supervisor) return c.json({ error: 'no wallet (read-only mode)' }, 503)
   try {
     return c.json(await supervisor.snapshot())
+  } catch (e) {
+    return c.json({ error: String(e) }, 500)
+  }
+})
+
+// Dust-focused health — balance, generation rate, runway, floor.
+// Matches the telemetry Lace surfaces in its DustTankProgressIndicator
+// so an operator can answer "do I need to top up NIGHT?" from a single
+// JSON blob without scraping the SDK state shape.
+app.get('/health/wallet/dust', async (c) => {
+  const supervisor = getWalletSupervisor()
+  if (!supervisor) return c.json({ error: 'no wallet (read-only mode)' }, 503)
+  try {
+    return c.json(await supervisor.dustSnapshot())
   } catch (e) {
     return c.json({ error: String(e) }, 500)
   }

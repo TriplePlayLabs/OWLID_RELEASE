@@ -111,7 +111,7 @@ impl RevocationRepository {
         .bind(&credential_id)
         .bind(&issuer_public_key)
         .bind(&reason)
-        .bind(&expires_at)
+        .bind(expires_at)
         .fetch_one(&self.pool)
         .await?;
 

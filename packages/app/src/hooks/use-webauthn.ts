@@ -6,19 +6,71 @@
  */
 
 import { useCallback } from 'react'
-import {
-  registerCredential,
-  signChallenge as sdkSignChallenge,
-  base64urlToBuffer,
-  type WebAuthnSignatureResult,
-  type WebAuthnRegistrationResult,
-} from '@owlid/sdk'
+import { base64urlToBuffer, type WebAuthnRegistrationResult } from '@owlid/sdk'
+import { registerWalletPasskey, rememberAssertionPasskey } from '~/lib/passkeys'
+import { withPasskeyCeremony } from '~/lib/wallet-session'
 
 // Re-export types for convenience
-export type { WebAuthnSignatureResult, WebAuthnRegistrationResult }
+export type { WebAuthnSignatureResult, WebAuthnRegistrationResult } from '@owlid/sdk'
 
 interface UseWebAuthnOptions {
   onLog?: (type: 'info' | 'success' | 'error' | 'system', message: string) => void
+}
+
+async function requestPasskeyAssertion({
+  credentialId,
+  userVerification = 'required',
+}: {
+  credentialId: string | null
+  userVerification?: UserVerificationRequirement
+}): Promise<PublicKeyCredential> {
+  const challenge = new Uint8Array(32)
+  window.crypto.getRandomValues(challenge)
+
+  const abortController = new AbortController()
+  // Backstop the browser's own 60s WebAuthn timeout so a stalled ceremony
+  // (no resolve, no reject) can't leave the unlock button spinning forever.
+  let timedOut = false
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true
+    abortController.abort()
+  }, 60000)
+  try {
+    const assertion = await withPasskeyCeremony(
+      () =>
+        navigator.credentials.get({
+          publicKey: {
+            challenge: challenge.buffer as ArrayBuffer,
+            timeout: 60000,
+            userVerification,
+            rpId: window.location.hostname,
+            allowCredentials: credentialId
+              ? [
+                  {
+                    id: base64urlToBuffer(credentialId),
+                    type: 'public-key',
+                    transports: ['internal', 'hybrid'],
+                  },
+                ]
+              : undefined,
+          },
+          signal: abortController.signal,
+        }) as Promise<PublicKeyCredential | null>,
+    )
+
+    if (!assertion) {
+      throw new Error('Passkey assertion returned null')
+    }
+    await rememberAssertionPasskey(assertion)
+    return assertion
+  } catch (error) {
+    if (timedOut) {
+      throw new Error('Passkey unlock timed out. Tap Unlock to try again.')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
+  }
 }
 
 export function useWebAuthn(options: UseWebAuthnOptions = {}) {
@@ -44,16 +96,7 @@ export function useWebAuthn(options: UseWebAuthnOptions = {}) {
       log('system', 'User prompted for biometric/security key...')
 
       try {
-        const result = await registerCredential({
-          rpName: 'Owl ID Demo',
-          rpId: window.location.hostname,
-          userName: username,
-          userDisplayName: username,
-          authenticatorAttachment: 'platform',
-          userVerification: 'required',
-          residentKey: 'preferred',
-          attestation: 'none',
-        })
+        const result = await registerWalletPasskey(username)
 
         log('success', 'Extracted P-256 public key from secure enclave')
         log('success', 'Authenticator interaction successful')
@@ -69,82 +112,16 @@ export function useWebAuthn(options: UseWebAuthnOptions = {}) {
   )
 
   /**
-   * Sign a token challenge using WebAuthn
-   * The challenge should be base64url-encoded SHA256 of the token payload
-   * Returns the signature data needed for token finalization
-   */
-  const signForToken = useCallback(
-    async (credentialId: string, challenge: string): Promise<WebAuthnSignatureResult> => {
-      log('system', 'Initiating WebAuthn signing for token...')
-      log('info', 'Challenge bound to token payload')
-
-      log('system', 'Requesting biometric authentication...')
-
-      try {
-        const result = await sdkSignChallenge(credentialId, challenge, {
-          rpId: window.location.hostname,
-          userVerification: 'required',
-          transports: ['internal', 'hybrid'],
-        })
-
-        log('success', 'Biometric authentication successful')
-        log('info', 'Hardware-backed signature created')
-
-        return result
-      } catch (e) {
-        log('error', `WebAuthn signing failed: ${e}`)
-        throw e
-      }
-    },
-    [log],
-  )
-
-  /**
    * Authenticate with a WebAuthn credential
    * Returns the full PublicKeyCredential for further processing
    */
   const authenticate = useCallback(
     async (credentialId: string | null): Promise<PublicKeyCredential | null> => {
       log('info', 'POST /webauthn/authenticate/options')
-
-      const challenge = new Uint8Array(32)
-      window.crypto.getRandomValues(challenge)
-
-      const publicKeyCredentialRequestOptions: PublicKeyCredentialRequestOptions = {
-        challenge: new Uint8Array(challenge).buffer as ArrayBuffer,
-        timeout: 60000,
-        userVerification: 'preferred',
-        rpId: window.location.hostname,
-        allowCredentials: credentialId
-          ? [
-              {
-                id: base64urlToBuffer(credentialId),
-                type: 'public-key',
-                transports: ['internal', 'hybrid'],
-              },
-            ]
-          : undefined,
-      }
-
       log('system', 'Browser invoking navigator.credentials.get()')
       log('system', 'Verifying passkey ownership...')
 
-      const abortController = new AbortController()
-      const timeoutId = setTimeout(() => abortController.abort(), 60000)
-
-      let assertion: PublicKeyCredential
-      try {
-        assertion = (await navigator.credentials.get({
-          publicKey: publicKeyCredentialRequestOptions,
-          signal: abortController.signal,
-        })) as PublicKeyCredential
-      } finally {
-        clearTimeout(timeoutId)
-      }
-
-      if (!assertion) {
-        throw new Error('Credential assertion returned null')
-      }
+      const assertion = await requestPasskeyAssertion({ credentialId })
 
       log('success', 'Cryptographic signature valid')
       log('info', 'POST /webauthn/authenticate/verify')
@@ -154,115 +131,8 @@ export function useWebAuthn(options: UseWebAuthnOptions = {}) {
     [log],
   )
 
-  /**
-   * Sign a challenge for proof generation
-   */
-  const signChallenge = useCallback(
-    async (credentialId: string | null): Promise<PublicKeyCredential | null> => {
-      log('info', 'POST /webauthn/prove/options')
-      log('info', 'Challenge generated based on identity data hash')
-
-      const challenge = new Uint8Array(32)
-      window.crypto.getRandomValues(challenge)
-
-      const publicKeyCredentialRequestOptions: PublicKeyCredentialRequestOptions = {
-        challenge: new Uint8Array(challenge).buffer as ArrayBuffer,
-        timeout: 60000,
-        userVerification: 'required',
-        rpId: window.location.hostname,
-        allowCredentials: credentialId
-          ? [
-              {
-                id: base64urlToBuffer(credentialId),
-                type: 'public-key',
-              },
-            ]
-          : undefined,
-      }
-
-      log('system', 'Browser signing identity data with private key...')
-
-      const abortController = new AbortController()
-      const timeoutId = setTimeout(() => abortController.abort(), 60000)
-
-      let assertion: PublicKeyCredential
-      try {
-        assertion = (await navigator.credentials.get({
-          publicKey: publicKeyCredentialRequestOptions,
-          signal: abortController.signal,
-        })) as PublicKeyCredential
-      } finally {
-        clearTimeout(timeoutId)
-      }
-
-      if (!assertion) {
-        throw new Error('Signing returned null')
-      }
-
-      return assertion
-    },
-    [log],
-  )
-
-  /**
-   * Unlock identity data with passkey
-   */
-  const unlockWithPasskey = useCallback(
-    async (credentialId: string | null): Promise<PublicKeyCredential | null> => {
-      log('system', 'Initiating Decryption Sequence...')
-      log('info', 'POST /webauthn/authenticate/options')
-
-      const challenge = new Uint8Array(32)
-      window.crypto.getRandomValues(challenge)
-
-      const publicKeyCredentialRequestOptions: PublicKeyCredentialRequestOptions = {
-        challenge: new Uint8Array(challenge).buffer as ArrayBuffer,
-        timeout: 60000,
-        userVerification: 'required',
-        rpId: window.location.hostname,
-        allowCredentials: credentialId
-          ? [
-              {
-                id: base64urlToBuffer(credentialId),
-                type: 'public-key',
-                transports: ['internal', 'hybrid'],
-              },
-            ]
-          : undefined,
-      }
-
-      log('system', 'Requesting Private Key Access to Decrypt Data...')
-
-      const abortController = new AbortController()
-      const timeoutId = setTimeout(() => abortController.abort(), 60000)
-
-      let assertion: PublicKeyCredential
-      try {
-        assertion = (await navigator.credentials.get({
-          publicKey: publicKeyCredentialRequestOptions,
-          signal: abortController.signal,
-        })) as PublicKeyCredential
-      } finally {
-        clearTimeout(timeoutId)
-      }
-
-      if (!assertion) {
-        throw new Error('Decryption authorization denied')
-      }
-
-      log('success', 'Private Key Access Granted')
-      log('info', 'Decrypting Local Identity Blob...')
-
-      return assertion
-    },
-    [log],
-  )
-
   return {
     register,
     authenticate,
-    signChallenge,
-    signForToken,
-    unlockWithPasskey,
   }
 }

@@ -1,8 +1,8 @@
-# OwlID apps
+# Owl ID apps
 
-OwlID ships three apps alongside the platform — a wallet and a verifier scanner for end users, plus an operator dashboard for your team. Use them out of the box — no custom client or scanner UI required.
+Owl ID ships three apps alongside the platform — a wallet and a verifier scanner for end users, plus an operator dashboard for your team. Use them out of the box — no custom client or scanner UI required.
 
-## OwlID Wallet — for holders
+## Owl ID Wallet — for holders
 
 Where users keep their credentials and present proofs. Issuers point customers to the wallet during signup; verifiers point people there when they scan a QR.
 
@@ -12,9 +12,9 @@ Where users keep their credentials and present proofs. Issuers point customers t
 - **Cross-platform**: PWA — installs to iOS / Android home screen, runs the same in any browser. Native shells planned.
 - **Build your own**: need a branded wallet? Build one on [`@owlid/sdk`](/integration/holder) — the holder helpers, `OwlWallet`, and WebAuthn primitives are the same ones the hosted wallet runs on.
 
-When you set up issuance, the redirect URL after KYC sends the user back into the wallet — they install it once and reuse it across every issuer that uses OwlID.
+When you set up issuance, the redirect URL after KYC sends the user back into the wallet — they install it once and reuse it across every issuer that uses Owl ID.
 
-## OwlID Verifier — for relying parties
+## Owl ID Verifier — for relying parties
 
 Browser-based scanner you can deploy in minutes for low-volume or kiosk use cases. Generate a QR for a request, watch the result come in. No code required for the basic flow.
 
@@ -33,11 +33,11 @@ The control panel for your account. Mint API keys, register trusted issuers, vie
 
 ```mermaid
 flowchart LR
-    User(["End user"]) -->|installs| Wallet["OwlID Wallet"]:::app
-    Verifier(["Bouncer / kiosk"]) -->|opens| VerifierApp["OwlID Verifier"]:::app
+    User(["End user"]) -->|installs| Wallet["Owl ID Wallet"]:::app
+    Verifier(["Bouncer / kiosk"]) -->|opens| VerifierApp["Owl ID Verifier"]:::app
     Operator(["Your team"]) -->|signs in| Admin["Operator dashboard"]:::app
 
-    Wallet -.->|talks to| Owl[("OwlID platform")]:::svc
+    Wallet -.->|talks to| Owl[("Owl ID platform")]:::svc
     VerifierApp -.->|talks to| Owl
     Admin -.->|talks to| Owl
 

@@ -21,7 +21,6 @@
  * and an in-memory map dedupes refetches within a single page session.
  */
 
-import { provingProvider as zkirProvingProvider } from '@midnight-ntwrk/zkir-v2'
 import type { KeyMaterialProvider } from '@midnight-ntwrk/zkir-v2'
 import {
   createProofProvider,
@@ -68,14 +67,19 @@ async function fetchParams(k: number): Promise<Uint8Array> {
  *   prover/verifier keys + zkir. The universal proving parameters (SRS)
  *   come from the verification-service `/midnight/params/{k}` proxy.
  */
-export function createInProcessProvingProvider(
+export async function createInProcessProvingProvider(
   zkConfigProvider: ZKConfigProvider<string>,
-): ProvingProvider {
+): Promise<ProvingProvider> {
   const kmp: KeyMaterialProvider = {
     lookupKey: async (keyLocation: string) =>
       zkConfigToProvingKeyMaterial(await zkConfigProvider.get(keyLocation)),
     getParams: fetchParams,
   }
+  // Lazy-load the zkir-v2 WASM prover. It is browser-only (the holder proves
+  // on-device) and must stay out of the static import graph: pulled in
+  // statically it gets externalised into the SSR server bundle and crashes
+  // the app at runtime (ERR_MODULE_NOT_FOUND, no node_modules in the image).
+  const { provingProvider: zkirProvingProvider } = await import('@midnight-ntwrk/zkir-v2')
   return zkirProvingProvider(kmp) as unknown as ProvingProvider
 }
 
@@ -84,10 +88,10 @@ export function createInProcessProvingProvider(
  * Drop-in for `httpClientProofProvider` in `createUnprovenCallTx` →
  * `proofProvider.proveTx` flows. Fully in-process — no proof server.
  */
-export function createInProcessProofProvider(
+export async function createInProcessProofProvider(
   zkConfigProvider: ZKConfigProvider<string>,
-): ProofProvider {
-  return createProofProvider(createInProcessProvingProvider(zkConfigProvider))
+): Promise<ProofProvider> {
+  return createProofProvider(await createInProcessProvingProvider(zkConfigProvider))
 }
 
 /**
@@ -112,10 +116,10 @@ export type ProvingProviderConfig =
  * holder app can construct one against runtime settings before calling
  * `OwlWallet.present()`.
  */
-export function createProofProviderFor(
+export async function createProofProviderFor(
   zkConfigProvider: ZKConfigProvider<string>,
   config?: ProvingProviderConfig,
-): ProofProvider {
+): Promise<ProofProvider> {
   if (config?.mode === 'proof-server' && config.url) {
     return httpClientProofProvider(config.url, zkConfigProvider, {
       timeout: config.timeout,

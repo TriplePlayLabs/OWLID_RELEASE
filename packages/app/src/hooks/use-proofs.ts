@@ -12,19 +12,20 @@ import {
   presentSdJwtVc,
   proofStorage,
   storage,
-  unwrapHolderKey,
   type StoredProof,
   type VerifiedClaims,
 } from '@owlid/sdk'
 import type { GeneratedProof } from '~/types/proof'
 import { getAvailableProofs, disclosuresForPredicate } from '~/utils/proof-utils'
 import { usePredicates } from './use-predicates'
+import { currentPasskeyId, unwrapWalletHolderKey } from '~/lib/passkeys'
+import { recordProofs } from '~/lib/proof-store'
 
 function fromStoredProof(
   stored: StoredProof,
   availableProofs: ReturnType<typeof getAvailableProofs>,
 ): GeneratedProof | null {
-  const baseProof = availableProofs.find((p) => p.id === stored.id)
+  const baseProof = availableProofs.find((p) => p.id === stored.predicateId)
   if (!baseProof) return null
   return {
     ...baseProof,
@@ -112,13 +113,8 @@ export function useProofs() {
           console.error('No holder key found for this credential.')
           return
         }
-        const passkey = await storage.loadWebAuthnCredential()
-        if (!passkey) {
-          console.error('No passkey found — re-register required.')
-          return
-        }
         // Passkey-gated decrypt of the per-cred holder key (UV prompt).
-        const holderKeyHex = await unwrapHolderKey(passkey.credentialId, wrapped)
+        const holderKeyHex = await unwrapWalletHolderKey(wrapped, await currentPasskeyId())
 
         const sdJwtVc = credential.sdJwtVc
         const generated: GeneratedProof[] = []
@@ -138,15 +134,15 @@ export function useProofs() {
           } as GeneratedProof)
         }
 
-        const toStore: StoredProof[] = generated.map((g) => ({
-          id: g.id,
-          name: g.name,
-          claim: g.claim,
-          result: g.result,
-          presentation: g.qrData,
-          createdAt: new Date().toISOString(),
-        }))
-        await proofStorage.saveProofs(toStore)
+        await recordProofs(
+          generated.map((g) => ({
+            predicateId: g.id,
+            name: g.name,
+            claim: g.claim,
+            result: g.result,
+            presentation: g.qrData,
+          })),
+        )
 
         setGeneratedProofs((prev) => [
           ...prev,
@@ -168,7 +164,7 @@ export function useProofs() {
     const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
     if (isMobile && navigator.share) {
       try {
-        await navigator.share({ title: `OwlID Proof: ${proof.claim}`, text: proof.qrData })
+        await navigator.share({ title: `Owl ID Proof: ${proof.claim}`, text: proof.qrData })
         return true
       } catch {
         // fall through to clipboard

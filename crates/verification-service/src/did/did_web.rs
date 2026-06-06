@@ -3,7 +3,7 @@
 //! `id`-match (W3C-CCG `did-method-web`), extracts the issuer's
 //! OKP Ed25519 verification method, caches the result.
 
-use super::{canonical_doc_hash, DidMethodResolver, KeyAlgorithm, ResolvedDid};
+use super::{DidMethodResolver, KeyAlgorithm, ResolvedDid, canonical_doc_hash};
 use async_trait::async_trait;
 use base64::prelude::*;
 use serde_json::Value;

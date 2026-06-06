@@ -43,11 +43,23 @@ pub mod proof;
 pub use error::ZkError;
 pub use proof::{ZkProof, ZkProofType};
 
-#[cfg(any(feature = "verifier", feature = "prover-keys-embedded", feature = "prover-keys-external"))]
+#[cfg(any(
+    feature = "verifier",
+    feature = "prover-keys-embedded",
+    feature = "prover-keys-external"
+))]
 use ark_bls12_381::Bls12_381;
-#[cfg(any(feature = "verifier", feature = "prover-keys-embedded", feature = "prover-keys-external"))]
+#[cfg(any(
+    feature = "verifier",
+    feature = "prover-keys-embedded",
+    feature = "prover-keys-external"
+))]
 use ark_groth16::{PreparedVerifyingKey, ProvingKey};
-#[cfg(any(feature = "verifier", feature = "prover-keys-embedded", feature = "prover-keys-external"))]
+#[cfg(any(
+    feature = "verifier",
+    feature = "prover-keys-embedded",
+    feature = "prover-keys-external"
+))]
 use ark_serialize::CanonicalDeserialize;
 
 // ---------------------------------------------------------------------------
@@ -59,10 +71,8 @@ mod vk {
     use super::*;
     use std::sync::LazyLock;
 
-    pub(super) const AGE_RANGE_VK_BYTES: &[u8] =
-        include_bytes!("../artifacts/age_range.vk.bin");
-    pub(super) const KYC_STATUS_VK_BYTES: &[u8] =
-        include_bytes!("../artifacts/kyc_status.vk.bin");
+    pub(super) const AGE_RANGE_VK_BYTES: &[u8] = include_bytes!("../artifacts/age_range.vk.bin");
+    pub(super) const KYC_STATUS_VK_BYTES: &[u8] = include_bytes!("../artifacts/kyc_status.vk.bin");
     pub(super) const NATIONALITY_VK_BYTES: &[u8] =
         include_bytes!("../artifacts/nationality.vk.bin");
 

@@ -9,9 +9,9 @@ export default defineConfig({
   root: path.join(here, 'docs'),
   plugins: [mermaidPlugin()],
   globalStyles: path.join(here, 'theme/theme.css'),
-  title: 'OwlID',
+  title: 'Owl ID',
   description: 'Privacy-preserving digital identity built on Midnight.',
-  logoText: 'OwlID',
+  logoText: 'Owl ID',
   base: '/',
   outDir: 'doc_build',
   themeConfig: {
@@ -63,7 +63,7 @@ export default defineConfig({
         },
         {
           text: 'Concepts',
-          items: [{ text: 'How OwlID works', link: '/architecture/overview' }],
+          items: [{ text: 'How Owl ID works', link: '/architecture/overview' }],
         },
         {
           text: 'Apps',

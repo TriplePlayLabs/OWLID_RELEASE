@@ -13,9 +13,14 @@ const STORE_NAME = 'proofs'
  * Stored proof structure
  */
 export interface StoredProof {
-  /** Unique proof ID (e.g., 'isOver18', 'isEuCitizen') */
+  /** Unique per generation — the IndexedDB key. Use a fresh id for every
+   *  proof so re-presenting the same predicate appends a row instead of
+   *  overwriting the previous one. */
   id: string
-  /** Display name */
+  /** The predicate this proves (e.g. 'age_over_18'). Stable across
+   *  generations; used to match a stored proof back to its predicate. */
+  predicateId: string
+  /** Display name (e.g. the verifier the proof was shown to) */
   name: string
   /** The claim being proven */
   claim: string

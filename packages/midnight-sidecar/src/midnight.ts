@@ -87,26 +87,33 @@ import {
   type SidecarEvent,
 } from './events.js'
 import { log } from './log.js'
+import { isDustShortfallError } from './dust-errors.js'
+import { RelayBatcher } from './relay-batcher.js'
 
 // =============================================================================
 // Relay job bookkeeping
 // =============================================================================
 
 /** Lifecycle of a fire-and-forget /predicates/{kind}/relay request.
- *  See `MidnightClient.relayProvenTx` for the contract. */
+ *  See `MidnightClient.relayProvenTx` for the contract.
+ *
+ *  Naming: `jobId` is the local handle the relay endpoint returns
+ *  immediately; `chainTxId` is the on-chain identifier the SDK gives
+ *  us after `submitTx` returns. The two USED to be conflated under
+ *  the field name `txId` — they're now explicit so the SSE route
+ *  doesn't have to probe-then-decide what kind of id it has. */
 interface RelayJob {
   jobId: string
   phase: 'queued' | 'balancing' | 'submitting' | 'submitted' | 'balance-failed' | 'submit-failed'
   /** Chain transaction id once `submitTx` has returned. Unset while the
    *  job is still queued/balancing/submitting. */
-  txId?: string
+  chainTxId?: string
   /** Error message captured if the background driver failed. */
   error?: string
   startedAt: number
 }
 
-/** 32-byte hex string. Matches the shape of a Midnight chain tx id so
- *  the polling endpoint accepts both interchangeably on the wire. */
+/** 32-byte hex string. */
 function randomJobId(): string {
   const bytes = new Uint8Array(32)
   globalThis.crypto.getRandomValues(bytes)
@@ -267,10 +274,15 @@ export class MidnightClient {
   private nodeConfig: MidnightNodeConfig | null = null
 
   // Request-scoped private witness for the next predicate attest.
-  // Attest calls are serialized via `attestChain` so the witness
-  // callbacks read the correct pending value (single in-flight attest).
+  // All contract callTx writes are serialized via `callTxChain`: they share
+  // ONE `levelPrivateStateProvider` (LevelDB, single-handle), so two
+  // concurrent scoped private-state transactions race the DB lock and one
+  // fails "Database failed to open". Serializing makes concurrent writes
+  // queue instead of crash. (The relay/presentation hot path does NOT touch
+  // private state — it only balances+submits a holder-proven tx — so it is
+  // unaffected and stays concurrent via the wallet supervisor's pipeline.)
   private pendingPredicate: PredicatePending = {}
-  private attestChain: Promise<unknown> = Promise.resolve()
+  private callTxChain: Promise<unknown> = Promise.resolve()
 
   // Fire-and-forget relay jobs: jobId -> phase + (eventually) chain
   // txId. `relayProvenTx` returns a jobId immediately and runs
@@ -282,6 +294,11 @@ export class MidnightClient {
   /** Keep job records around long enough for the orchestrator's 5-min
    *  polling cap, then discard so the map doesn't grow without bound. */
   private static readonly RELAY_JOB_TTL_MS = 30 * 60 * 1000
+
+  // Coalesces concurrent relays into one merged chain tx so a single balance
+  // amortizes across K attestations. Created in `connect()` once the
+  // wallet/submit provider is wired.
+  private relayBatcher: RelayBatcher<unknown> | null = null
 
   constructor(addresses: ContractAddresses = {}) {
     this.addresses = addresses
@@ -306,6 +323,20 @@ export class MidnightClient {
     const publicDataProvider = indexerPublicDataProvider(config.indexerUri, config.indexerWsUri)
     this.publicDataProvider = publicDataProvider
     this.nodeConfig = config
+
+    // Batch concurrent relays: buffer for a short window, merge into one tx,
+    // submit once. `flush` returns the shared chain tx id for every job in the
+    // batch. A failed merge/submit rejects the whole batch (holders retry).
+    this.relayBatcher = new RelayBatcher<unknown>({
+      windowMs: Number(process.env.RELAY_BATCH_WINDOW_MS ?? 250),
+      maxBatch: Number(process.env.RELAY_BATCH_MAX ?? 32),
+      flush: async (txs) => {
+        const merged = txs.reduce((a, b) => (a as { merge: (o: unknown) => unknown }).merge(b))
+        return (await this.nodeConfig!.midnightProvider.submitTx(merged)) as string
+      },
+      onEvent: (event, fields) =>
+        event.endsWith('.error') ? log.warn(event, fields) : log.info(event, fields),
+    })
 
     const sharedProviders = {
       privateStateProvider,
@@ -433,10 +464,13 @@ export class MidnightClient {
   // Predicate Registry (Midnight-native ZK attestations)
   // =========================================================================
 
-  // Serialize attests so the request-scoped witness (pendingPredicate)
-  // is unambiguous for the single in-flight circuit call.
-  private async runAttest<T>(pending: PredicatePending, fn: () => Promise<T>): Promise<T> {
-    const run = this.attestChain.then(async () => {
+  // Serialize a contract callTx write against the shared private-state DB.
+  // `pending` carries the request-scoped witness for attests (empty for
+  // non-attest writes like registerIdentity / revoke). One in-flight write
+  // at a time → no LevelDB "Database failed to open" race, and the attest
+  // witness is unambiguous for the single in-flight circuit call.
+  private async runCallTx<T>(fn: () => Promise<T>, pending: PredicatePending = {}): Promise<T> {
+    const run = this.callTxChain.then(async () => {
       this.pendingPredicate = pending
       try {
         return await fn()
@@ -444,8 +478,12 @@ export class MidnightClient {
         this.pendingPredicate = {}
       }
     })
-    this.attestChain = run.catch(() => undefined)
+    this.callTxChain = run.catch(() => undefined)
     return run
+  }
+
+  private runAttest<T>(pending: PredicatePending, fn: () => Promise<T>): Promise<T> {
+    return this.runCallTx(fn, pending)
   }
 
   async attestAge(rootHash: Uint8Array, threshold: number, age: number): Promise<void> {
@@ -570,9 +608,27 @@ export class MidnightClient {
   }> {
     this.getPredicateApi(kind) // assert joined
     const address = this.addresses.predicates?.[kind]
-    if (!address) throw new Error(`Predicate '${kind}' has no configured address`)
-    const states = await this.publicDataProvider!.queryZSwapAndContractState(address)
-    if (!states) throw new Error(`no public state at ${address}`)
+    if (!address) {
+      log.error('predicate.snapshot.no-address', { kind })
+      throw new Error(`Predicate '${kind}' has no configured address`)
+    }
+    let states
+    try {
+      states = await this.publicDataProvider!.queryZSwapAndContractState(address)
+    } catch (e) {
+      // Indexer read failed (timeout / transient degradation). Distinct from a
+      // clean null so a recurring snapshot 400 can be traced to the indexer.
+      log.error('predicate.snapshot.indexer-error', {
+        kind,
+        address,
+        err: e instanceof Error ? e.message : String(e),
+      })
+      throw e
+    }
+    if (!states) {
+      log.error('predicate.snapshot.no-state', { kind, address })
+      throw new Error(`no public state at ${address}`)
+    }
     const [zswap, contract, params] = states
     const hex = (b: Uint8Array) => Buffer.from(b).toString('hex')
     return {
@@ -604,7 +660,7 @@ export class MidnightClient {
    * disconnect: the holder's request closes in ≤10 ms regardless of
    * downstream state.
    */
-  relayProvenTx(kind: PredicateKind, provenHex: string): { txId: string; status: 'queued' } {
+  relayProvenTx(kind: PredicateKind, provenHex: string): { jobId: string; status: 'queued' } {
     this.getPredicateApi(kind) // assert joined
     const jobId = randomJobId()
     const job: RelayJob = { jobId, phase: 'queued', startedAt: Date.now() }
@@ -613,7 +669,7 @@ export class MidnightClient {
     // Background submit. Never await — the caller's HTTP request
     // returns the next line below.
     void this.runRelayJob(job, kind, provenHex)
-    return { txId: jobId, status: 'queued' }
+    return { jobId, status: 'queued' }
   }
 
   /**
@@ -623,34 +679,49 @@ export class MidnightClient {
    * transition so Cloud Logging shows the full lifecycle.
    */
   private async runRelayJob(job: RelayJob, kind: PredicateKind, provenHex: string): Promise<void> {
+    const publishPhase = (): void => {
+      eventBus.emit({
+        type: 'relay',
+        jobId: job.jobId,
+        phase: job.phase,
+        txId: job.chainTxId,
+        error: job.error,
+        ts: Date.now(),
+      })
+    }
     try {
       const bytes = new Uint8Array(Buffer.from(provenHex, 'hex'))
+      // Deserialize per-job (bad hex fails only this job, not its batch).
       const proven = (
         Transaction as unknown as {
           deserialize: (s: string, p: string, b: string, raw: Uint8Array) => unknown
         }
       ).deserialize('signature', 'proof', 'pre-binding', bytes)
-      job.phase = 'balancing'
-      const t0 = Date.now()
-      log.info('relay.balance.start', { jobId: job.jobId, kind })
-      const balanced = await this.nodeConfig!.walletProvider.balanceTx(proven)
-      log.info('relay.balance.done', { jobId: job.jobId, kind, elapsedMs: Date.now() - t0 })
+      // Hand to the batcher: it merges concurrent relays into one tx so a
+      // single balance+submit covers the whole batch. The balance is fused
+      // into the supervised submit, so there is no separate balance phase.
       job.phase = 'submitting'
+      publishPhase()
       const t1 = Date.now()
       log.info('relay.submit.start', { jobId: job.jobId, kind })
-      const txId = (await this.nodeConfig!.midnightProvider.submitTx(balanced)) as string
-      job.txId = txId
+      const chainTxId = await this.relayBatcher!.submit(proven)
+      job.chainTxId = chainTxId
       job.phase = 'submitted'
       log.info('relay.submit.done', {
         jobId: job.jobId,
         kind,
-        txId,
+        chainTxId,
         elapsedMs: Date.now() - t1,
       })
+      publishPhase()
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e)
       job.error = err
-      const failedPhase = job.phase === 'balancing' ? 'balance-failed' : 'submit-failed'
+      // The real balance is fused into the supervised `submitTx`, so a dust
+      // shortfall surfaces during the `submitting` phase even though it is a
+      // balancing failure. Classify by the error so the phase is honest.
+      const failedPhase =
+        isDustShortfallError(e) || job.phase === 'balancing' ? 'balance-failed' : 'submit-failed'
       job.phase = failedPhase
       log.error('relay.background.error', {
         jobId: job.jobId,
@@ -658,6 +729,7 @@ export class MidnightClient {
         phase: failedPhase,
         err,
       })
+      publishPhase()
     } finally {
       // Schedule deferred cleanup so the status endpoint can still
       // observe the terminal phase, then drop the record to bound
@@ -672,23 +744,34 @@ export class MidnightClient {
   getRelayJob(jobId: string): {
     jobId: string
     phase: RelayJob['phase']
-    txId?: string
+    chainTxId?: string
     error?: string
   } | null {
     const j = this.relayJobs.get(jobId)
     if (!j) return null
-    return { jobId: j.jobId, phase: j.phase, txId: j.txId, error: j.error }
+    return { jobId: j.jobId, phase: j.phase, chainTxId: j.chainTxId, error: j.error }
   }
 
   /** Single-event wait for `watchForTxData` to observe finalization
-   *  for an on-chain tx-id. Driven by the indexer's own WebSocket
-   *  subscription — no polling. The route streams the resolved
-   *  status as a terminal SSE event. */
+   *  for an on-chain tx-id. Driven by the indexer's apollo watchQuery
+   *  (`pollInterval: 1000ms`); resolves on the first emission with a
+   *  populated `transactionResult.status`. Time-to-resolution is the
+   *  sum of: block inclusion (≤ block time), GRANDPA finalization
+   *  (1-2 blocks), indexer ingest, and the 1 s poll cadence. Logged
+   *  so an operator can attribute slow `/events` waits to chain or
+   *  indexer lag rather than our code. */
   async awaitChainStatus(txId: string): Promise<string> {
     this.assertConnected()
+    const t0 = Date.now()
+    log.info('chain.await.start', { txId })
     const t = (await this.publicDataProvider!.watchForTxData(txId as never)) as {
       status?: string
     }
+    log.info('chain.await.done', {
+      txId,
+      status: t.status ?? 'unknown',
+      elapsedMs: Date.now() - t0,
+    })
     return t.status ?? 'unknown'
   }
 
@@ -735,13 +818,13 @@ export class MidnightClient {
 
   async registerIssuer(publicKey: Uint8Array, name: string): Promise<void> {
     this.assertContract(this.issuerApi, 'Issuer')
-    await this.issuerApi!.callTx.registerIssuer(publicKey, name)
+    await this.runCallTx(() => this.issuerApi!.callTx.registerIssuer(publicKey, name))
   }
 
   async deactivateIssuer(publicKey: Uint8Array): Promise<void> {
     this.assertContract(this.issuerApi, 'Issuer')
     const keyHash = this.issuerKeyHash(publicKey)
-    await this.issuerApi!.callTx.deactivateIssuer(keyHash)
+    await this.runCallTx(() => this.issuerApi!.callTx.deactivateIssuer(keyHash))
   }
 
   // =========================================================================
@@ -775,7 +858,7 @@ export class MidnightClient {
   ): Promise<void> {
     this.assertContract(this.revocationApi, 'Revocation')
     const issuerKeyHash = this.issuerKeyHash(issuerPublicKey)
-    await this.revocationApi!.callTx.revoke(rootHash, issuerKeyHash, reason)
+    await this.runCallTx(() => this.revocationApi!.callTx.revoke(rootHash, issuerKeyHash, reason))
   }
 
   async suspendCredential(
@@ -785,13 +868,13 @@ export class MidnightClient {
   ): Promise<void> {
     this.assertContract(this.revocationApi, 'Revocation')
     const issuerKeyHash = this.issuerKeyHash(issuerPublicKey)
-    await this.revocationApi!.callTx.suspend(rootHash, issuerKeyHash, reason)
+    await this.runCallTx(() => this.revocationApi!.callTx.suspend(rootHash, issuerKeyHash, reason))
   }
 
   async reactivateCredential(rootHash: Uint8Array, issuerPublicKey: Uint8Array): Promise<void> {
     this.assertContract(this.revocationApi, 'Revocation')
     const issuerKeyHash = this.issuerKeyHash(issuerPublicKey)
-    await this.revocationApi!.callTx.reactivate(rootHash, issuerKeyHash)
+    await this.runCallTx(() => this.revocationApi!.callTx.reactivate(rootHash, issuerKeyHash))
   }
 
   // Submits a `proveRevocationInclusion` tx; succeeds iff `rootHash`
@@ -799,7 +882,7 @@ export class MidnightClient {
   // The witness derives the Merkle path from live ledger state.
   async proveRevocationInclusion(rootHash: Uint8Array): Promise<void> {
     this.assertContract(this.revocationApi, 'Revocation')
-    await this.revocationApi!.callTx.proveRevocationInclusion(rootHash)
+    await this.runCallTx(() => this.revocationApi!.callTx.proveRevocationInclusion(rootHash))
   }
 
   // =========================================================================
@@ -833,7 +916,31 @@ export class MidnightClient {
     this.assertContract(this.identityApi, 'Identity')
     if (!this.ownerSecretKey)
       throw new Error('Owner secret key not set. Call setOwnerSecretKey() first.')
-    await this.identityApi!.callTx.registerIdentity(didHash, commitment, issuerKeyHash)
+    // `callTx.*` blocks on midnight-js's internal `watchForTxData`
+    // (1 s poll until indexer reports tx in a finalized block). The
+    // elapsed log here is the single biggest signal for "/issue is
+    // slow" investigations — split it into prove+balance+submit+wait
+    // breakdown if you need finer attribution.
+    const t0 = Date.now()
+    log.info('chain.callTx.start', { call: 'registerIdentity' })
+    try {
+      // Serialized: shares the LevelDB private-state store with every other
+      // write, so concurrent calls would race the DB lock without this.
+      await this.runCallTx(() =>
+        this.identityApi!.callTx.registerIdentity(didHash, commitment, issuerKeyHash),
+      )
+      log.info('chain.callTx.done', {
+        call: 'registerIdentity',
+        elapsedMs: Date.now() - t0,
+      })
+    } catch (e) {
+      log.error('chain.callTx.error', {
+        call: 'registerIdentity',
+        elapsedMs: Date.now() - t0,
+        err: e instanceof Error ? e.message : String(e),
+      })
+      throw e
+    }
   }
 
   async updateCommitment(
@@ -844,7 +951,9 @@ export class MidnightClient {
     this.assertContract(this.identityApi, 'Identity')
     if (!this.ownerSecretKey)
       throw new Error('Owner secret key not set. Call setOwnerSecretKey() first.')
-    await this.identityApi!.callTx.updateCommitment(didHash, newCommitment, issuerKeyHash)
+    await this.runCallTx(() =>
+      this.identityApi!.callTx.updateCommitment(didHash, newCommitment, issuerKeyHash),
+    )
   }
 
   async getCommitment(didHash: Uint8Array): Promise<Uint8Array> {
@@ -857,11 +966,11 @@ export class MidnightClient {
   // =========================================================================
 
   async pauseContract(contract: 'issuer' | 'revocation' | 'identity'): Promise<void> {
-    await this.getContractApi(contract).callTx.pause()
+    await this.runCallTx(() => this.getContractApi(contract).callTx.pause())
   }
 
   async unpauseContract(contract: 'issuer' | 'revocation' | 'identity'): Promise<void> {
-    await this.getContractApi(contract).callTx.unpause()
+    await this.runCallTx(() => this.getContractApi(contract).callTx.unpause())
   }
 
   async adminUpdateCommitment(
@@ -870,7 +979,9 @@ export class MidnightClient {
     issuerKeyHash: Uint8Array,
   ): Promise<void> {
     this.assertContract(this.identityApi, 'Identity')
-    await this.identityApi!.callTx.adminUpdateCommitment(didHash, newCommitment, issuerKeyHash)
+    await this.runCallTx(() =>
+      this.identityApi!.callTx.adminUpdateCommitment(didHash, newCommitment, issuerKeyHash),
+    )
   }
 
   // =========================================================================
@@ -984,7 +1095,7 @@ export class MidnightClient {
     // Per-contract ZK providers (circuit IDs collide across contracts).
     // Proving is in-process (zkir-v2 WASM) — no proof server.
     const zkConfigProvider = new NodeZkConfigProvider(join(config.managedDir, contractDirName))
-    const proofProvider = createInProcessProofProvider(zkConfigProvider)
+    const proofProvider = await createInProcessProofProvider(zkConfigProvider)
 
     const found = await findDeployedContract(
       { ...sharedProviders, zkConfigProvider, proofProvider } as never,
@@ -1019,7 +1130,7 @@ export class MidnightClient {
     //       any state we'd miss between subscription drops — covers
     //       the case where graphql-ws silently completes without
     //       error (observed against the preview indexer).
-    let subscription = openContractStateSubscription(
+    const subscription = openContractStateSubscription(
       publicDataProvider,
       contractAddress,
       ledgerFn,

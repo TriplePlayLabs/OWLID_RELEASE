@@ -417,7 +417,9 @@ impl DigitalIdentityProvider for DiditProvider {
                 Ok(RawProviderClaims::Didit(verification_data))
             }
             DiditOutcome::Failed(reason) => Err(IdpError::VerificationFailed(reason)),
-            DiditOutcome::Pending(details) => Err(IdpError::VerificationPendingWithDetails(details)),
+            DiditOutcome::Pending(details) => {
+                Err(IdpError::VerificationPendingWithDetails(details))
+            }
         }
     }
 
@@ -441,7 +443,9 @@ impl DigitalIdentityProvider for DiditProvider {
                 Ok(RawProviderClaims::Didit(verification_data))
             }
             DiditOutcome::Failed(reason) => Err(IdpError::VerificationFailed(reason)),
-            DiditOutcome::Pending(details) => Err(IdpError::VerificationPendingWithDetails(details)),
+            DiditOutcome::Pending(details) => {
+                Err(IdpError::VerificationPendingWithDetails(details))
+            }
         }
     }
 }
@@ -470,10 +474,7 @@ enum DiditOutcome {
 ///   3. Approve only when (id approved) AND (face match approved OR absent).
 ///   4. Otherwise route on overall session status (pending / declined).
 fn evaluate_decision(decision: &DiditDecisionResponse) -> DiditOutcome {
-    let face_match = decision
-        .face_matches
-        .as_ref()
-        .and_then(|arr| arr.first());
+    let face_match = decision.face_matches.as_ref().and_then(|arr| arr.first());
     let face_match_status = face_match.and_then(|fm| fm.status.as_deref());
     let face_match_score = face_match.and_then(|fm| fm.score);
     let face_match_pending = matches!(
@@ -646,6 +647,9 @@ struct DiditWarning {
 }
 
 /// ID verification data from Didit
+// Mirrors the Didit API response; not every field is consumed yet, but they
+// document the wire shape and may be surfaced later.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct DiditIdVerification {
     /// Status of this specific verification (Approved, In Review, Declined)
@@ -680,6 +684,8 @@ struct DiditIdVerification {
 /// Structured address returned by Didit's geographic-lookup pass.
 /// `is_verified == true` ⇒ the address was successfully matched against
 /// a real-world geo dataset (the field we use to drive residency).
+// Most address components are parsed for completeness but not yet consumed.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct DiditParsedAddress {
     street_1: Option<String>,

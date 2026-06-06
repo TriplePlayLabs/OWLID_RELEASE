@@ -79,16 +79,19 @@ Optional / not yet wired (services tolerate unset):
 
 ### `sidecar` (Bun + Hono, port 3000)
 
-| Env var                     | Source                            | Notes                                                        |
-| --------------------------- | --------------------------------- | ------------------------------------------------------------ |
-| `MIDNIGHT_SIDECAR_PORT`     | TF static `3000`                  |                                                              |
-| `MIDNIGHT_NETWORK_ID`       | TF static `undeployed`            | flip to `preprod` or `mainnet` for testnet/mainnet           |
-| `MIDNIGHT_NODE_WS_URL`      | TF static placeholder             | replace with real Midnight node WS URL                       |
-| `MIDNIGHT_INDEXER_URI`      | TF static placeholder             |                                                              |
-| `MIDNIGHT_INDEXER_WS_URI`   | TF static placeholder             |                                                              |
-| `MIDNIGHT_PROOF_SERVER_URI` | TF static placeholder             | replace with hosted proof server URL                         |
-| `MIDNIGHT_SIDECAR_API_KEY`  | secret `midnight-sidecar-api-key` |                                                              |
-| `MIDNIGHT_WALLET_SEED`      | secret `midnight-wallet-seed`     | dev genesis seed by default — replace before testnet/mainnet |
+| Env var                     | Source                            | Notes                                                                                |
+| --------------------------- | --------------------------------- | ------------------------------------------------------------------------------------ |
+| `MIDNIGHT_SIDECAR_PORT`     | TF static `3000`                  |                                                                                      |
+| `MIDNIGHT_NETWORK_ID`       | TF static `undeployed`            | flip to `preprod` or `mainnet` for testnet/mainnet                                   |
+| `MIDNIGHT_NODE_WS_URL`      | TF static placeholder             | replace with real Midnight node WS URL                                               |
+| `MIDNIGHT_INDEXER_URI`      | TF static placeholder             |                                                                                      |
+| `MIDNIGHT_INDEXER_WS_URI`   | TF static placeholder             |                                                                                      |
+| `MIDNIGHT_PROOF_SERVER_URI` | TF static placeholder             | hosted proof server; also offloads the wallet balance proof (WASM fallback on error) |
+| `WALLET_DUST_RETRY_WAIT_MS` | unset (default 3000)              | settle-wait before the single dust-shortfall retry                                   |
+| `RELAY_BATCH_WINDOW_MS`     | unset (default 250)               | relay coalescing window                                                              |
+| `RELAY_BATCH_MAX`           | unset (default 32)                | max relays merged into one chain tx                                                  |
+| `MIDNIGHT_SIDECAR_API_KEY`  | secret `midnight-sidecar-api-key` |                                                                                      |
+| `MIDNIGHT_WALLET_SEED`      | secret `midnight-wallet-seed`     | dev genesis seed by default — replace before testnet/mainnet                         |
 
 ### `app`, `admin` (TanStack Start Nitro SSR via Node) and `verifier` (static SPA via nginx)
 

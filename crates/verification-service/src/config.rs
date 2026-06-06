@@ -158,9 +158,7 @@ impl Config {
         let midnight_network_id = env_or("MIDNIGHT_NETWORK_ID", "undeployed");
 
         if midnight_sidecar_api_key.is_none() {
-            tracing::warn!(
-                "MIDNIGHT_SIDECAR_API_KEY is unset — sidecar requests will be rejected"
-            );
+            tracing::warn!("MIDNIGHT_SIDECAR_API_KEY is unset — sidecar requests will be rejected");
         }
         if let Some(ref k) = midnight_sidecar_api_key {
             if KNOWN_DEFAULT_SECRETS.contains(&k.as_str()) {
@@ -232,10 +230,8 @@ impl Config {
             );
         }
 
-        let verification_public_url = env_or(
-            "VERIFICATION_PUBLIC_URL",
-            &format!("http://{host}:{port}"),
-        );
+        let verification_public_url =
+            env_or("VERIFICATION_PUBLIC_URL", &format!("http://{host}:{port}"));
 
         if !errors.is_empty() {
             return Err(ConfigError(errors));

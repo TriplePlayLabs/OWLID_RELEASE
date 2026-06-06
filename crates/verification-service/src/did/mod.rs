@@ -14,10 +14,10 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub mod did_web;
-pub mod did_key;
 pub mod did_jwk;
+pub mod did_key;
 pub mod did_midnight;
+pub mod did_web;
 
 /// Public-key algorithm carried by a resolved DID document. Issuer
 /// JWS signing remains EdDSA-only (`sd_jwt::verify`); holder `cnf`
@@ -76,6 +76,7 @@ impl DidResolver {
         self.resolvers.insert(resolver.method(), resolver);
     }
 
+    #[allow(dead_code)] // introspection helper; not yet wired into a route
     pub fn supported_methods(&self) -> Vec<&'static str> {
         let mut m: Vec<&'static str> = self.resolvers.keys().copied().collect();
         m.sort_unstable();
@@ -83,8 +84,7 @@ impl DidResolver {
     }
 
     pub async fn resolve(&self, did: &str) -> Result<ResolvedDid, String> {
-        let method = parse_method(did)
-            .ok_or_else(|| format!("not a DID URL: {did}"))?;
+        let method = parse_method(did).ok_or_else(|| format!("not a DID URL: {did}"))?;
         let resolver = self
             .resolvers
             .get(method)

@@ -101,7 +101,7 @@ function WalletPage() {
           onClick={() => openPresentationModal({})}
           disabled={list.length === 0}
           className="h-11 text-sm font-medium bg-white text-black hover:bg-white/90 disabled:opacity-40 disabled:cursor-not-allowed"
-          title={list.length === 0 ? 'Add a card first' : 'Show a QR for a verifier to scan'}
+          title={list.length === 0 ? 'Add a card first' : 'Show a code for someone to scan'}
           data-testid="button-present-id"
         >
           <Fingerprint className="w-4 h-4 mr-1.5" />
@@ -112,7 +112,7 @@ function WalletPage() {
           onClick={() => openManualProofModal({})}
           disabled={list.length === 0}
           className="h-11 text-sm font-medium border-white/15 hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed"
-          title={list.length === 0 ? 'Add a card first' : 'Paste a verifier challenge'}
+          title={list.length === 0 ? 'Add a card first' : 'Paste a request from a website'}
           data-testid="button-manual-proof"
         >
           <ClipboardPaste className="w-4 h-4 mr-1.5" />
@@ -161,7 +161,7 @@ function WalletCardSlot({
         (old ?? []).filter((c) => c.credentialId !== credential.credentialId),
       )
       qc.invalidateQueries({ queryKey: ['wallet'] })
-      toast.success('Credential removed', { description: 'Local copy wiped.' })
+      toast.success('Card removed', { description: 'Deleted from this device.' })
     },
   })
 
@@ -196,7 +196,9 @@ function WalletCardSlot({
             type="button"
             className="w-full flex items-center justify-center gap-1.5 h-9 rounded-md text-xs text-destructive/80 hover:text-destructive hover:bg-destructive/5 transition-colors"
             onClick={() => {
-              if (confirm('Remove this credential from the wallet? Local copy will be deleted.')) {
+              if (
+                confirm('Remove this card from your wallet? It will be deleted from this device.')
+              ) {
                 removeMut.mutate()
               }
             }}
@@ -204,7 +206,7 @@ function WalletCardSlot({
             data-testid="button-remove-credential"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            Remove from wallet
+            Remove card
           </button>
         </div>
       )}
@@ -372,7 +374,7 @@ function CredentialDetails({ credential }: { credential: WalletCredential }) {
       <Card className="border border-white/10 bg-card/40">
         <CardContent className="p-4 space-y-3">
           <div className="text-xs uppercase tracking-wider text-muted-foreground">
-            Disclosed claims ({claimRows.length})
+            What this card shares ({claimRows.length})
           </div>
           <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-xs">
             {claimRows.map(([k, v]) => (
@@ -391,16 +393,16 @@ function CredentialDetails({ credential }: { credential: WalletCredential }) {
 
       <details className="group rounded-lg border border-white/10 bg-card/40 text-xs">
         <summary className="px-4 py-3 cursor-pointer text-muted-foreground hover:text-foreground list-none flex items-center justify-between">
-          <span>Credential metadata</span>
+          <span>Card details</span>
           <span className="text-[10px] opacity-60 group-open:rotate-180 transition-transform">
             ▾
           </span>
         </summary>
         <div className="px-4 pb-3 space-y-2">
-          <Row label="Issuer" value={credential.issuer} mono />
-          <Row label="Provider" value={credential.providerId} />
-          <Row label="Issued" value={new Date(credential.issuedAt).toLocaleString()} />
-          <Row label="Credential ID" value={credential.credentialId} mono dim />
+          <Row label="Issued by" value={credential.issuer} mono />
+          <Row label="Source" value={credential.providerId} />
+          <Row label="Added" value={new Date(credential.issuedAt).toLocaleString()} />
+          <Row label="Card ID" value={credential.credentialId} mono dim />
         </div>
       </details>
     </>

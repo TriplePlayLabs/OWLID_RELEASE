@@ -13,6 +13,7 @@ import { VerificationSteps } from './components/VerificationSteps'
 import { RevocationLookup } from './components/RevocationLookup'
 import { RevocationsList } from './components/RevocationsList'
 import { TrustedIssuersList } from './components/TrustedIssuersList'
+import { checkHealthWithRetry, decideServiceOnline } from './health-monitor'
 import {
   getVerifierApiKey,
   verifyToken,
@@ -22,6 +23,7 @@ import {
 } from './api'
 import { Button } from '@owlid/ui/components/ui/button'
 import { Card, CardContent } from '@owlid/ui/components/ui/card'
+import { FaqDialog } from './components/FaqDialog'
 import {
   decodeSessionEngagement,
   isPresentationEngagement,
@@ -262,10 +264,24 @@ export function App() {
     [transitionStep],
   )
 
+  // Consecutive failed health checks. The banner only flips to "offline"
+  // once this crosses the threshold, so a single transient blip on an
+  // up backend doesn't flap the UI / disable "Scan QR" (GH #14).
+  const healthFailuresRef = useRef(0)
   useEffect(() => {
-    healthCheck().then(setServiceOnline)
-    const interval = setInterval(() => healthCheck().then(setServiceOnline), 30000)
-    return () => clearInterval(interval)
+    let cancelled = false
+    const runCheck = async () => {
+      const healthy = await checkHealthWithRetry(healthCheck)
+      if (cancelled) return
+      healthFailuresRef.current = healthy ? 0 : healthFailuresRef.current + 1
+      setServiceOnline((prev) => decideServiceOnline(prev, healthy, healthFailuresRef.current))
+    }
+    void runCheck()
+    const interval = setInterval(runCheck, 30000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
   }, [])
 
   useEffect(() => {
@@ -566,7 +582,7 @@ export function App() {
         setStep('idle')
       } else {
         toast.error('Unrecognized QR code', {
-          description: 'Expected an OwlID presentation or SD-JWT VC.',
+          description: 'Expected an Owl ID presentation or SD-JWT VC.',
         })
         setStep('idle')
       }
@@ -694,10 +710,14 @@ export function App() {
         </div>
       </main>
 
-      <footer className="border-t border-white/5 px-4 py-3">
-        <p className="text-center text-[11px] text-muted-foreground tracking-wider uppercase">
-          OwlID — Privacy-preserving credential verification
+      <footer className="border-t border-white/5 px-4 py-3 flex items-center justify-center gap-3">
+        <p className="text-[11px] text-muted-foreground tracking-wider uppercase">
+          Owl ID · Private identity checks
         </p>
+        <span className="text-muted-foreground/40">·</span>
+        <div className="text-[11px] text-muted-foreground">
+          <FaqDialog />
+        </div>
       </footer>
     </div>
   )

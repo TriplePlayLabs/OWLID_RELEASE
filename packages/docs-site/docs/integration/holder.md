@@ -1,6 +1,6 @@
 # Holder app integration
 
-You're building a wallet — the app the user opens to approve credential issuance, store SD-JWT VC credentials, and present them to verifiers. Or you don't want to build one at all and instead point users to the [official OwlID Wallet](/apps#owlid-wallet--for-holders).
+You're building a wallet — the app the user opens to approve credential issuance, store SD-JWT VC credentials, and present them to verifiers. Or you don't want to build one at all and instead point users to the [official Owl ID Wallet](/apps#owl-id-wallet--for-holders).
 
 ## Setup
 
@@ -222,9 +222,9 @@ const wallet = new OwlWallet(storage, unwrap, resolvePasskey, {
 })
 ```
 
-The OwlID holder app exposes a `/settings` page where the end user picks between the two — operators ship `OWLID_PROOF_SERVER_URL` (Cloud Run) or `VITE_PROOF_SERVER_URL` (Vite) to suggest a default endpoint.
+The Owl ID holder app exposes a `/settings` page where the end user picks between the two — operators ship `OWLID_PROOF_SERVER_URL` (Cloud Run) or `VITE_PROOF_SERVER_URL` (Vite) to suggest a default endpoint.
 
-If you self-host the proof server, the upstream `midnightntwrk/proof-server` image does **not** set CORS headers. Front it with a reverse proxy that injects `Access-Control-Allow-Origin` for your wallet's Origin — see `Dockerfile.proof-server` + `docker/proof-server/Caddyfile` in the OwlID repo for a working example.
+If you self-host the proof server, the upstream `midnightntwrk/proof-server` image does **not** set CORS headers. Front it with a reverse proxy that injects `Access-Control-Allow-Origin` for your wallet's Origin — see `Dockerfile.proof-server` + `docker/proof-server/Caddyfile` in the Owl ID repo for a working example.
 
 ## Reference
 

@@ -143,7 +143,10 @@ impl CredentialRepository {
     }
 
     /// Get a credential by root hash
-    pub async fn get_by_credential_id(&self, credential_id: &str) -> Result<Option<IssuedCredential>> {
+    pub async fn get_by_credential_id(
+        &self,
+        credential_id: &str,
+    ) -> Result<Option<IssuedCredential>> {
         let record = sqlx::query_as::<_, IssuedCredential>(
             r#"
             SELECT * FROM issued_credentials

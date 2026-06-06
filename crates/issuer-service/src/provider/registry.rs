@@ -116,7 +116,7 @@ impl Default for ProviderRegistry {
 mod tests {
     use super::*;
     use crate::models::{ProviderDescriptor, VerificationLevel};
-    use crate::normalizer::RawProviderClaims;
+
     use crate::provider::{ProviderFlowType, VerificationStart};
     use async_trait::async_trait;
     use uuid::Uuid;

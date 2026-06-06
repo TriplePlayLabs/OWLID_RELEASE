@@ -11,8 +11,8 @@ import {
   KeyPair,
   SdJwtVc,
   buildCardShape,
+  prewarmCredentialAttestations,
   storage,
-  wrapHolderKey,
   type VerifiedClaims,
   type WalletCredential,
 } from '@owlid/sdk'
@@ -25,6 +25,12 @@ import type {
 import { getCredentialsApi, getSessionsApi } from '@owlid/sdk/issuer'
 
 import { providersApi, sessionsApi, infoApi } from '~/lib/api'
+import { currentPasskeyId, wrapWalletHolderKey } from '~/lib/passkeys'
+import { beginVerificationSession, refreshWalletSession } from '~/lib/wallet-session'
+import {
+  backupIssuedCredential,
+  restoreCredentialsFromVerifiedSession,
+} from '~/lib/credential-recovery'
 
 function bearerHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}` }
@@ -36,6 +42,21 @@ function authedSessionsApi(token: string) {
 
 function authedCredentialsApi(token: string) {
   return getCredentialsApi({ headers: bearerHeaders(token) })
+}
+
+async function tryRestoreVerifiedSession(
+  sessionId: string,
+  sessionToken: string,
+): Promise<WalletCredential[]> {
+  try {
+    return await restoreCredentialsFromVerifiedSession({
+      api: authedCredentialsApi(sessionToken),
+      sessionId,
+    })
+  } catch (error) {
+    console.warn('Encrypted credential restore failed', error)
+    return []
+  }
 }
 
 function isoDate(value: Date | string): string {
@@ -109,6 +130,23 @@ interface ActiveRedirectSession {
   session: CreateSessionResponse
   sessionToken: string
   popup: Window | null
+  /** Provider display name (e.g. "Google", "Didit") for user-facing copy. */
+  providerName: string
+}
+
+/**
+ * Status line shown while the holder is away in the provider window.
+ * Names the actual provider (was hardcoded to "Didit") and only mentions
+ * the document-upload mobile handoff for `webhook_async` flows — OIDC
+ * redirects (e.g. Google) are a plain popup sign-in.
+ */
+export function redirectStatusMessage(active: ActiveRedirectSession | null): string | undefined {
+  if (!active) return undefined
+  const name = active.providerName.trim() || 'the provider'
+  if (active.session.flowType === 'webhook_async') {
+    return `Complete verification in ${name}. You can use ${name}'s mobile handoff; keep this tab open.`
+  }
+  return `Complete sign-in with ${name} in the popup window. Keep this tab open.`
 }
 
 async function issueAndStoreCredential(
@@ -117,8 +155,7 @@ async function issueAndStoreCredential(
   providerId: string,
   claims: VerifiedIdentityClaims,
 ): Promise<WalletCredential> {
-  const existingWebAuthn = await storage.loadWebAuthnCredential()
-  if (!existingWebAuthn) {
+  if (!(await currentPasskeyId())) {
     throw new Error('No WebAuthn credential found. Please register first.')
   }
 
@@ -127,6 +164,14 @@ async function issueAndStoreCredential(
   // passkey (existingWebAuthn) stays only as the unlock / UV gate.
   const holderKey = KeyPair.generate()
   const holderPublicKeyHex = holderKey.publicKeyHex()
+
+  // Wrap the holder seed BEFORE asking the issuer to mint. The wrap
+  // requires a passkey PRF assertion (UV prompt); if the user cancels
+  // or PRF is unavailable, we must NOT burn the one-shot issuance slot
+  // — `try_claim_issuance` flips `credential_issued` true→false only
+  // once per session. Doing the wrap first means a UV failure leaves
+  // the session reusable.
+  const wrapped = await wrapWalletHolderKey(holderKey.toHex())
 
   const issueResponse = await authedCredentialsApi(sessionToken).issueCredential({
     id: sessionId,
@@ -158,10 +203,25 @@ async function issueAndStoreCredential(
     holderPublicKeyHex,
   }
 
-  // Encrypt the Ed25519 holder seed with the passkey PRF before persisting —
-  // plaintext never touches storage; later use is gated by the passkey.
-  const wrapped = await wrapHolderKey(existingWebAuthn.credentialId, holderKey.toHex())
+  // Holder seed was wrapped above before the /issue call. Plaintext
+  // never touches storage; later use is gated by the passkey.
   await storage.addCredential(credential, wrapped)
+  try {
+    await backupIssuedCredential({
+      api: authedCredentialsApi(sessionToken),
+      sessionId,
+      credential,
+      holderSeedHex: holderKey.toHex(),
+    })
+  } catch (error) {
+    console.warn('Encrypted credential backup failed', error)
+  }
+  // Pre-warm keyless attestations (email_verified, age@18) off the hot path,
+  // fire-and-forget, so the first presentation hits `already-attested` instead
+  // of waiting on a chain write. Never blocks issuance.
+  void prewarmCredentialAttestations({ credential }).catch((error) =>
+    console.warn('Attestation pre-warm failed (non-blocking)', error),
+  )
   return credential
 }
 
@@ -218,15 +278,23 @@ export function useVerifyAndIssueWithWebAuthn() {
   const [activeRedirect, setActiveRedirect] = useState<ActiveRedirectSession | null>(null)
   const queryClient = useQueryClient()
 
+  // A redirect verification hands focus to a provider window, backgrounding
+  // this tab. Suspend auto-lock for its lifetime so the wallet does not lock
+  // behind the user mid-verification; the completion poll below keeps the
+  // unlock session warm so it does not lapse on the TTL either.
+  useEffect(() => {
+    if (!activeRedirect) return
+    return beginVerificationSession()
+  }, [activeRedirect])
+
   const startVerification = useMutation<
     WalletCredential | undefined,
     Error,
-    { providerId: string; username: string; popup?: Window | null }
+    { providerId: string; providerName: string; username: string; popup?: Window | null }
   >({
-    mutationFn: async ({ providerId, popup }) => {
+    mutationFn: async ({ providerId, providerName, popup }) => {
       // Step 1: Get existing WebAuthn credential (created during registration)
-      const existingWebAuthn = await storage.loadWebAuthnCredential()
-      if (!existingWebAuthn) {
+      if (!(await currentPasskeyId())) {
         popup?.close()
         throw new Error('No WebAuthn credential found. Please register first.')
       }
@@ -243,7 +311,6 @@ export function useVerifyAndIssueWithWebAuthn() {
       }
 
       // Step 3: Handle verification based on flow type
-      let claims: VerifiedIdentityClaims
       const flowType = session.flowType
 
       // Both Didit (webhook_async) and OIDC providers (oidc_redirect)
@@ -268,6 +335,7 @@ export function useVerifyAndIssueWithWebAuthn() {
           session,
           sessionToken: session.sessionToken,
           popup: provWindow,
+          providerName,
         })
         return undefined
       }
@@ -278,7 +346,13 @@ export function useVerifyAndIssueWithWebAuthn() {
       }
       popup?.close()
 
-      claims = await authedSessionsApi(session.sessionToken).autoVerify({ id: session.sessionId })
+      const claims = await authedSessionsApi(session.sessionToken).autoVerify({
+        id: session.sessionId,
+      })
+      // Restoring re-stores every backed-up card for this identity; return the
+      // first so the mutation resolves, the rest surface via the cache invalidate.
+      const restored = await tryRestoreVerifiedSession(session.sessionId, session.sessionToken)
+      if (restored.length > 0) return restored[0]
       return issueAndStoreCredential(
         session.sessionId,
         session.sessionToken,
@@ -299,6 +373,9 @@ export function useVerifyAndIssueWithWebAuthn() {
       if (!activeRedirect) {
         throw new Error('No active verification session')
       }
+      // Keep the unlock session warm while the user is away in the provider
+      // window so it does not expire before they return.
+      refreshWalletSession()
       return authedSessionsApi(activeRedirect.sessionToken).completeVerification({
         id: activeRedirect.session.sessionId,
       })
@@ -324,13 +401,19 @@ export function useVerifyAndIssueWithWebAuthn() {
     Error,
     { session: ActiveRedirectSession; claims: VerifiedIdentityClaims }
   >({
-    mutationFn: ({ session, claims }) =>
-      issueAndStoreCredential(
+    mutationFn: async ({ session, claims }) => {
+      const restored = await tryRestoreVerifiedSession(
+        session.session.sessionId,
+        session.sessionToken,
+      )
+      if (restored.length > 0) return restored[0]
+      return issueAndStoreCredential(
         session.session.sessionId,
         session.sessionToken,
         session.session.providerId,
         claims,
-      ),
+      )
+    },
     onSuccess: (_, vars) => {
       vars.session.popup?.close()
       setActiveRedirect(null)
@@ -342,36 +425,35 @@ export function useVerifyAndIssueWithWebAuthn() {
   })
   const issueVerifiedSessionMutate = issueVerifiedSession.mutate
 
-  useEffect(() => {
-    const data = completion.data
-    if (
-      !activeRedirect ||
-      !data ||
-      data.status !== 'verified' ||
-      !data.claims ||
-      issueVerifiedSession.isPending ||
-      issueVerifiedSession.isSuccess
-    ) {
-      return
-    }
-
-    issueVerifiedSessionMutate({
-      session: activeRedirect,
-      claims: data.claims as VerifiedIdentityClaims,
-    })
-  }, [
-    activeRedirect,
-    completion.data,
-    issueVerifiedSession.isPending,
-    issueVerifiedSession.isSuccess,
-    issueVerifiedSessionMutate,
-  ])
-
   const terminalStatus = completion.data?.status
   const terminalError =
     terminalStatus === 'failed' || terminalStatus === 'expired'
       ? new Error(completion.data?.message || `Verification ${terminalStatus}`)
       : null
+
+  // Verification completed at the provider but we have NOT yet asked the
+  // issuer to mint. Mobile browsers refuse `navigator.credentials.get`
+  // outside a user activation ("The document is not focused") so we
+  // surface this as an awaiting-confirmation state and require the user
+  // to tap a button — the click handler is the user gesture that lets
+  // WebAuthn's PRF assertion run reliably on iOS / Android.
+  const awaitingConfirmation =
+    !!activeRedirect &&
+    completion.data?.status === 'verified' &&
+    !!completion.data.claims &&
+    !issueVerifiedSession.isPending &&
+    !issueVerifiedSession.isSuccess
+
+  const confirmAndIssue = () => {
+    if (!activeRedirect) return
+    const data = completion.data
+    if (!data || data.status !== 'verified' || !data.claims) return
+    if (issueVerifiedSession.isPending || issueVerifiedSession.isSuccess) return
+    issueVerifiedSessionMutate({
+      session: activeRedirect,
+      claims: data.claims as VerifiedIdentityClaims,
+    })
+  }
 
   return {
     mutateAsync: startVerification.mutateAsync,
@@ -394,14 +476,20 @@ export function useVerifyAndIssueWithWebAuthn() {
       startVerification.isPending ||
       completion.isFetching ||
       issueVerifiedSession.isPending ||
-      (!!activeRedirect && !terminalError),
+      (!!activeRedirect && !terminalError && !awaitingConfirmation),
     // Only the final issuance counts as success. startVerification merely
     // opened the redirect session — treating it as success here would render
     // "Card added" even when the provider later declines.
     isSuccess: issueVerifiedSession.isSuccess,
     isRedirecting: !!activeRedirect && !issueVerifiedSession.data,
-    statusMessage: activeRedirect
-      ? "Complete verification in Didit. You can use Didit's mobile handoff; keep this tab open."
-      : undefined,
+    /** True once the provider says verified and we are waiting for the
+     * user to tap "Save credential". The UI MUST gate the issue call on
+     * a real click handler so WebAuthn's user-activation requirement is
+     * satisfied on mobile browsers. */
+    awaitingConfirmation,
+    /** Click handler that fires the actual `/issue` call. Safe to bind
+     * to a button — internally a no-op when not awaiting confirmation. */
+    confirmAndIssue,
+    statusMessage: redirectStatusMessage(activeRedirect),
   }
 }

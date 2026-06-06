@@ -23,6 +23,7 @@ impl VerificationLogRepository {
     }
 
     /// Log a verification attempt
+    #[allow(clippy::too_many_arguments)]
     pub async fn log_verification(
         &self,
         proof_data: &str,

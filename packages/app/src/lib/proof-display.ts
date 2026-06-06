@@ -11,6 +11,19 @@ export interface ProofGroup {
   entries: StoredProof[]
 }
 
+// Free-text filter over a proof's claim, display name, and predicate id.
+// Empty/whitespace query returns the list unchanged.
+export function filterProofs(proofs: StoredProof[], query: string): StoredProof[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return proofs
+  return proofs.filter(
+    (p) =>
+      p.claim.toLowerCase().includes(q) ||
+      p.name.toLowerCase().includes(q) ||
+      p.predicateId.toLowerCase().includes(q),
+  )
+}
+
 // `Today`, `Yesterday`, `Earlier this week`, then absolute month label.
 export function groupProofsByDay(proofs: StoredProof[]): ProofGroup[] {
   const buckets = new Map<string, StoredProof[]>()

@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { Cpu, Database, Fingerprint, Info, Loader2, Server } from 'lucide-react'
+import { CloudUpload, Cpu, Database, Fingerprint, Info, Loader2, Server } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@owlid/ui/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@owlid/ui/components/ui/card'
@@ -9,10 +9,12 @@ import { Input } from '@owlid/ui/components/ui/input'
 import { Label } from '@owlid/ui/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@owlid/ui/components/ui/radio-group'
 import { Separator } from '@owlid/ui/components/ui/separator'
+import { Switch } from '@owlid/ui/components/ui/switch'
 import { storage } from '@owlid/sdk'
 import { BackLink } from '~/components/BackLink'
 import {
   DEFAULT_SETTINGS,
+  effectiveBackendLabel,
   getOperatorProofServerUrl,
   hasOperatorProofServer,
   loadSettings,
@@ -71,6 +73,8 @@ function SettingsPage() {
 
       <ProvingSection settings={settings.data} onSave={save.mutate} />
       <Separator />
+      <RecoverySection settings={settings.data} onSave={save.mutate} />
+      <Separator />
       <StorageSection />
       <Separator />
       <IdentitySection />
@@ -100,10 +104,7 @@ function ProvingSection({
   const validationError = mode === 'proof-server' ? validateProofServerUrl(url) : null
   const dirty = mode !== settings.provingMode || url !== settings.proofServerUrl
   const trimmedUrl = url.trim()
-  const effectiveUrl =
-    mode === 'proof-server'
-      ? normalizeProofServerUrl(trimmedUrl || operatorUrl) || '(unset)'
-      : '(in-process)'
+  const effectiveBackend = effectiveBackendLabel({ mode, url, operatorUrl })
   const usingCustom = mode === 'proof-server' && trimmedUrl.length > 0 && trimmedUrl !== operatorUrl
 
   const onTest = async () => {
@@ -137,11 +138,20 @@ function ProvingSection({
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          Owl ID generates a zero-knowledge proof every time you present a credential.{' '}
-          <strong>WASM</strong> runs the prover inside this browser tab so your private witness
-          never leaves the device. <strong>Proof server</strong> sends the unproven transaction to a
-          hosted service that returns just the proof — faster on low-power devices, but the preimage
-          crosses the network.
+          Owl ID builds a zero-knowledge proof every time you present a credential.{' '}
+          <strong>WASM</strong> builds it inside this browser tab, so your private data never leaves
+          the device. <strong>Hosted proof server</strong> hands the proof's private input to a
+          hosted service that builds it for you — faster on low-power devices, but that input leaves
+          your device.{' '}
+          <a
+            href="https://docs.owlid.app/architecture/overview"
+            target="_blank"
+            rel="noreferrer"
+            className="underline hover:text-foreground"
+          >
+            Learn more
+          </a>
+          .
         </p>
 
         <RadioGroup
@@ -164,9 +174,8 @@ function ProvingSection({
             <div className="space-y-1">
               <span className="text-sm font-medium">Hosted proof server</span>
               <span className="block text-xs text-muted-foreground">
-                Faster on phones and tablets. Owl ID&apos;s hosted server runs the Midnight prover
-                with 4 CPUs and 8 GiB of RAM. The witness has already been consumed by circuit-exec
-                on device — only the unproven preimage is sent.
+                Faster on phones and tablets. The catch: the proof's private input leaves your
+                device for the hosted server, so you have to trust its operator.
               </span>
             </div>
           </Label>
@@ -201,10 +210,7 @@ function ProvingSection({
                     the operator default (<code>{operatorUrl}</code>).
                   </>
                 ) : (
-                  <>
-                    the built-in fallback. Self-hosters can run{' '}
-                    <code>midnightntwrk/proof-server</code> behind a CORS-enabled proxy.
-                  </>
+                  <>the built-in fallback.</>
                 )}{' '}
                 Custom URLs need <code>https://</code> (or <code>localhost</code>) and CORS headers
                 for this Origin.
@@ -212,7 +218,7 @@ function ProvingSection({
             )}
             {usingCustom && !validationError && (
               <p className="text-xs text-amber-400/90">
-                Using a custom server — your unproven preimage is sent there. Trust the operator
+                Using a custom server — your proof's private input is sent there. Trust the operator
                 before enabling.
               </p>
             )}
@@ -221,7 +227,7 @@ function ProvingSection({
 
         <div className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">Effective backend: </span>
-          {mode === 'wasm' ? 'WASM' : `proof server → ${effectiveUrl}`}
+          <span data-testid="settings-effective-backend">{effectiveBackend}</span>
         </div>
 
         <div className="flex flex-wrap justify-end gap-2 pt-1">
@@ -261,6 +267,7 @@ function ProvingSection({
               onSave({
                 provingMode: mode,
                 proofServerUrl: normalizeProofServerUrl(url),
+                encryptedRecoveryEnabled: settings.encryptedRecoveryEnabled,
               })
             }
             data-testid="settings-proving-save"
@@ -268,6 +275,52 @@ function ProvingSection({
             Save
           </Button>
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function RecoverySection({
+  settings,
+  onSave,
+}: {
+  settings: AppSettings
+  onSave: (next: AppSettings) => void
+}) {
+  const enabled = settings.encryptedRecoveryEnabled
+  return (
+    <Card data-testid="settings-section-recovery">
+      <CardHeader className="flex flex-row items-center gap-2 space-y-0">
+        <CloudUpload className="w-4 h-4 text-muted-foreground" />
+        <CardTitle className="text-base">Encrypted recovery</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <Label htmlFor="encrypted-recovery" className="text-sm font-medium">
+              Save encrypted credential backups
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              New credentials are backed up as passkey-encrypted ciphertext after provider
+              verification. Owl ID can see that a backup exists for that provider identity, but not
+              the credential contents or holder key.
+            </p>
+          </div>
+          <Switch
+            id="encrypted-recovery"
+            checked={enabled}
+            onCheckedChange={(checked) =>
+              onSave({ ...settings, encryptedRecoveryEnabled: checked === true })
+            }
+            aria-label="Save encrypted credential backups"
+          />
+        </div>
+        {enabled && (
+          <p className="text-xs text-amber-400/90">
+            Restoring still requires fresh provider verification and the same synced passkey. Keep a
+            local device backup if your passkey provider does not sync PRF-capable passkeys.
+          </p>
+        )}
       </CardContent>
     </Card>
   )
@@ -292,7 +345,9 @@ function StorageSection() {
         </Row>
         <p className="text-xs text-muted-foreground pt-1">
           Credentials, passkeys, and proof receipts live in this browser&apos;s IndexedDB /
-          localStorage. Clearing site data or resetting from the menu removes them permanently.
+          localStorage. Clearing site data or resetting from the menu removes them permanently from
+          this device. It does not revoke anything on the network — a credential already issued to
+          you stays valid until it expires.
         </p>
       </CardContent>
     </Card>
@@ -323,8 +378,8 @@ function IdentitySection() {
             : (trimmedId ?? <span className="text-muted-foreground">not registered</span>)}
         </Row>
         <p className="text-xs text-muted-foreground pt-1">
-          Your passkey is bound to this device and unlocks the seed that signs every presentation.
-          It never leaves the platform authenticator.
+          Your saved passkey unlocks the local wallet keys that sign presentations. The passkey
+          private key never leaves your authenticator or password manager.
         </p>
       </CardContent>
     </Card>

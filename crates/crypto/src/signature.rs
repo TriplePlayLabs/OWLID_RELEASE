@@ -1,5 +1,10 @@
-use ed25519_dalek::{Signer as Ed25519Signer, SigningKey as Ed25519SigningKey, Verifier as Ed25519Verifier, VerifyingKey as Ed25519VerifyingKey};
-use p256::ecdsa::{Signature as P256Signature, SigningKey as P256SigningKey, VerifyingKey as P256VerifyingKey};
+use ed25519_dalek::{
+    Signer as Ed25519Signer, SigningKey as Ed25519SigningKey, Verifier as Ed25519Verifier,
+    VerifyingKey as Ed25519VerifyingKey,
+};
+use p256::ecdsa::{
+    Signature as P256Signature, SigningKey as P256SigningKey, VerifyingKey as P256VerifyingKey,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -74,9 +79,10 @@ impl KeyPair {
     ) -> Result<Self, SignatureError> {
         match algorithm {
             SignatureAlgorithm::Ed25519 => {
-                let signing_key = Ed25519SigningKey::from_bytes(bytes.try_into().map_err(|_| {
-                    SignatureError::InvalidPrivateKey("Invalid Ed25519 key length".to_string())
-                })?);
+                let signing_key =
+                    Ed25519SigningKey::from_bytes(bytes.try_into().map_err(|_| {
+                        SignatureError::InvalidPrivateKey("Invalid Ed25519 key length".to_string())
+                    })?);
                 Ok(Self {
                     algorithm,
                     ed25519_key: Some(signing_key),
@@ -202,12 +208,11 @@ impl PublicKey {
     ) -> Result<Self, SignatureError> {
         match algorithm {
             SignatureAlgorithm::Ed25519 => {
-                let verifying_key = Ed25519VerifyingKey::from_bytes(
-                    bytes.try_into().map_err(|_| {
+                let verifying_key =
+                    Ed25519VerifyingKey::from_bytes(bytes.try_into().map_err(|_| {
                         SignatureError::InvalidPublicKey("Invalid Ed25519 key length".to_string())
-                    })?,
-                )
-                .map_err(|e| SignatureError::InvalidPublicKey(e.to_string()))?;
+                    })?)
+                    .map_err(|e| SignatureError::InvalidPublicKey(e.to_string()))?;
                 Ok(Self {
                     algorithm,
                     ed25519_key: Some(verifying_key),
@@ -215,8 +220,9 @@ impl PublicKey {
                 })
             }
             SignatureAlgorithm::EcdsaP256 => {
-                let verifying_key = P256VerifyingKey::from_sec1_bytes(bytes)
-                    .map_err(|e| SignatureError::InvalidPublicKey(format!("Invalid P-256 key: {}", e)))?;
+                let verifying_key = P256VerifyingKey::from_sec1_bytes(bytes).map_err(|e| {
+                    SignatureError::InvalidPublicKey(format!("Invalid P-256 key: {}", e))
+                })?;
                 Ok(Self {
                     algorithm,
                     ed25519_key: None,
@@ -300,7 +306,7 @@ impl PublicKey {
                 return Err(SignatureError::InvalidPublicKey(format!(
                     "Unrecognized public key length: {} bytes (expected 32 for Ed25519, or 33/65 for P-256 SEC1)",
                     n
-                )))
+                )));
             }
         };
         Self::from_bytes_with_algorithm(&bytes, alg)
@@ -434,8 +440,8 @@ mod p256_key_serde {
         match opt {
             Some(hex_str) => {
                 let bytes = hex::decode(hex_str).map_err(serde::de::Error::custom)?;
-                let key = P256VerifyingKey::from_sec1_bytes(&bytes)
-                    .map_err(serde::de::Error::custom)?;
+                let key =
+                    P256VerifyingKey::from_sec1_bytes(&bytes).map_err(serde::de::Error::custom)?;
                 Ok(Some(key))
             }
             None => Ok(None),
@@ -530,7 +536,8 @@ mod tests {
         let keypair = KeyPair::generate_with_algorithm(SignatureAlgorithm::EcdsaP256);
         let public_key = keypair.public_key();
         let hex = public_key.to_hex();
-        let restored = PublicKey::from_hex_with_algorithm(&hex, SignatureAlgorithm::EcdsaP256).unwrap();
+        let restored =
+            PublicKey::from_hex_with_algorithm(&hex, SignatureAlgorithm::EcdsaP256).unwrap();
         assert_eq!(public_key, restored);
     }
 
@@ -550,6 +557,10 @@ mod tests {
         let restored_signature: Signature = serde_json::from_str(&signature_json).unwrap();
 
         // Verify still works
-        assert!(restored_public_key.verify(message, &restored_signature).is_ok());
+        assert!(
+            restored_public_key
+                .verify(message, &restored_signature)
+                .is_ok()
+        );
     }
 }

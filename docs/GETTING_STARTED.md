@@ -122,7 +122,7 @@ import {
   SdJwtVc,
   storage,
   buildCardShape,
-  wrapHolderKey,
+  sealHolderKey,
   registerCredential,
 } from '@owlid/sdk'
 
@@ -134,7 +134,9 @@ const issuer = new OwlIssuer({
 // 1. Mint a passkey + a wallet-held holder key, PRF-wrap the 32-byte seed.
 const passkey = await registerCredential({ rpName: 'OwlID', rpId: 'localhost', userName: 'alice' })
 const holder = KeyPair.generate()
-const wrapped = await wrapHolderKey(passkey.credentialId, holder.toHex())
+// `sealHolderKey` returns the opaque blob plus the passkey that supplied the
+// PRF output (pass `null` as the id to let the browser show the picker).
+const { blob: wrapped } = await sealHolderKey(passkey.credentialId, holder.toHex())
 
 // 2. Open an issuance session and submit the verified claims.
 const session = await issuer.startSession('mock-digid')
@@ -174,7 +176,7 @@ import { presentSdJwtVc } from '@owlid/sdk'
 // presentSdJwtVc(sdJwtVc, holderKeyHex, disclose, { aud, nonce }) — synchronous.
 const presentation = presentSdJwtVc(
   storedCredential.sdJwtVc,
-  holderKeyHex, // unlocked holder seed hex, from unwrapHolderKey()
+  holderKeyHex, // unlocked holder seed hex, from openHolderKey()
   ['given_name', 'age_over_18'],
   { aud: verifierOrigin, nonce: verifierNonce }, // bound into the KB-JWT
 )

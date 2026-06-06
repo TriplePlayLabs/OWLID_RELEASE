@@ -20,28 +20,42 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutedPredicate {
-    AgeGte { threshold: u64 },
+    AgeGte {
+        threshold: u64,
+    },
     /// Inclusive age range (`min_age <= age <= max_age`). Both bounds
     /// are carried in the DCQL claim `values` as one object
     /// `{ "min": <u64>, "max": <u64> }` and bind the on-chain key.
-    AgeRange { min: u64, max: u64 },
-    KycGte { threshold: u64 },
+    AgeRange {
+        min: u64,
+        max: u64,
+    },
+    KycGte {
+        threshold: u64,
+    },
     /// Nationality ∈ verifier-supplied allowed set (ISO 3166-1 alpha-2,
     /// ≤64 codes — mirrors the Compact `Vector<64, Bytes<32>>` witness).
     /// The on-chain attestation key binds to a per-verifier hash of the
     /// canonical set (see `attestation::allowed_country_set_hash`); the
     /// set itself never appears in the on-chain transcript.
-    NationalityIn { countries: Vec<String> },
+    NationalityIn {
+        countries: Vec<String>,
+    },
     /// Residency country ∈ verifier-supplied allowed set. Same shape as
     /// `NationalityIn` but for the holder's residence country.
-    ResidencyIn { countries: Vec<String> },
+    ResidencyIn {
+        countries: Vec<String>,
+    },
     EmailVerified,
     /// Sybil-resistant unique personhood. `epoch` + `app_id` are the
     /// verifier's presentation-time scope (32-byte hex each), carried
     /// in the DCQL claim `values` — they bind the on-chain nullifier so
     /// the same human cannot double-claim within one (campaign, round)
     /// yet stays uncorrelated across campaigns.
-    UniquePersonhood { epoch: String, app_id: String },
+    UniquePersonhood {
+        epoch: String,
+        app_id: String,
+    },
 }
 
 /// Best-effort routing for a single DCQL claim. Returns `None` when
@@ -53,12 +67,12 @@ pub fn route_claim(path: &str, values: &[serde_json::Value]) -> Option<RoutedPre
     match path {
         "age_over" => pick_age_threshold(values),
         "age_range" => pick_age_range(values),
-        "nationality_in" => pick_country_set(values).map(|countries| {
-            RoutedPredicate::NationalityIn { countries }
-        }),
-        "resident_in" => pick_country_set(values).map(|countries| {
-            RoutedPredicate::ResidencyIn { countries }
-        }),
+        "nationality_in" => {
+            pick_country_set(values).map(|countries| RoutedPredicate::NationalityIn { countries })
+        }
+        "resident_in" => {
+            pick_country_set(values).map(|countries| RoutedPredicate::ResidencyIn { countries })
+        }
         // Legacy synonym kept for older verifier configs — translates to
         // the EU-27 country set.
         "nationality_eu" => Some(RoutedPredicate::NationalityIn {
@@ -78,8 +92,8 @@ pub fn route_claim(path: &str, values: &[serde_json::Value]) -> Option<RoutedPre
 /// credentials. Order matches `crates/proof-system/src/eu.rs` if/when
 /// that file is added; for now the constant lives here.
 pub const EU_COUNTRY_CODES: &[&str] = &[
-    "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GR", "HR", "HU",
-    "IE", "IT", "LT", "LU", "LV", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK",
+    "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GR", "HR", "HU", "IE", "IT",
+    "LT", "LU", "LV", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK",
 ];
 
 /// Pick an array of ISO 3166-1 alpha-2 country codes from the DCQL

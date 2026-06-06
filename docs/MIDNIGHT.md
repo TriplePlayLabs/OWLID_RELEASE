@@ -57,19 +57,23 @@ transactions).
 
 **Source layout**
 
-| File                 | Role                                                             |
-| -------------------- | ---------------------------------------------------------------- |
-| `index.ts`           | Hono app, route mounting, API-key middleware.                    |
-| `config.ts`          | Env-driven config — network endpoints, contract addresses.       |
-| `client.ts`          | Midnight providers (node, indexer, proof server, private state). |
-| `wallet.ts`          | Sidecar wallet — balances + submits chain transactions.          |
-| `deploy.ts`          | Contract deployment (`bun run deploy`).                          |
-| `compile-all.ts`     | Compiles every Compact contract.                                 |
-| `events.ts`          | Diffs `contractStateObservable`, emits typed SSE events.         |
-| `midnight.ts`        | Contract-call orchestration.                                     |
-| `inprocess-proof.ts` | In-process zkir-v2 prover (backend-side balancing / fallback).   |
-| `witnesses.ts`       | Witness providers for sidecar-side contract calls.               |
-| `routes/*.ts`        | `issuer`, `revocation`, `identity`, `predicates`, `events`.      |
+| File                   | Role                                                                                |
+| ---------------------- | ----------------------------------------------------------------------------------- |
+| `index.ts`             | Hono app, route mounting, API-key middleware.                                       |
+| `config.ts`            | Env-driven config — network endpoints, contract addresses.                          |
+| `client.ts`            | Midnight providers (node, indexer, proof server, private state).                    |
+| `wallet.ts`            | Sidecar wallet — balance/reserve/broadcast; proof-server balance + WASM fallback.   |
+| `wallet-supervisor.ts` | Keeps the wallet synced; serialized submit pipeline + dust reaper.                  |
+| `submit-pipeline.ts`   | Balance+reserve under a lock, broadcast outside it (see §3.5).                      |
+| `relay-batcher.ts`     | Coalesces concurrent relays into one merged tx (see §3.5).                          |
+| `dust-errors.ts`       | Classifies a dust shortfall (retryable) vs terminal failures.                       |
+| `deploy.ts`            | Contract deployment (`bun run deploy`). Local deploys never touch terraform.tfvars. |
+| `compile-all.ts`       | Compiles every Compact contract.                                                    |
+| `events.ts`            | Diffs `contractStateObservable`, emits typed SSE events.                            |
+| `midnight.ts`          | Contract-call orchestration.                                                        |
+| `inprocess-proof.ts`   | In-process zkir-v2 prover (backend-side balancing / fallback).                      |
+| `witnesses.ts`         | Witness providers for sidecar-side contract calls.                                  |
+| `routes/*.ts`          | `issuer`, `revocation`, `identity`, `predicates`, `events`.                         |
 
 **Routes** (all `/api/*` and `/events` require `Authorization: Bearer
 <MIDNIGHT_SIDECAR_API_KEY>`; `/health` is open):
@@ -80,6 +84,60 @@ transactions).
 - `/api/predicates/{kind}/*` — predicate `snapshot` (off-chain state for
   on-device proving) and `relay` (submit a holder's proven transaction).
 - `/events` — SSE state stream (see §3).
+
+---
+
+## 3.5 Sidecar throughput, batching & balance offload
+
+Every on-chain write funnels through the **one** sidecar wallet, so the submit
+path is the scaling chokepoint. The design keeps it concurrent and cheap:
+
+**Pipelined submit (`submit-pipeline.ts`).** A submit has two phases. Phase 1
+(balance + `addPendingTransaction` reserve) is serialized — it must be atomic so
+two concurrent balances can't pick the same dust/coin UTXO. Phase 2 (broadcast
+to the mempool at `waitForStatus: 'Submitted'`) runs **outside** the lock: the
+reservation already excludes this tx's UTXOs, so the slow network leg pipelines
+instead of holding the lock through block inclusion. Block inclusion +
+finalization are tracked out-of-band by the relay SSE, not on the submit path.
+
+**Dust-shortfall retry.** A balance that hits `Insufficient Funds: could not
+balance dust` is usually transient (pending UTXOs from a just-submitted tx, or
+`dust.balance(now)` reading `0` for a beat). The pipeline reaps stale pending
+entries, waits `WALLET_DUST_RETRY_WAIT_MS`, and retries balance+reserve once.
+Non-dust failures (e.g. a node reject) are terminal — never retried.
+
+**Relay batching (`relay-batcher.ts`).** Concurrent `/predicates/{kind}/relay`
+calls are buffered for `RELAY_BATCH_WINDOW_MS` (or until `RELAY_BATCH_MAX`),
+`Transaction.merge`d into ONE tx, and balanced+submitted once — so a single
+~balance amortizes across the whole batch. A merged tx is atomic (attest calls
+are in the guaranteed section); if one member is invalid the submit fails and
+the batcher **bisects** to per-tx submits so a single poison tx can't starve the
+rest.
+
+**Balance proof offload.** The wallet's balance dust re-prove is the dominant
+cost (~10 s in-process WASM). When `MIDNIGHT_PROOF_SERVER_URI` is set it runs on
+the proof server instead (~0.2 s measured), with an in-process WASM **fallback**
+if the proof server errors — an outage slows balances, never fails them. The
+holder's predicate proof stays on-device (§5); this only moves the wallet's
+own balancing leg.
+
+**Contract-call serialization.** All contract `callTx` writes
+(`registerIdentity`, `registerIssuer`, `revoke`, `attest*`, …) share one
+`levelPrivateStateProvider` (LevelDB, single-handle). They are serialized
+through one chain so concurrent writes queue instead of racing the DB lock
+(`Database failed to open`). This path is lower-frequency (issuance/admin); the
+relay path above does not touch private state, so it stays fully concurrent.
+
+**Pre-warm.** `prewarmCredentialAttestations` (`@owlid/sdk`) attests a
+credential's keyless predicates (`email_verified`, `age>=18`) right after
+issuance, off the presentation hot path, so the first presentation hits the
+`already-attested` fast path with no chain write.
+
+**Measured (local devnet).** Balance 10 s → ~0.2 s (proof server). 8 concurrent
+relays → 1 merged tx, 1 balance, 0 dust-locks. The relay throughput ceiling is
+the per-batch balance, not the wallet lock; most presentations are
+`already-attested` and never touch the chain. Load harness:
+`packages/midnight-sidecar/scripts/relay-load.ts` (`bun run scripts/relay-load.ts --n=8`).
 
 ---
 
@@ -223,18 +281,22 @@ are the load-bearing write paths and are confirmed end-to-end.
 
 Environment variables (the active `.env` symlink — `just env local|preview`):
 
-| Variable                           | Purpose                                              |
-| ---------------------------------- | ---------------------------------------------------- |
-| `MIDNIGHT_NETWORK_ID`              | `undeployed` (local devnet) / `preview` / mainnet.   |
-| `MIDNIGHT_NODE_WS_URL`             | Node RPC WebSocket.                                  |
-| `MIDNIGHT_INDEXER_URI` / `_WS_URI` | Indexer GraphQL HTTP / WS.                           |
-| `MIDNIGHT_PROOF_SERVER_URI`        | Proof server.                                        |
-| `MIDNIGHT_SIDECAR_PORT`            | Sidecar port (default 3000).                         |
-| `MIDNIGHT_SIDECAR_URL`             | Sidecar base URL the Rust services call.             |
-| `MIDNIGHT_SIDECAR_API_KEY`         | Bearer key for `/api/*` and `/events`.               |
-| `MIDNIGHT_SIDECAR_TIMEOUT`         | HTTP timeout — raise it; a write tx can exceed 30 s. |
-| `MIDNIGHT_WALLET_MNEMONIC`         | Sidecar wallet seed (testnet/mainnet).               |
-| `MIDNIGHT_*_REGISTRY_ADDRESS`      | Deployed contract addresses (written by `deploy`).   |
+| Variable                           | Purpose                                                                                                                                                                       |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MIDNIGHT_NETWORK_ID`              | `undeployed` (local devnet) / `preview` / mainnet.                                                                                                                            |
+| `MIDNIGHT_NODE_WS_URL`             | Node RPC WebSocket.                                                                                                                                                           |
+| `MIDNIGHT_INDEXER_URI` / `_WS_URI` | Indexer GraphQL HTTP / WS.                                                                                                                                                    |
+| `MIDNIGHT_PROOF_SERVER_URI`        | Proof server. Also offloads the wallet balance proof (§3.5); unset ⇒ in-process WASM.                                                                                         |
+| `WALLET_DUST_RETRY_WAIT_MS`        | Settle-wait before the one dust-shortfall retry (default 3000).                                                                                                               |
+| `RELAY_BATCH_WINDOW_MS`            | Relay coalescing window (default 250).                                                                                                                                        |
+| `RELAY_BATCH_MAX`                  | Max relays merged into one tx (default 32).                                                                                                                                   |
+| `ISSUER_RECOVERY_INDEX_SECRET`     | (issuer-service) HMAC key for recovery-backup subject index. Unset ⇒ a dedicated persisted secret is generated — NOT the signing key, so key rotation doesn't orphan backups. |
+| `MIDNIGHT_SIDECAR_PORT`            | Sidecar port (default 3000).                                                                                                                                                  |
+| `MIDNIGHT_SIDECAR_URL`             | Sidecar base URL the Rust services call.                                                                                                                                      |
+| `MIDNIGHT_SIDECAR_API_KEY`         | Bearer key for `/api/*` and `/events`.                                                                                                                                        |
+| `MIDNIGHT_SIDECAR_TIMEOUT`         | HTTP timeout — raise it; a write tx can exceed 30 s.                                                                                                                          |
+| `MIDNIGHT_WALLET_MNEMONIC`         | Sidecar wallet seed (testnet/mainnet).                                                                                                                                        |
+| `MIDNIGHT_*_REGISTRY_ADDRESS`      | Deployed contract addresses (written by `deploy`).                                                                                                                            |
 
 `setNetworkId(...)` must be called before any wallet operation; on the local
 devnet it is `'undeployed'`.

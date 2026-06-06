@@ -51,7 +51,7 @@ impl ApiKeyRepository {
         .bind(&name)
         .bind(&description)
         .bind(&permissions_json)
-        .bind(&expires_at)
+        .bind(expires_at)
         .bind(&created_by)
         .bind(key_type)
         .bind(environment)

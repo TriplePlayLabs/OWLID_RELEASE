@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as FaqRouteImport } from './routes/faq'
 import { Route as IdentityRouteRouteImport } from './routes/_identity/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as IdentityWalletRouteImport } from './routes/_identity/wallet'
@@ -19,6 +20,11 @@ import { Route as IdentityLoginRouteImport } from './routes/_identity/login'
 import { Route as IdentityCallbackRouteImport } from './routes/_identity/callback'
 import { Route as IdentityAddProviderRouteImport } from './routes/_identity/add-provider'
 
+const FaqRoute = FaqRouteImport.update({
+  id: '/faq',
+  path: '/faq',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IdentityRouteRoute = IdentityRouteRouteImport.update({
   id: '/_identity',
   getParentRoute: () => rootRouteImport,
@@ -66,6 +72,7 @@ const IdentityAddProviderRoute = IdentityAddProviderRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/faq': typeof FaqRoute
   '/add-provider': typeof IdentityAddProviderRoute
   '/callback': typeof IdentityCallbackRoute
   '/login': typeof IdentityLoginRoute
@@ -76,6 +83,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/faq': typeof FaqRoute
   '/add-provider': typeof IdentityAddProviderRoute
   '/callback': typeof IdentityCallbackRoute
   '/login': typeof IdentityLoginRoute
@@ -88,6 +96,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_identity': typeof IdentityRouteRouteWithChildren
+  '/faq': typeof FaqRoute
   '/_identity/add-provider': typeof IdentityAddProviderRoute
   '/_identity/callback': typeof IdentityCallbackRoute
   '/_identity/login': typeof IdentityLoginRoute
@@ -100,6 +109,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/faq'
     | '/add-provider'
     | '/callback'
     | '/login'
@@ -110,6 +120,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/faq'
     | '/add-provider'
     | '/callback'
     | '/login'
@@ -121,6 +132,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/_identity'
+    | '/faq'
     | '/_identity/add-provider'
     | '/_identity/callback'
     | '/_identity/login'
@@ -133,10 +145,18 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   IdentityRouteRoute: typeof IdentityRouteRouteWithChildren
+  FaqRoute: typeof FaqRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/faq': {
+      id: '/faq'
+      path: '/faq'
+      fullPath: '/faq'
+      preLoaderRoute: typeof FaqRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_identity': {
       id: '/_identity'
       path: ''
@@ -230,6 +250,7 @@ const IdentityRouteRouteWithChildren = IdentityRouteRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   IdentityRouteRoute: IdentityRouteRouteWithChildren,
+  FaqRoute: FaqRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

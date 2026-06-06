@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use serde::de::IgnoredAny;
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 use serde_json::Value as JsonValue;
 
 use crate::state::AppState;
@@ -84,7 +84,11 @@ async fn consume(
     base_url: &str,
     api_key: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let url = format!("{}/events?topics={}", base_url.trim_end_matches('/'), TOPICS);
+    let url = format!(
+        "{}/events?topics={}",
+        base_url.trim_end_matches('/'),
+        TOPICS
+    );
     let resp = reqwest::Client::new()
         .get(&url)
         .bearer_auth(api_key)
@@ -171,16 +175,18 @@ async fn handle(state: &Arc<AppState>, event: Event) {
                 Ok(_) => tracing::info!("[sse] issuer active {}", public_key),
                 Err(e) => tracing::warn!("[sse] issuer upsert {} failed: {}", public_key, e),
             },
-            "DEACTIVATED" | "INACTIVE" => match state.issuers.get_by_public_key(&public_key).await {
-                Ok(issuer) => {
-                    if let Err(e) = state.issuers.update_status(issuer.id, false).await {
-                        tracing::warn!("[sse] issuer deactivate {} failed: {}", public_key, e);
+            "DEACTIVATED" | "INACTIVE" => {
+                match state.issuers.get_by_public_key(&public_key).await {
+                    Ok(issuer) => {
+                        if let Err(e) = state.issuers.update_status(issuer.id, false).await {
+                            tracing::warn!("[sse] issuer deactivate {} failed: {}", public_key, e);
+                        }
+                    }
+                    Err(_) => {
+                        tracing::debug!("[sse] deactivate event for unknown issuer {}", public_key);
                     }
                 }
-                Err(_) => {
-                    tracing::debug!("[sse] deactivate event for unknown issuer {}", public_key);
-                }
-            },
+            }
             other => tracing::warn!("[sse] unknown issuer status: {other}"),
         },
         Event::Identity(_) => {

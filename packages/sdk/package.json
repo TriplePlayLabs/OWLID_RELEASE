@@ -32,7 +32,7 @@
     "build": "tsc && bun run copy:midnight-contracts",
     "dev": "tsc --watch",
     "check": "tsc --noEmit",
-    "test": "bun test tests/",
+    "test": "bun test --isolate tests/",
     "clean": "rm -rf dist",
     "copy:midnight-contracts": "bun run scripts/midnight-contracts.ts",
     "sync:midnight-assets": "bun run ../../scripts/sync-midnight-assets.ts"

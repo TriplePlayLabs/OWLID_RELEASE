@@ -376,32 +376,39 @@ async function main() {
   writeFileSync(envPath, envContent)
   console.log(`  Updated: ${envPath}`)
 
-  // terraform.tfvars carries the same contract addresses (public, on-chain)
-  // so Cloud Run revisions read them without a rebuild. The Terraform
-  // variable for each contract is `midnight_<envSuffix lowercased>_address`.
-  // Best-effort: a checkout without the GCP deploy tree just skips this.
+  // terraform.tfvars carries the deployed (preview/testnet/mainnet) contract
+  // addresses for Cloud Run. A LOCAL devnet deploy (networkId 'undeployed')
+  // must NOT touch it — its addresses are local-only and would clobber the
+  // preview addresses Terraform applies to GCP. Only real (non-local) deploys
+  // update tfvars.
   const tfvarsPath = join(repoRoot, 'deploy', 'gcp', 'terraform', 'terraform.tfvars')
-  try {
-    let tfvars = readFileSync(tfvarsPath, 'utf-8')
-    let updated = 0
-    const missing: string[] = []
-    for (const [suffix, addr] of Object.entries(addresses)) {
-      const tfKey = `midnight_${suffix.toLowerCase()}_address`
-      const re = new RegExp(`^(${tfKey}\\s*=\\s*)"[^"]*"`, 'm')
-      if (re.test(tfvars)) {
-        tfvars = tfvars.replace(re, `$1"${addr}"`)
-        updated++
-      } else {
-        missing.push(tfKey)
+  if (networkId === 'undeployed') {
+    console.log(
+      `  Skipped terraform.tfvars (local network '${networkId}' — preview addresses preserved)`,
+    )
+  } else {
+    try {
+      let tfvars = readFileSync(tfvarsPath, 'utf-8')
+      let updated = 0
+      const missing: string[] = []
+      for (const [suffix, addr] of Object.entries(addresses)) {
+        const tfKey = `midnight_${suffix.toLowerCase()}_address`
+        const re = new RegExp(`^(${tfKey}\\s*=\\s*)"[^"]*"`, 'm')
+        if (re.test(tfvars)) {
+          tfvars = tfvars.replace(re, `$1"${addr}"`)
+          updated++
+        } else {
+          missing.push(tfKey)
+        }
       }
+      writeFileSync(tfvarsPath, tfvars)
+      console.log(`  Updated: ${tfvarsPath} (${updated}/${DEPLOY_TABLE.length} vars)`)
+      if (missing.length > 0) {
+        console.log(`  WARNING tfvars missing keys (add them manually): ${missing.join(', ')}`)
+      }
+    } catch {
+      console.log(`  Skipped terraform.tfvars (not present at ${tfvarsPath})`)
     }
-    writeFileSync(tfvarsPath, tfvars)
-    console.log(`  Updated: ${tfvarsPath} (${updated}/${DEPLOY_TABLE.length} vars)`)
-    if (missing.length > 0) {
-      console.log(`  WARNING tfvars missing keys (add them manually): ${missing.join(', ')}`)
-    }
-  } catch {
-    console.log(`  Skipped terraform.tfvars (not present at ${tfvarsPath})`)
   }
   console.log()
 

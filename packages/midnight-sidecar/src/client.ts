@@ -98,16 +98,17 @@ export async function initClient(config: SidecarConfig): Promise<MidnightClient>
       getCoinPublicKey: () => supervisor?.getWallet().coinPublicKey ?? config.coinPublicKey,
       getEncryptionPublicKey: () =>
         supervisor?.getWallet().encryptionPublicKey ?? config.encryptionPublicKey,
-      // Route through the supervisor: `ensureReady` blocks until the
-      // wallet's three sub-wallets all report `isCompleteWithin()`
-      // (SDK's looser predicate — connected + lag ≤ 50 blocks) so the
-      // relay never balances against a wallet whose indexer connection
-      // has just dropped. The SDK's `Stream.retry` reconnects WS on
-      // its own; we wait for that, we do not rebuild the wallet.
+      // Route through the supervisor. With the Lace-style submit
+      // path the balance + submit are fused into a single serialized
+      // step (`supervisor.submitTx`) — so the wallet provider's
+      // `balanceTx` is a pass-through identity. The midnight-js
+      // contract layer always calls `balanceTx` then `submitTx`; by
+      // returning the raw tx here we defer all the real work to
+      // `submitTx` where preflight + retry + serializer apply.
       balanceTx: supervisor
         ? async (tx: unknown) => {
             await supervisor!.ensureReady()
-            return supervisor!.getWallet().balanceTx(tx)
+            return tx
           }
         : async (tx: unknown) => {
             console.warn(
@@ -120,17 +121,7 @@ export async function initClient(config: SidecarConfig): Promise<MidnightClient>
     midnightProvider: {
       submitTx: supervisor
         ? async (tx: unknown) => {
-            await supervisor!.ensureReady()
-            try {
-              return await supervisor!.getWallet().submitTx(tx)
-            } catch (e) {
-              // Surface the submit error to the caller. The SDK's own
-              // node-client retry path handles transient Polkadot
-              // disconnects; a wallet-level rebuild here would discard
-              // the in-memory UTXO set and is never the right response.
-              supervisor!.notifySubmitFailed()
-              throw e
-            }
+            return supervisor!.submitTx(tx)
           }
         : async (_tx: unknown) => {
             console.warn(

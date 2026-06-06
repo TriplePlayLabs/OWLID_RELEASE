@@ -2,7 +2,7 @@
 
 You receive an SD-JWT VC presentation from a holder and need to confirm it. Two flows: direct verification (you already hold the presentation string) and presentation (you show a QR and the holder pushes one to you).
 
-If you don't need a custom UI, the [OwlID Verifier](/apps#owlid-verifier--for-relying-parties) is a hosted browser scanner that does this end-to-end — useful for kiosks, door checks, and one-off verifications.
+If you don't need a custom UI, the [Owl ID Verifier](/apps#owl-id-verifier--for-relying-parties) is a hosted browser scanner that does this end-to-end — useful for kiosks, door checks, and one-off verifications.
 
 ## Setup
 
@@ -141,7 +141,7 @@ In Node, use `verifier.revocationFeedUrl()` with your own WebSocket client (`nod
 
 ## Trusted issuers
 
-OwlID anchors issuer keys on-chain via the Midnight `issuer_registry` Compact contract; the verification service mirrors that state and resolves `did:web` issuer identifiers against it. Your verification calls automatically consult both. List the issuers visible to your account:
+Owl ID anchors issuer keys on-chain via the Midnight `issuer_registry` Compact contract; the verification service mirrors that state and resolves `did:web` issuer identifiers against it. Your verification calls automatically consult both. List the issuers visible to your account:
 
 ```ts
 const issuers = await verifier.listIssuers()

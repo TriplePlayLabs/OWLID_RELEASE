@@ -1,4 +1,4 @@
-import { Copy, MoreHorizontal, QrCode, Share2, ShieldCheck, Trash2 } from 'lucide-react'
+import { Copy, Eye, MoreHorizontal, Share2, ShieldCheck, Trash2 } from 'lucide-react'
 import type { StoredProof } from '@owlid/sdk'
 import { Button } from '@owlid/ui/components/ui/button'
 import { Badge } from '@owlid/ui/components/ui/badge'
@@ -13,7 +13,7 @@ import { relativeTime } from '~/lib/proof-display'
 
 export interface RecentProofRowProps {
   proof: StoredProof
-  onShowQr: () => void
+  onShowDetails: () => void
   onCopy: () => void
   onShare: () => void
   onDelete: () => void
@@ -25,7 +25,7 @@ export interface RecentProofRowProps {
 // invalid nested-interactive HTML.
 export function RecentProofRow({
   proof,
-  onShowQr,
+  onShowDetails,
   onCopy,
   onShare,
   onDelete,
@@ -36,7 +36,7 @@ export function RecentProofRow({
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
-      onShowQr()
+      onShowDetails()
     }
   }
 
@@ -44,7 +44,7 @@ export function RecentProofRow({
     <div
       role="button"
       tabIndex={0}
-      onClick={onShowQr}
+      onClick={onShowDetails}
       onKeyDown={onKeyDown}
       className="w-full px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-white/5 focus:outline-none focus-visible:bg-white/5 transition-colors"
     >
@@ -60,7 +60,7 @@ export function RecentProofRow({
         <div className="flex items-center gap-2">
           <p className="font-medium truncate">{proof.claim}</p>
           <Badge variant="secondary" className="text-[10px] uppercase tracking-wider">
-            {proof.id}
+            {proof.predicateId}
           </Badge>
         </div>
         <p className="text-xs text-muted-foreground">
@@ -91,10 +91,10 @@ export function RecentProofRow({
             className="cursor-pointer"
             onClick={(e) => {
               e.stopPropagation()
-              onShowQr()
+              onShowDetails()
             }}
           >
-            <QrCode className="w-4 h-4 mr-2" /> Show QR
+            <Eye className="w-4 h-4 mr-2" /> View details
           </DropdownMenuItem>
           <DropdownMenuItem
             className="cursor-pointer"

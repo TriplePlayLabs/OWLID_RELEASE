@@ -12,7 +12,11 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct DcqlRequest {
     pub credentials: Vec<DcqlCredentialQuery>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "credential_sets")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "credential_sets"
+    )]
     pub credential_sets: Option<Vec<DcqlCredentialSet>>,
 }
 
@@ -103,18 +107,25 @@ pub struct DcqlCredentialSet {
 /// response_uri) — folded into the `setHash` for nationality / residency
 /// keys, so two verifiers asking the same allowed-set produce distinct
 /// on-chain keys (anti-rainbow-table + anti-cross-verifier correlation).
-/// `is_attested` is the hot-path lookup against the SSE-mirrored set
-/// (typically `state.attestations.cache().is_attested`).
-pub fn check_credential_query<F>(
+/// Returns the derived on-chain attestation key (hex) plus the sidecar
+/// predicate-kind segment. Membership is checked by the caller — first
+/// against the SSE-mirrored set, then (on a miss) via an authoritative
+/// live-ledger read-through — so the eventually-consistent mirror can't
+/// produce a false "not attested" for an attestation that has already
+/// landed on chain.
+pub struct AttestKey {
+    pub key_hex: String,
+    /// Sidecar predicate-kind segment
+    /// (`age|kyc|residency|email|nationality|age_range|personhood`).
+    pub kind: &'static str,
+}
+
+pub fn derive_attest_key(
     query: &DcqlCredentialQuery,
     vct: &str,
     cred_id_hex: &str,
     verifier_id: &str,
-    mut is_attested: F,
-) -> Result<(), String>
-where
-    F: FnMut(&str) -> bool,
-{
+) -> Result<AttestKey, String> {
     use owl_proof_system::attestation;
 
     if query.format != "dc+sd-jwt" {
@@ -161,12 +172,17 @@ where
         ));
     };
 
-    let attest_key = match predicate {
-        OwlPredicate::AgeGte { threshold } => attestation::age_key(&cred_id, *threshold as u128),
-        OwlPredicate::AgeRange { min, max } => {
-            attestation::age_range_key(&cred_id, *min as u16, *max as u16)
+    let (attest_key, kind) = match predicate {
+        OwlPredicate::AgeGte { threshold } => {
+            (attestation::age_key(&cred_id, *threshold as u128), "age")
         }
-        OwlPredicate::KycGte { threshold } => attestation::kyc_key(&cred_id, *threshold as u128),
+        OwlPredicate::AgeRange { min, max } => (
+            attestation::age_range_key(&cred_id, *min as u16, *max as u16),
+            "age_range",
+        ),
+        OwlPredicate::KycGte { threshold } => {
+            (attestation::kyc_key(&cred_id, *threshold as u128), "kyc")
+        }
         OwlPredicate::NationalityIn { countries } => {
             if verifier_id.is_empty() {
                 return Err(format!(
@@ -176,7 +192,10 @@ where
                 ));
             }
             let refs: Vec<&str> = countries.iter().map(String::as_str).collect();
-            attestation::nationality_key(&cred_id, verifier_id, &refs)
+            (
+                attestation::nationality_key(&cred_id, verifier_id, &refs),
+                "nationality",
+            )
         }
         OwlPredicate::ResidencyIn { countries } => {
             if verifier_id.is_empty() {
@@ -187,26 +206,27 @@ where
                 ));
             }
             let refs: Vec<&str> = countries.iter().map(String::as_str).collect();
-            attestation::residency_key(&cred_id, verifier_id, &refs)
+            (
+                attestation::residency_key(&cred_id, verifier_id, &refs),
+                "residency",
+            )
         }
-        OwlPredicate::EmailVerified => attestation::email_verified_key(&cred_id),
+        OwlPredicate::EmailVerified => (attestation::email_verified_key(&cred_id), "email"),
         OwlPredicate::UniquePersonhood { epoch, app_id } => {
             let epoch_bytes = decode_hex32(epoch)
                 .map_err(|e| format!("DCQL credential {}: epoch {}", query.id, e))?;
             let app_id_bytes = decode_hex32(app_id)
                 .map_err(|e| format!("DCQL credential {}: app_id {}", query.id, e))?;
-            attestation::unique_personhood_key(&cred_id, &epoch_bytes, &app_id_bytes)
+            (
+                attestation::unique_personhood_key(&cred_id, &epoch_bytes, &app_id_bytes),
+                "personhood",
+            )
         }
     };
-    let key_hex = hex::encode(attest_key);
-    if !is_attested(&key_hex) {
-        return Err(format!(
-            "DCQL credential {} not attested on Midnight (per-kind predicate \
-             attestation Set membership miss)",
-            query.id
-        ));
-    }
-    Ok(())
+    Ok(AttestKey {
+        key_hex: hex::encode(attest_key),
+        kind,
+    })
 }
 
 /// Decode a 32-byte value from hex (tolerating a `0x` prefix).

@@ -1,11 +1,11 @@
 # Real-world scenarios
 
-Concrete products you can build with OwlID. Each shows the user-facing flow plus the SDK calls that drive it.
+Concrete products you can build with Owl ID. Each shows the user-facing flow plus the SDK calls that drive it.
 
 Two building blocks recur:
 
 - **Disclosures** — plain SD-JWT VC claims (`given_name`, `nationalities`, …). The holder reveals only the ones your DCQL query asks for.
-- **Predicates** — facts proven by the holder's wallet in zero knowledge on the device, then attested on Midnight (`age_over_18`, `verification_level`, `nationality_eu`, `resident`, `email_verified`, `unique_person`). The underlying value never leaves the wallet; you request the predicate and `verify` / `requestPresentation` enforce it. See [How OwlID works](/architecture/overview).
+- **Predicates** — facts proven by the holder's wallet in zero knowledge on the device, then attested on Midnight (`age_over_18`, `verification_level`, `nationality_eu`, `resident`, `email_verified`, `unique_person`). The underlying value never leaves the wallet; you request the predicate and `verify` / `requestPresentation` enforce it. See [How Owl ID works](/architecture/overview).
 
 `requestPresentation` returns a `VerifyDcqlResponse` — `valid` plus a `perCredential` map keyed by your DCQL `credentials[].id`.
 
@@ -313,7 +313,7 @@ The user (or their support rep) triggers erasure from the operator dashboard. Th
 3. Retains hash-only audit records (compliance) but strips PII.
 4. Returns a signed receipt the user keeps as proof.
 
-OwlID is designed so the platform mostly stores hashes already — there is very little PII to erase. The flow exists for compliance, not because the system retains a copy of the user's documents.
+Owl ID is designed so the platform mostly stores hashes already — there is very little PII to erase. The flow exists for compliance, not because the system retains a copy of the user's documents.
 
 ---
 

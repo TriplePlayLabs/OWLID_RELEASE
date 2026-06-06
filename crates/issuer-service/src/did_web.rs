@@ -6,7 +6,7 @@
 
 use base64::prelude::*;
 use owl_crypto::PublicKey;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// `http(s)://host[:port][/path]` → `did:web:host[%3Aport][:path-segments]`
 /// per the did:web method (port colon percent-encoded, path `/`→`:`).
@@ -54,8 +54,14 @@ mod tests {
 
     #[test]
     fn did_web_id_forms() {
-        assert_eq!(did_web_id("http://localhost:8001"), "did:web:localhost%3A8001");
-        assert_eq!(did_web_id("https://issuer.example/"), "did:web:issuer.example");
+        assert_eq!(
+            did_web_id("http://localhost:8001"),
+            "did:web:localhost%3A8001"
+        );
+        assert_eq!(
+            did_web_id("https://issuer.example/"),
+            "did:web:issuer.example"
+        );
         assert_eq!(
             did_web_id("https://example.com/issuer/a"),
             "did:web:example.com:issuer:a"
@@ -67,7 +73,10 @@ mod tests {
         let kp = KeyPair::generate();
         let doc = did_document("https://issuer.example", &kp.public_key());
         assert_eq!(doc["id"], "did:web:issuer.example");
-        assert_eq!(doc["verificationMethod"][0]["publicKeyJwk"]["crv"], "Ed25519");
+        assert_eq!(
+            doc["verificationMethod"][0]["publicKeyJwk"]["crv"],
+            "Ed25519"
+        );
         assert_eq!(doc["assertionMethod"][0], "did:web:issuer.example#0");
     }
 }

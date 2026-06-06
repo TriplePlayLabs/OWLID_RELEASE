@@ -9,8 +9,8 @@
 #![allow(deprecated)]
 
 use aes_gcm::{
+    AeadCore, Aes256Gcm, Key, Nonce,
     aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, AeadCore, Key, Nonce,
 };
 use thiserror::Error;
 

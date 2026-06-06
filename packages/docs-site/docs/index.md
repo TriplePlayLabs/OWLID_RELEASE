@@ -5,7 +5,7 @@ pageType: doc
 <div class="owl-hero">
   <p class="owl-meta">DOCUMENTATION · V2.4</p>
   <h1 class="owl-h1">Privacy-first <span class="owl-gold">digital identity</span></h1>
-  <p class="owl-hero-sub">Verifiable credentials, selective disclosure, and zero-knowledge predicates —<br/>built on Midnight. Drop OwlID into your product in five minutes.</p>
+  <p class="owl-hero-sub">Verifiable credentials, selective disclosure, and zero-knowledge predicates —<br/>built on Midnight. Drop Owl ID into your product in five minutes.</p>
   <div class="owl-cta-row">
     <a href="/quickstart" class="owl-btn owl-btn--primary">Get started →</a>
     <a href="/apps" class="owl-btn owl-btn--outline">Try the wallet</a>
@@ -67,4 +67,4 @@ pageType: doc
 | Issuer     | [Issuer integration](/integration/issuer)     |
 | Holder app | [Holder integration](/integration/holder)     |
 
-Next steps: [Quickstart](/quickstart) · [SDK reference](/sdk/verifier) · [How OwlID works](/architecture/overview)
+Next steps: [Quickstart](/quickstart) · [SDK reference](/sdk/verifier) · [How Owl ID works](/architecture/overview)

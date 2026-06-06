@@ -57,15 +57,21 @@ const AGE_RANGE_PRESETS: ReadonlyArray<readonly [number, number]> = [
  *  in `packages/sdk/src/midnight/routing.ts`. */
 const MAX_COUNTRIES_PER_SET = 64
 
+/** Keep only digits and strip leading zeros so a number field never
+ *  renders artifacts like "030" while typing on mobile. */
+export function sanitizeAge(raw: string): string {
+  return raw.replace(/[^0-9]/g, '').replace(/^0+(?=\d)/, '')
+}
+
 export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [verifierName, setVerifierName] = useState('Verifier')
   const [registry, setRegistry] = useState<PredicateInfo[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const [ageThreshold, setAgeThreshold] = useState(DEFAULT_AGE_THRESHOLD)
-  const [ageMin, setAgeMin] = useState(DEFAULT_AGE_MIN)
-  const [ageMax, setAgeMax] = useState(DEFAULT_AGE_MAX)
+  const [ageThreshold, setAgeThreshold] = useState(String(DEFAULT_AGE_THRESHOLD))
+  const [ageMin, setAgeMin] = useState(String(DEFAULT_AGE_MIN))
+  const [ageMax, setAgeMax] = useState(String(DEFAULT_AGE_MAX))
   const [campaignId, setCampaignId] = useState('')
   const [round, setRound] = useState('1')
   const [nationalityCountries, setNationalityCountries] = useState<string[]>([])
@@ -112,8 +118,9 @@ export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps
       ? { campaignId: campaignId.trim(), round: round.trim() || '1' }
       : undefined
     const params = new Map<string, PredicateParamInput>()
-    if (selected.has('age:gte')) params.set('age:gte', { threshold: ageThreshold })
-    if (selected.has('age:range')) params.set('age:range', { min: ageMin, max: ageMax })
+    if (selected.has('age:gte')) params.set('age:gte', { threshold: Number(ageThreshold) || 0 })
+    if (selected.has('age:range'))
+      params.set('age:range', { min: Number(ageMin) || 0, max: Number(ageMax) || 0 })
     if (nationalitySelected && nationalityCountries.length > 0) {
       params.set('nationality:in', { countries: nationalityCountries })
     }
@@ -159,7 +166,7 @@ export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps
           className="h-10"
         />
         <p className="text-[11px] text-muted-foreground leading-snug">
-          The holder sees this on their approval screen.
+          The person you're checking sees this when they approve.
         </p>
       </div>
 
@@ -221,18 +228,19 @@ export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps
                         <Input
                           id="age-threshold"
                           type="number"
+                          inputMode="numeric"
                           min={0}
                           max={120}
                           value={ageThreshold}
-                          onChange={(e) => setAgeThreshold(Number(e.target.value))}
+                          onChange={(e) => setAgeThreshold(sanitizeAge(e.target.value))}
                           className="h-8 w-20"
                         />
                         <div className="flex gap-1 ml-auto">
                           {AGE_THRESHOLD_PRESETS.map((n) => (
                             <Chip
                               key={n}
-                              active={ageThreshold === n}
-                              onClick={() => setAgeThreshold(n)}
+                              active={ageThreshold === String(n)}
+                              onClick={() => setAgeThreshold(String(n))}
                             >
                               {n}+
                             </Chip>
@@ -251,10 +259,11 @@ export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps
                         <Input
                           id="age-min"
                           type="number"
+                          inputMode="numeric"
                           min={0}
                           max={120}
                           value={ageMin}
-                          onChange={(e) => setAgeMin(Number(e.target.value))}
+                          onChange={(e) => setAgeMin(sanitizeAge(e.target.value))}
                           className="h-8 w-16"
                         />
                         <Label htmlFor="age-max" className="text-xs">
@@ -263,10 +272,11 @@ export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps
                         <Input
                           id="age-max"
                           type="number"
+                          inputMode="numeric"
                           min={0}
                           max={120}
                           value={ageMax}
-                          onChange={(e) => setAgeMax(Number(e.target.value))}
+                          onChange={(e) => setAgeMax(sanitizeAge(e.target.value))}
                           className="h-8 w-16"
                         />
                       </div>
@@ -274,10 +284,10 @@ export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps
                         {AGE_RANGE_PRESETS.map(([lo, hi]) => (
                           <Chip
                             key={`${lo}-${hi}`}
-                            active={ageMin === lo && ageMax === hi}
+                            active={ageMin === String(lo) && ageMax === String(hi)}
                             onClick={() => {
-                              setAgeMin(lo)
-                              setAgeMax(hi)
+                              setAgeMin(String(lo))
+                              setAgeMax(String(hi))
                             }}
                           >
                             {lo}–{hi}
@@ -306,8 +316,8 @@ export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps
                   {isChecked && isPersonhood && (
                     <div className="space-y-2 px-3 pb-3">
                       <p className="text-[11px] text-muted-foreground leading-snug">
-                        Proves one human can claim only once — no identity revealed. Campaign +
-                        round scope the uniqueness nullifier.
+                        Makes sure each person can claim only once, without revealing who they are.
+                        The campaign and round set the scope.
                       </p>
                       <Input
                         id="campaign-id"
@@ -332,9 +342,7 @@ export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps
             })}
           </ul>
           {personhoodSelected && !campaignReady && (
-            <p className="text-xs text-destructive">
-              Enter a campaign name to request the personhood check.
-            </p>
+            <p className="text-xs text-destructive">Enter a campaign name to request this check.</p>
           )}
         </div>
       )}
@@ -348,7 +356,7 @@ export function PredicateSelector({ onSubmit, onCancel }: PredicateSelectorProps
           className="w-full h-11 text-sm font-medium"
         >
           <Send className="w-4 h-4 mr-2" />
-          Send request to holder
+          Send request
         </Button>
       </div>
     </div>

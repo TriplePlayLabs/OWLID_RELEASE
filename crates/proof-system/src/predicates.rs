@@ -57,7 +57,7 @@ static REGISTRY: &[Predicate] = &[
         attribute: "dateOfBirth",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Dynamic,
-        label: "Age over a threshold",
+        label: "Over a minimum age",
     },
     Predicate {
         id: "age:range",
@@ -66,7 +66,7 @@ static REGISTRY: &[Predicate] = &[
         attribute: "dateOfBirth",
         op: PredicateOp::InRange,
         params: PredicateParams::Dynamic,
-        label: "Age within a range",
+        label: "Age in a set range",
     },
     Predicate {
         // Presence marker for the verifier-supplied-set nationality
@@ -81,7 +81,7 @@ static REGISTRY: &[Predicate] = &[
         attribute: "nationality",
         op: PredicateOp::InSet,
         params: PredicateParams::Dynamic,
-        label: "Nationality in verifier-supplied country set",
+        label: "Nationality is one you allow",
     },
     Predicate {
         id: "kyc:>=basic",
@@ -90,7 +90,7 @@ static REGISTRY: &[Predicate] = &[
         attribute: "verificationLevel",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Threshold(1),
-        label: "KYC level: basic or higher",
+        label: "ID check: basic or higher",
     },
     Predicate {
         id: "kyc:>=substantial",
@@ -99,7 +99,7 @@ static REGISTRY: &[Predicate] = &[
         attribute: "verificationLevel",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Threshold(2),
-        label: "KYC level: substantial or higher",
+        label: "ID check: substantial or higher",
     },
     Predicate {
         id: "kyc:>=high",
@@ -108,7 +108,7 @@ static REGISTRY: &[Predicate] = &[
         attribute: "verificationLevel",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Threshold(3),
-        label: "KYC level: high",
+        label: "ID check: high",
     },
     Predicate {
         // Presence marker for the verifier-supplied-set residency
@@ -122,7 +122,7 @@ static REGISTRY: &[Predicate] = &[
         attribute: "residentCountry",
         op: PredicateOp::InSet,
         params: PredicateParams::Dynamic,
-        label: "Resident of verifier-supplied country set",
+        label: "Lives in a country you allow",
     },
     Predicate {
         id: "email:verified",
@@ -137,7 +137,7 @@ static REGISTRY: &[Predicate] = &[
         attribute: "emailVerified",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Threshold(1),
-        label: "Email verified by provider",
+        label: "Email is verified",
     },
     Predicate {
         id: "personhood:unique",
@@ -150,7 +150,7 @@ static REGISTRY: &[Predicate] = &[
         attribute: "personhoodSecret",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Threshold(1),
-        label: "Unique person (per epoch + app)",
+        label: "Unique person (one claim per campaign)",
     },
 ];
 
@@ -166,7 +166,7 @@ pub fn list_all() -> &'static [Predicate] {
 pub fn for_attributes(attrs: &[&str]) -> Vec<&'static Predicate> {
     REGISTRY
         .iter()
-        .filter(|p| attrs.iter().any(|a| *a == p.attribute))
+        .filter(|p| attrs.contains(&p.attribute))
         .collect()
 }
 

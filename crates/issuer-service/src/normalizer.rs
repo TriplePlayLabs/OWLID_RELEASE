@@ -880,7 +880,11 @@ fn normalize_mock(claims: &MockClaims) -> VerifiedIdentityClaims {
         is_over_65: is_over_age(dob, 65),
         is_eu_citizen: is_eu_citizen(&claims.nationality),
         is_resident: claims.verifies_residency,
-        resident_country: if claims.verifies_residency { Some(claims.nationality.clone()) } else { None },
+        resident_country: if claims.verifies_residency {
+            Some(claims.nationality.clone())
+        } else {
+            None
+        },
         verified_at: Utc::now(),
         verification_level: claims.verification_level,
         provider_id: claims.provider_id.clone(),

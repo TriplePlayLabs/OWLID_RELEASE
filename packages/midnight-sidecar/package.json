@@ -12,7 +12,7 @@
     "compact:skip-zk": "bun run src/compile-all.ts --skip-zk",
     "compact:clean": "rm -rf managed",
     "check": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test --isolate"
   },
   "dependencies": {
     "@midnight-ntwrk/compact-js": "2.5.0",

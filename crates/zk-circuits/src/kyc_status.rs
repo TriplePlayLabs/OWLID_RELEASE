@@ -15,7 +15,7 @@ use ark_r1cs_std::{fields::fp::FpVar, prelude::*};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_snark::SNARK;
-use ark_std::rand::{rngs::OsRng, rngs::StdRng, SeedableRng};
+use ark_std::rand::{SeedableRng, rngs::OsRng, rngs::StdRng};
 
 use crate::error::ZkError;
 use crate::proof::{ZkProof, ZkProofType};
@@ -65,11 +65,14 @@ pub fn setup() -> Result<(ProvingKey<Bls12_381>, PreparedVerifyingKey<Bls12_381>
         required_level: None,
     };
 
-    let (pk, vk) = Groth16::<Bls12_381>::circuit_specific_setup(circuit, &mut StdRng::seed_from_u64(0x0B1C_0002))
-        .map_err(|e| ZkError::SetupFailed(e.to_string()))?;
+    let (pk, vk) = Groth16::<Bls12_381>::circuit_specific_setup(
+        circuit,
+        &mut StdRng::seed_from_u64(0x0B1C_0002),
+    )
+    .map_err(|e| ZkError::SetupFailed(e.to_string()))?;
 
-    let pvk = Groth16::<Bls12_381>::process_vk(&vk)
-        .map_err(|e| ZkError::SetupFailed(e.to_string()))?;
+    let pvk =
+        Groth16::<Bls12_381>::process_vk(&vk).map_err(|e| ZkError::SetupFailed(e.to_string()))?;
 
     Ok((pk, pvk))
 }
@@ -116,12 +119,9 @@ pub fn prove(
 }
 
 /// Verify a KYC status proof with a provided prepared verification key
-pub fn verify(
-    pvk: &PreparedVerifyingKey<Bls12_381>,
-    zk_proof: &ZkProof,
-) -> Result<bool, ZkError> {
-    let proof_bytes =
-        hex::decode(&zk_proof.proof_bytes).map_err(|e| ZkError::VerificationFailed(e.to_string()))?;
+pub fn verify(pvk: &PreparedVerifyingKey<Bls12_381>, zk_proof: &ZkProof) -> Result<bool, ZkError> {
+    let proof_bytes = hex::decode(&zk_proof.proof_bytes)
+        .map_err(|e| ZkError::VerificationFailed(e.to_string()))?;
 
     let proof: ark_groth16::Proof<Bls12_381> =
         CanonicalDeserialize::deserialize_compressed(&proof_bytes[..])

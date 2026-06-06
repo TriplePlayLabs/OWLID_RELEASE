@@ -1,5 +1,5 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use owl_zk_circuits::{age_range, get_pk, get_pvk, kyc_status, nationality, ZkProofType};
+use criterion::{Criterion, criterion_group, criterion_main};
+use owl_zk_circuits::{ZkProofType, age_range, get_pk, get_pvk, kyc_status, nationality};
 
 fn bench_age_range(c: &mut Criterion) {
     let mut group = c.benchmark_group("age_range");
@@ -68,5 +68,10 @@ fn bench_nationality(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_age_range, bench_kyc_status, bench_nationality);
+criterion_group!(
+    benches,
+    bench_age_range,
+    bench_kyc_status,
+    bench_nationality
+);
 criterion_main!(benches);

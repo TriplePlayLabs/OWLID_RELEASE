@@ -1,7 +1,7 @@
 //! Property-based tests for owl-crypto.
 
-use owl_crypto::{hash_attribute, hash_attribute_salted, generate_salt};
 use owl_crypto::{KeyPair, SignatureAlgorithm};
+use owl_crypto::{generate_salt, hash_attribute, hash_attribute_salted};
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -98,4 +98,3 @@ proptest! {
         prop_assert!(kp.public_key().verify(&msg, &sig).is_ok());
     }
 }
-

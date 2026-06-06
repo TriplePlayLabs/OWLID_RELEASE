@@ -1,19 +1,13 @@
 use sha2::{Digest, Sha256};
 
 /// Hash algorithm selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HashAlgorithm {
     /// SHA-256 (FIPS compliant, universal compatibility)
+    #[default]
     Sha256,
     /// Blake3 (10x faster, modern design)
     Blake3,
-}
-
-impl Default for HashAlgorithm {
-    fn default() -> Self {
-        // Default to SHA-256 for FIPS compliance and universal compatibility
-        HashAlgorithm::Sha256
-    }
 }
 
 /// Hash a single attribute (key-value pair) as per the architecture specification

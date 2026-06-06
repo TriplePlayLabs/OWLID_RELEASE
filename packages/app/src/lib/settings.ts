@@ -18,11 +18,13 @@ export interface AppSettings {
   provingMode: ProvingMode
   /** Empty string ⇒ use the operator default (`VITE_PROOF_SERVER_URL`). */
   proofServerUrl: string
+  encryptedRecoveryEnabled: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   provingMode: 'wasm',
   proofServerUrl: '',
+  encryptedRecoveryEnabled: false,
 }
 
 /** Operator-suggested URL used when the user picks "proof server" but
@@ -53,6 +55,7 @@ export function loadSettings(): AppSettings {
     return {
       provingMode: parsed.provingMode === 'proof-server' ? 'proof-server' : 'wasm',
       proofServerUrl: typeof parsed.proofServerUrl === 'string' ? parsed.proofServerUrl : '',
+      encryptedRecoveryEnabled: parsed.encryptedRecoveryEnabled === true,
     }
   } catch {
     return DEFAULT_SETTINGS
@@ -123,6 +126,26 @@ export function validateProofServerUrl(raw: string): string | null {
 /** Normalize a URL the user typed (trim, drop trailing slash). */
 export function normalizeProofServerUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, '')
+}
+
+/**
+ * Human-readable "Effective backend" preview for the settings screen.
+ * Never echoes an invalid/unsaved URL back as if it were active (QA #6):
+ * when the entered URL fails validation the label says so instead of
+ * showing e.g. `proof server → ftp://…`.
+ */
+export function effectiveBackendLabel(args: {
+  mode: ProvingMode
+  url: string
+  operatorUrl: string
+}): string {
+  if (args.mode === 'wasm') return 'WASM (in-process)'
+  const trimmed = args.url.trim()
+  if (validateProofServerUrl(trimmed) != null) {
+    return 'proof server → enter a valid URL above'
+  }
+  const target = normalizeProofServerUrl(trimmed || args.operatorUrl)
+  return `proof server → ${target || '(unset)'}`
 }
 
 /**

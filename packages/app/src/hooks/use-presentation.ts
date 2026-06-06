@@ -15,7 +15,6 @@ import {
   matchDcqlAgainst,
   OwlWallet,
   storage,
-  unwrapHolderKey,
   type AttestProgress,
   type DcqlMatchSummary,
   type DcqlRequest,
@@ -24,6 +23,8 @@ import {
   type SessionEngagement,
   type WsMessage,
 } from '@owlid/sdk'
+import { currentPasskeyId, unwrapWalletHolderKey } from '~/lib/passkeys'
+import { proofRecordsFromPresentation, recordProofs } from '~/lib/proof-store'
 import { getPresentationApi } from '@owlid/verifier-client'
 
 export type PresentationState =
@@ -140,7 +141,7 @@ function humanizeError(message: string): string {
     return 'App startup error — please reload the page.'
   }
   if (m.includes('no passkey')) {
-    return 'No passkey found on this device. Register again to continue.'
+    return 'No passkey metadata is stored in this browser. Try signing in with your saved passkey first.'
   }
   if (m.includes('signature error') || m.includes('invalid signature')) {
     return 'Your ID looks tampered or was issued by a server we no longer trust. Re-issue your ID and try again.'
@@ -149,6 +150,82 @@ function humanizeError(message: string): string {
     return "Couldn't reach the verifier service. Check your connection and retry."
   }
   return message
+}
+
+/** Max attempts for `wallet.present()` — one real try plus two retries.
+ *  A proof that fails because the Midnight chain / sidecar is momentarily
+ *  unreachable should not be surfaced as a hard rejection until we've
+ *  re-checked availability a couple of times (GH #9). */
+const MAX_PRESENT_ATTEMPTS = 3
+const PRESENT_RETRY_DELAY_MS = 800
+
+/** True when a presentation failure is a transient connectivity / chain
+ *  problem (worth retrying) rather than a genuine predicate or signature
+ *  failure (which must fail fast — retrying would never change the
+ *  outcome and only delays the rejection the holder needs to see). */
+export function isTransientChainError(message: string): boolean {
+  const m = message.toLowerCase()
+  // A real assertion miss (age/kyc/residency/...) or a tampered/untrusted
+  // credential is deterministic — never retry those.
+  if (m.includes('failed assert') || m.includes('signature') || m.includes('personhood replay')) {
+    return false
+  }
+  return (
+    m.includes('failed to fetch') ||
+    m.includes('networkerror') ||
+    m.includes('network error') ||
+    m.includes('load failed') ||
+    m.includes('timeout') ||
+    m.includes('timed out') ||
+    m.includes('econnrefused') ||
+    m.includes('econnreset') ||
+    m.includes('503') ||
+    m.includes('502') ||
+    m.includes('unavailable') ||
+    m.includes('unreachable') ||
+    m.includes('indexer') ||
+    m.includes('proof server') ||
+    m.includes('sidecar')
+  )
+}
+
+function isAbortError(e: unknown): boolean {
+  return e instanceof Error && e.name === 'AbortError'
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Run a presentation attempt, retrying when it fails with a transient
+ *  chain / connectivity error (GH #9). `freshSignal` is invoked once per
+ *  attempt so each retry gets its own abort scope. Deterministic failures
+ *  (assert miss, bad signature) and user aborts are rethrown immediately;
+ *  the chain-unavailable case is retried up to `maxAttempts - 1` times. */
+export async function presentWithChainRetry<T>(
+  attempt: (signal: AbortSignal) => Promise<T>,
+  freshSignal: () => AbortSignal,
+  opts: {
+    maxAttempts?: number
+    delayMs?: number
+    onRetry?: (attemptNo: number, message: string) => void
+  } = {},
+): Promise<T> {
+  const maxAttempts = opts.maxAttempts ?? MAX_PRESENT_ATTEMPTS
+  const baseDelay = opts.delayMs ?? PRESENT_RETRY_DELAY_MS
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      return await attempt(freshSignal())
+    } catch (err) {
+      const last = i === maxAttempts - 1
+      const message = err instanceof Error ? (err.message ?? '') : String(err)
+      if (isAbortError(err) || last || !isTransientChainError(message)) throw err
+      opts.onRetry?.(i + 1, message)
+      await delay(baseDelay * (i + 1))
+    }
+  }
+  // The loop always returns or throws; this satisfies the type checker.
+  throw new Error('presentWithChainRetry: exhausted without a result')
 }
 
 /** Build the DCQL request the wallet will solve. Verifiers running the
@@ -505,36 +582,50 @@ export function usePresentation(): PresentationResult {
     try {
       const wallet = new OwlWallet(
         storage,
-        async (passkeyId, wrapped) => unwrapHolderKey(passkeyId, wrapped),
-        async () => {
-          const passkey = await storage.loadWebAuthnCredential()
-          return passkey?.credentialId ?? null
-        },
+        async (passkeyId, wrapped) => unwrapWalletHolderKey(wrapped, passkeyId),
+        currentPasskeyId,
       )
 
       const dcql = buildDcql(request)
-      // Fresh abort per attempt; previous attempts (if any) are already
-      // settled by the time we re-enter this code path.
-      abortRef.current?.abort()
-      abortRef.current = new AbortController()
-      const { vpToken, used } = await wallet.present({
-        dcql,
-        aud: request.verifierName,
-        nonce: request.nonce,
-        // Forward the OID4VP verifier `client_id` so the orchestrator
-        // can fold it into the per-verifier salt for nationality_in /
-        // resident_in attestations. Missing this would make the
-        // orchestrator silently skip set-membership attestations and
-        // the verifier would then reject the presentation with a
-        // membership miss ("DCQL credential not satisfied").
-        verifierId: request.verifierId,
-        overrides,
-        onAttestProgress: (event) => {
-          attestProgressRef.current = event
-          setAttestProgress(event)
+      // Retry the whole presentation when the chain / sidecar is momentarily
+      // unreachable (GH #9). Attestation re-checks on-chain state before it
+      // submits, so a retry never double-acts; genuine predicate / signature
+      // failures are non-transient and fall through immediately.
+      const { vpToken, used } = await presentWithChainRetry(
+        (signal) =>
+          wallet.present({
+            dcql,
+            aud: request.verifierName,
+            nonce: request.nonce,
+            // Forward the OID4VP verifier `client_id` so the orchestrator
+            // can fold it into the per-verifier salt for nationality_in /
+            // resident_in attestations. Missing this would make the
+            // orchestrator silently skip set-membership attestations and
+            // the verifier would then reject the presentation with a
+            // membership miss ("DCQL credential not satisfied").
+            verifierId: request.verifierId,
+            overrides,
+            onAttestProgress: (event) => {
+              attestProgressRef.current = event
+              setAttestProgress(event)
+            },
+            signal,
+          }),
+        () => {
+          // Fresh abort per attempt; previous attempts (if any) are already
+          // settled by the time we re-enter this code path.
+          abortRef.current?.abort()
+          abortRef.current = new AbortController()
+          return abortRef.current.signal
         },
-        signal: abortRef.current.signal,
-      })
+        {
+          onRetry: (n, message) =>
+            console.warn(
+              `[Presentation] transient failure (attempt ${n}/${MAX_PRESENT_ATTEMPTS}) — chain may be unavailable, retrying:`,
+              message,
+            ),
+        },
+      )
 
       attestProgressRef.current = null
       setAttestProgress(null)
@@ -547,6 +638,12 @@ export function usePresentation(): PresentationResult {
       // Keep the proof so a reconnect (or a `request` replay) re-sends
       // it without re-prompting the holder.
       vpTokenRef.current = response
+      // Persist to IndexedDB so it shows on Recent proofs and can be
+      // re-shown without re-authenticating. Fire-and-forget: storage must
+      // never block delivery to the verifier.
+      void recordProofs(
+        proofRecordsFromPresentation(used, vpToken, { verifierName: request.verifierName }),
+      ).catch((err) => console.warn('[Presentation] Failed to persist proof:', err))
       const sock = wsRef.current
       if (sock && sock.readyState === WebSocket.OPEN) {
         sock.send(JSON.stringify({ type: 'response', payload: response } satisfies WsMessage))

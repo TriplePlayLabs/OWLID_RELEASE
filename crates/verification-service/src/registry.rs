@@ -234,7 +234,12 @@ pub async fn get_proving_key(Path(filename): Path<String>) -> Response {
     responses((status = 200, description = "Available predicate artifact filenames", body = Vec<String>))
 )]
 pub async fn list_predicate_assets() -> Json<Vec<String>> {
-    Json(crate::predicate_assets::ALL.iter().map(|s| s.to_string()).collect())
+    Json(
+        crate::predicate_assets::ALL
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )
 }
 
 /// Serve a raw per-kind predicate Compact artifact (zkir / prover /

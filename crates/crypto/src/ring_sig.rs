@@ -3,11 +3,7 @@
 //! Lets a signer prove membership in a group without revealing which
 //! member they are (Abe-Ohkubo-Suzuki / AOS construction).
 
-use curve25519_dalek::{
-    constants::ED25519_BASEPOINT_TABLE,
-    edwards::EdwardsPoint,
-    scalar::Scalar,
-};
+use curve25519_dalek::{constants::ED25519_BASEPOINT_TABLE, edwards::EdwardsPoint, scalar::Scalar};
 use rand::RngCore;
 use sha2::{Digest, Sha512};
 use thiserror::Error;
@@ -86,7 +82,7 @@ impl RingSignature {
         let commitment = &alpha * ED25519_BASEPOINT_TABLE;
 
         // Compute key image
-        let key_image = (&secret * &hash_to_point(public_key.as_bytes())).compress();
+        let key_image = (secret * hash_to_point(public_key.as_bytes())).compress();
 
         // Start from signer_idx + 1 and go around the ring
         let next_idx = (signer_idx + 1) % n;
@@ -171,7 +167,9 @@ impl RingSignature {
     /// * `message` - The message that was signed
     /// * `ring` - The set of public keys
     pub fn verify(&self, message: &[u8], ring: &[[u8; 32]]) -> bool {
-        if ring.len() < 2 || ring.len() != self.challenges.len() || ring.len() != self.responses.len()
+        if ring.len() < 2
+            || ring.len() != self.challenges.len()
+            || ring.len() != self.responses.len()
         {
             return false;
         }
@@ -179,15 +177,15 @@ impl RingSignature {
         let n = ring.len();
 
         // Verify the ring closes: each challenge must chain to the next
-        for i in 0..n {
+        for (i, ring_member) in ring.iter().enumerate() {
             let c = Scalar::from_bytes_mod_order(self.challenges[i]);
             let s = Scalar::from_bytes_mod_order(self.responses[i]);
 
-            let pk_point = match curve25519_dalek::edwards::CompressedEdwardsY(ring[i]).decompress()
-            {
-                Some(p) => p,
-                None => return false,
-            };
+            let pk_point =
+                match curve25519_dalek::edwards::CompressedEdwardsY(*ring_member).decompress() {
+                    Some(p) => p,
+                    None => return false,
+                };
 
             let point = &s * ED25519_BASEPOINT_TABLE + c * pk_point;
             let expected_next = ring_hash(message, &point).to_bytes();

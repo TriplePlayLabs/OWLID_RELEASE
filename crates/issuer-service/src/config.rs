@@ -117,9 +117,7 @@ impl Config {
             env_parse("MIDNIGHT_SIDECAR_TIMEOUT", DEFAULT_MIDNIGHT_SIDECAR_TIMEOUT);
 
         if midnight_sidecar_api_key.is_none() {
-            tracing::warn!(
-                "MIDNIGHT_SIDECAR_API_KEY is unset — sidecar requests will be rejected"
-            );
+            tracing::warn!("MIDNIGHT_SIDECAR_API_KEY is unset — sidecar requests will be rejected");
         }
 
         let didit_api_key = env_optional("DIDIT_API_KEY");

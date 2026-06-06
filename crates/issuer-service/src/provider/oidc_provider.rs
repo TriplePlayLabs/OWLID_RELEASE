@@ -27,9 +27,7 @@ use crate::oidc::{
     OidcProviderConfig, build_auth_url, discover, exchange_code, fetch_userinfo, verify_id_token,
 };
 use crate::oidc_state::{OidcStateStore, StoredOidcState};
-use crate::provider::traits::{
-    DigitalIdentityProvider, ProviderFlowType, VerificationStart,
-};
+use crate::provider::traits::{DigitalIdentityProvider, ProviderFlowType, VerificationStart};
 use async_trait::async_trait;
 use uuid::Uuid;
 
@@ -211,7 +209,10 @@ impl DigitalIdentityProvider for OidcProvider {
                 claims.name = map.get("name").and_then(|v| v.as_str()).map(String::from);
             }
             if claims.picture.is_none() {
-                claims.picture = map.get("picture").and_then(|v| v.as_str()).map(String::from);
+                claims.picture = map
+                    .get("picture")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
             }
             if claims.locale.is_none() {
                 claims.locale = map.get("locale").and_then(|v| v.as_str()).map(String::from);

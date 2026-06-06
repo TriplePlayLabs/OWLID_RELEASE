@@ -75,5 +75,5 @@ KEY=$(curl -s https://issuer.owlid.app/issuer-info | jq -r '.publicKey')
 curl -X POST https://api.owlid.app/trusted-issuers \
   -H "Authorization: Bearer $OWLID_ADMIN_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"publicKey\": \"$KEY\", \"name\": \"OwlID Issuer\"}"
+  -d "{\"publicKey\": \"$KEY\", \"name\": \"Owl ID Issuer\"}"
 ```

@@ -1,8 +1,8 @@
 # Quickstart
 
-Build with OwlID — standards-conformant SD-JWT VC issuance and verification (OpenID4VCI / OpenID4VP), anchored on Midnight, with WebAuthn/passkey-protected wallets.
+Build with Owl ID — standards-conformant SD-JWT VC issuance and verification (OpenID4VCI / OpenID4VP), anchored on Midnight, with WebAuthn/passkey-protected wallets.
 
-This guide gets you running with `@owlid/sdk` against the **hosted OwlID platform**. You don't run any OwlID infrastructure.
+This guide gets you running with `@owlid/sdk` against the **hosted Owl ID platform**. You don't run any Owl ID infrastructure.
 
 ---
 
@@ -146,7 +146,7 @@ Discover the predicates the platform can prove at startup with `OwlVerifier.list
 
 ## 6. Hosted apps
 
-Don't want to build a client at all? The platform ships ready-to-use apps — see [OwlID apps](/apps):
+Don't want to build a client at all? The platform ships ready-to-use apps — see [Owl ID apps](/apps):
 
 - [**Wallet**](https://wallet.owlid.app) — holders receive and present credentials.
 - [**Verifier**](https://verifier.owlid.app) — browser scanner for kiosk / low-volume verification.
@@ -159,4 +159,4 @@ Don't want to build a client at all? The platform ships ready-to-use apps — se
 - [SDK reference](/sdk/verifier) — every class and method
 - [Real-world scenarios](/examples/scenarios) — age gates, KYC, ticketing, anti-bot, and more
 - [HTTP API](/api) — raw endpoints, for non-TypeScript integrations
-- [How OwlID works](/architecture/overview) — design rationale, threat model, data flow
+- [How Owl ID works](/architecture/overview) — design rationale, threat model, data flow

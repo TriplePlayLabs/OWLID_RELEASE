@@ -1,5 +1,5 @@
 /* ============================================================
-   OwlID Docs — Design System
+   Owl ID Docs — Design System
    Dark · sharp · gold · Inter Tight + JetBrains Mono
    ============================================================ */
 
@@ -10,59 +10,59 @@
    ============================================================ */
 
 :root {
-  --bg-0:      #07080B;
-  --bg-1:      #0B0D12;
-  --bg-2:      #11141B;
-  --surface-1: #161A23;
-  --surface-2: #1C2230;
-  --surface-3: #232A3A;
+  --bg-0: #07080b;
+  --bg-1: #0b0d12;
+  --bg-2: #11141b;
+  --surface-1: #161a23;
+  --surface-2: #1c2230;
+  --surface-3: #232a3a;
 
-  --text-0: #FFFFFF;
-  --text-1: #ECEEF3;
-  --text-2: #A6ADBB;
-  --text-3: #6B7384;
-  --text-4: #4A5163;
+  --text-0: #ffffff;
+  --text-1: #eceef3;
+  --text-2: #a6adbb;
+  --text-3: #6b7384;
+  --text-4: #4a5163;
 
   --line-1: rgba(255, 255, 255, 0.06);
-  --line-2: rgba(255, 255, 255, 0.10);
+  --line-2: rgba(255, 255, 255, 0.1);
   --line-3: rgba(255, 255, 255, 0.16);
 
-  --accent:      #EAB308;
-  --accent-hi:   #F5C72B;
-  --accent-lo:   #C29407;
-  --accent-ink:  #1A1402;
+  --accent: #eab308;
+  --accent-hi: #f5c72b;
+  --accent-lo: #c29407;
+  --accent-ink: #1a1402;
   --accent-glow: rgba(234, 179, 8, 0.45);
   --accent-soft: rgba(234, 179, 8, 0.08);
 
-  --success:      #3FD68C;
-  --success-bg:   rgba(63, 214, 140, 0.08);
+  --success: #3fd68c;
+  --success-bg: rgba(63, 214, 140, 0.08);
   --success-line: rgba(63, 214, 140, 0.28);
-  --danger:       #FF6B6B;
-  --danger-bg:    rgba(255, 107, 107, 0.08);
-  --danger-line:  rgba(255, 107, 107, 0.28);
-  --warn:         #FFB547;
-  --warn-bg:      rgba(255, 181, 71, 0.08);
-  --warn-line:    rgba(255, 181, 71, 0.28);
-  --info:         #4F8DFF;
-  --info-bg:      rgba(79, 141, 255, 0.08);
-  --info-line:    rgba(79, 141, 255, 0.28);
+  --danger: #ff6b6b;
+  --danger-bg: rgba(255, 107, 107, 0.08);
+  --danger-line: rgba(255, 107, 107, 0.28);
+  --warn: #ffb547;
+  --warn-bg: rgba(255, 181, 71, 0.08);
+  --warn-line: rgba(255, 181, 71, 0.28);
+  --info: #4f8dff;
+  --info-bg: rgba(79, 141, 255, 0.08);
+  --info-line: rgba(79, 141, 255, 0.28);
 
-  --owl-frame:     45 95% 42%;
-  --owl-frame-bg:  45 60% 12%;
-  --owl-body:      45 95% 55%;
+  --owl-frame: 45 95% 42%;
+  --owl-frame-bg: 45 60% 12%;
+  --owl-body: 45 95% 55%;
   --owl-body-deep: 45 95% 32%;
-  --owl-abdomen:   45 95% 22%;
-  --owl-feature:   45 90% 18%;
-  --owl-beak:      45 95% 62%;
-  --owl-eye-gold:  0 0% 100%;
+  --owl-abdomen: 45 95% 22%;
+  --owl-feature: 45 90% 18%;
+  --owl-beak: 45 95% 62%;
+  --owl-eye-gold: 0 0% 100%;
 
-  --ease:     cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --dur-fast: 160ms;
-  --dur:      260ms;
+  --dur: 260ms;
 
-  --nav-h:     58px;
+  --nav-h: 58px;
   --sidebar-w: 260px;
-  --toc-w:     240px;
+  --toc-w: 240px;
 }
 
 /* ============================================================
@@ -75,52 +75,53 @@ html.rp-dark,
 :where(html:not(.rp-dark)) {
   color-scheme: dark;
 
-  --rp-c-bg:      var(--bg-0);
+  --rp-c-bg: var(--bg-0);
   --rp-c-bg-soft: var(--surface-1);
   --rp-c-bg-mute: var(--surface-2);
-  --rp-c-bg-alt:  var(--bg-1);
+  --rp-c-bg-alt: var(--bg-1);
   --rp-c-bg-dark: var(--bg-2);
 
-  --rp-c-brand:         var(--accent);
-  --rp-c-brand-light:   var(--accent-hi);
+  --rp-c-brand: var(--accent);
+  --rp-c-brand-light: var(--accent-hi);
   --rp-c-brand-lighter: var(--accent-soft);
-  --rp-c-brand-dark:    var(--accent-lo);
-  --rp-c-brand-darker:  #A07905;
-  --rp-c-brand-tint:    var(--accent-soft);
+  --rp-c-brand-dark: var(--accent-lo);
+  --rp-c-brand-darker: #a07905;
+  --rp-c-brand-tint: var(--accent-soft);
 
   --rp-c-text-0: var(--text-0);
   --rp-c-text-1: var(--text-1);
   --rp-c-text-2: var(--text-2);
   --rp-c-text-3: var(--text-3);
   --rp-c-text-4: var(--text-4);
-  --rp-c-text:   var(--text-2);
+  --rp-c-text: var(--text-2);
 
-  --rp-c-text-code:        var(--accent-hi);
-  --rp-c-text-code-bg:     var(--surface-1);
+  --rp-c-text-code: var(--accent-hi);
+  --rp-c-text-code-bg: var(--surface-1);
   --rp-c-text-code-border: var(--line-2);
 
-  --rp-c-divider:       var(--line-2);
+  --rp-c-divider: var(--line-2);
   --rp-c-divider-light: var(--line-1);
-  --rp-c-divider-dark:  var(--line-3);
+  --rp-c-divider-dark: var(--line-3);
 
   /* Do NOT set --rp-c-link globally — it bleeds into sidebar links */
 
-  --rp-c-overview-group-bg:       var(--bg-2);
+  --rp-c-overview-group-bg: var(--bg-2);
   --rp-c-overview-group-bg-hover: var(--surface-1);
-  --rp-c-overview-group-border:   var(--line-2);
+  --rp-c-overview-group-border: var(--line-2);
 
-  --rp-font-family-base: "Inter Tight", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --rp-font-family-mono: "JetBrains Mono", "SF Mono", "Menlo", monospace;
+  --rp-font-family-base:
+    'Inter Tight', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --rp-font-family-mono: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
 
-  --rp-radius:       0px;
+  --rp-radius: 0px;
   --rp-radius-small: 0px;
   --rp-radius-large: 0px;
 
-  --rp-nav-height:         var(--nav-h);
-  --rp-sidebar-width:      var(--sidebar-w);
-  --rp-outline-width:      var(--toc-w);
-  --rp-content-padding-x:  clamp(20px, 4vw, 56px);
-  --rp-content-padding-y:  clamp(28px, 4vw, 56px);
+  --rp-nav-height: var(--nav-h);
+  --rp-sidebar-width: var(--sidebar-w);
+  --rp-outline-width: var(--toc-w);
+  --rp-content-padding-x: clamp(20px, 4vw, 56px);
+  --rp-content-padding-y: clamp(28px, 4vw, 56px);
 }
 
 /* ============================================================
@@ -135,18 +136,17 @@ html {
 
 body {
   font-family: var(--rp-font-family-base);
-  font-feature-settings: "ss01", "cv11", "cv02";
+  font-feature-settings: 'ss01', 'cv11', 'cv02';
   background:
     radial-gradient(1200px 700px at 75% -10%, rgba(234, 179, 8, 0.09), transparent 60%),
-    radial-gradient(900px 500px at -10% 110%, rgba(234, 179, 8, 0.04), transparent 65%),
-    var(--bg-0);
+    radial-gradient(900px 500px at -10% 110%, rgba(234, 179, 8, 0.04), transparent 65%), var(--bg-0);
   background-attachment: fixed;
   color: var(--text-2);
   margin: 0;
 }
 
 body::before {
-  content: "";
+  content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
@@ -165,9 +165,12 @@ body::before {
 }
 
 /* Zero radius on all rectangular UI — but NOT via * which breaks rspress components */
-input, button, [role="button"],
+input,
+button,
+[role='button'],
 .rp-search-button,
-.rp-code-block, .rspress-code-block,
+.rp-code-block,
+.rspress-code-block,
 .rp-prev-next-page__item,
 .rp-overview-group,
 .rp-badge {
@@ -213,7 +216,7 @@ input, button, [role="button"],
 
 /* "DOCS" badge */
 .rp-nav__title__link::after {
-  content: "DOCS";
+  content: 'DOCS';
   font-size: 10px;
   font-weight: 600;
   font-family: var(--rp-font-family-mono);
@@ -221,7 +224,7 @@ input, button, [role="button"],
   text-transform: uppercase;
   color: var(--accent);
   padding: 2px 7px;
-  border: 1px solid rgba(234, 179, 8, 0.40);
+  border: 1px solid rgba(234, 179, 8, 0.4);
   background: rgba(234, 179, 8, 0.08);
   line-height: 1.6;
   border-radius: 0;
@@ -260,7 +263,9 @@ input, button, [role="button"],
   height: 34px !important;
   min-width: 180px;
   gap: 8px;
-  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease) !important;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease) !important;
 }
 
 .rp-search-button:hover {
@@ -332,10 +337,10 @@ input, button, [role="button"],
 /* Section group headers — GET STARTED, INTEGRATION, etc. */
 .rp-sidebar-item.rp-sidebar-group,
 .rspress-sidebar-group-header,
-[class*="sidebar-group"] {
+[class*='sidebar-group'] {
   font-size: 11px !important;
   font-weight: 600 !important;
-  letter-spacing: 0.10em !important;
+  letter-spacing: 0.1em !important;
   text-transform: uppercase !important;
   color: var(--text-4) !important;
   font-family: var(--rp-font-family-mono) !important;
@@ -364,14 +369,17 @@ input, button, [role="button"],
   border-radius: 0 !important;
   width: 100%;
   position: relative;
-  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease) !important;
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease) !important;
 }
 
 /* Replace rspress's absolute tree line with an inline square bullet.
    rspress targets .rp-sidebar-item--group-item:before with position:absolute;
    we override it to be a static flex item (the ■ bullet). */
 .rp-sidebar-item--group-item::before {
-  content: "" !important;
+  content: '' !important;
   display: inline-block !important;
   position: static !important;
   top: auto !important;
@@ -454,7 +462,7 @@ input, button, [role="button"],
   font-family: var(--rp-font-family-mono);
   font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.10em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-3);
   margin: 0 0 22px;
@@ -518,7 +526,10 @@ input, button, [role="button"],
   text-decoration: none !important;
   border-radius: 0 !important;
   white-space: nowrap;
-  transition: filter var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease) !important;
+  transition:
+    filter var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease) !important;
 }
 
 .owl-btn--primary,
@@ -636,7 +647,7 @@ input, button, [role="button"],
 
 /* Gold "# " prefix — first flex item */
 .rspress-doc h2::before {
-  content: "# ";
+  content: '# ';
   color: var(--accent);
   font-weight: 400;
   white-space: pre;
@@ -690,7 +701,9 @@ input, button, [role="button"],
   opacity: 0;
   font-weight: 400;
   font-size: 0.85em;
-  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition:
+    opacity var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .rspress-doc h2:hover .rp-header-anchor,
@@ -762,7 +775,7 @@ input, button, [role="button"],
 }
 
 .rspress-doc ul > li::before {
-  content: "";
+  content: '';
   position: absolute;
   left: 4px;
   top: 12px;
@@ -777,7 +790,7 @@ input, button, [role="button"],
 
 .rspress-doc ol > li::before {
   counter-increment: li;
-  content: counter(li) ".";
+  content: counter(li) '.';
   position: absolute;
   left: 0;
   top: 3px;
@@ -787,7 +800,10 @@ input, button, [role="button"],
   font-family: var(--rp-font-family-mono);
 }
 
-.rspress-doc li strong { color: var(--text-0); font-weight: 600; }
+.rspress-doc li strong {
+  color: var(--text-0);
+  font-weight: 600;
+}
 
 .rspress-doc hr {
   border: none;
@@ -827,7 +843,7 @@ input, button, [role="button"],
 /* Gold 6×6 square before lang label */
 .rspress-code-block__title-bar::before,
 .rp-code-block__header::before {
-  content: "";
+  content: '';
   display: inline-block;
   width: 6px;
   height: 6px;
@@ -850,7 +866,9 @@ input, button, [role="button"],
   transition: color var(--dur-fast) var(--ease) !important;
 }
 
-.rspress-code-block__copy:hover { color: var(--text-1) !important; }
+.rspress-code-block__copy:hover {
+  color: var(--text-1) !important;
+}
 
 .rspress-code-block pre,
 .rp-code-block pre {
@@ -872,16 +890,36 @@ input, button, [role="button"],
   font-size: 13px !important;
 }
 
-.shiki .token.keyword      { color: #FFA866; font-weight: 500; }
-.shiki .token.function     { color: #7AB8FF; }
-.shiki .token.string       { color: #7DDF94; }
+.shiki .token.keyword {
+  color: #ffa866;
+  font-weight: 500;
+}
+.shiki .token.function {
+  color: #7ab8ff;
+}
+.shiki .token.string {
+  color: #7ddf94;
+}
 .shiki .token.number,
-.shiki .token.boolean      { color: #FFC872; }
-.shiki .token.comment      { color: var(--text-4); font-style: italic; }
-.shiki .token.class-name   { color: #C9A4FF; }
-.shiki .token.punctuation  { color: var(--text-3); }
-.shiki .token.property     { color: #FFCB6B; }
-.shiki .token.operator     { color: var(--accent); }
+.shiki .token.boolean {
+  color: #ffc872;
+}
+.shiki .token.comment {
+  color: var(--text-4);
+  font-style: italic;
+}
+.shiki .token.class-name {
+  color: #c9a4ff;
+}
+.shiki .token.punctuation {
+  color: var(--text-3);
+}
+.shiki .token.property {
+  color: #ffcb6b;
+}
+.shiki .token.operator {
+  color: var(--accent);
+}
 
 .line-numbers-rows {
   border-right: 1px solid var(--line-1) !important;
@@ -924,9 +962,14 @@ input, button, [role="button"],
   line-height: 1.55;
 }
 
-.rspress-doc tr:last-child td { border-bottom: none; }
+.rspress-doc tr:last-child td {
+  border-bottom: none;
+}
 
-.rspress-doc td:first-child { color: var(--text-1); font-weight: 500; }
+.rspress-doc td:first-child {
+  color: var(--text-1);
+  font-weight: 500;
+}
 
 .rspress-doc td code,
 .rspress-doc th code {
@@ -1001,8 +1044,12 @@ input, button, [role="button"],
   border-left: 3px solid var(--accent);
 }
 
-.docs-callout.warn  { border-left-color: var(--warn); }
-.docs-callout.danger { border-left-color: var(--danger); }
+.docs-callout.warn {
+  border-left-color: var(--warn);
+}
+.docs-callout.danger {
+  border-left-color: var(--danger);
+}
 
 /* ============================================================
    Tags / badges
@@ -1054,12 +1101,14 @@ input, button, [role="button"],
   top: var(--nav-h) !important;
 }
 
-.rp-outline { padding: 36px 16px 40px 0; }
+.rp-outline {
+  padding: 36px 16px 40px 0;
+}
 
 .rp-outline__title {
   font-size: 11px !important;
   font-weight: 600 !important;
-  letter-spacing: 0.10em !important;
+  letter-spacing: 0.1em !important;
   text-transform: uppercase !important;
   color: var(--text-3) !important;
   font-family: var(--rp-font-family-mono) !important;
@@ -1077,7 +1126,9 @@ input, button, [role="button"],
   line-height: 1.45;
   text-decoration: none !important;
   border-bottom: none !important;
-  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease) !important;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease) !important;
 }
 
 .rp-toc-item:hover,
@@ -1087,13 +1138,15 @@ input, button, [role="button"],
 }
 
 .rp-toc-item.active,
-.rp-outline__toc a[aria-current="true"],
-.rp-toc-item[aria-current="true"] {
+.rp-outline__toc a[aria-current='true'],
+.rp-toc-item[aria-current='true'] {
   color: var(--accent) !important;
   border-left-color: var(--accent) !important;
 }
 
-.rp-outline__divider { border-color: var(--line-1) !important; }
+.rp-outline__divider {
+  border-color: var(--line-1) !important;
+}
 
 /* ============================================================
    Prev / Next pager — full-width 2-column grid, Inter Tight
@@ -1120,12 +1173,14 @@ input, button, [role="button"],
   text-decoration: none !important;
   border-bottom: none !important;
   font-family: var(--rp-font-family-base) !important;
-  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease) !important;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease) !important;
   min-height: 72px;
 }
 
 .rp-prev-next-page__item:hover {
-  border-color: rgba(234, 179, 8, 0.40) !important;
+  border-color: rgba(234, 179, 8, 0.4) !important;
   background: var(--surface-1) !important;
   border-bottom: none !important;
 }
@@ -1140,7 +1195,7 @@ input, button, [role="button"],
   gap: 6px;
   font-family: var(--rp-font-family-mono) !important;
   font-size: 10px !important;
-  letter-spacing: 0.10em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-4) !important;
   margin-bottom: 8px;
@@ -1175,10 +1230,19 @@ input, button, [role="button"],
    Scrollbars
    ============================================================ */
 
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--line-2); }
-::-webkit-scrollbar-thumb:hover { background: var(--line-3); }
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--line-3);
+}
 
 /* ============================================================
    Owl logo CSS (gold palette)
@@ -1200,9 +1264,9 @@ input, button, [role="button"],
   background: hsl(var(--owl-frame-bg));
   box-shadow:
     -1px -1px 3px 1px rgba(255, 255, 255, 0.2),
-     2px  2px 3px 1px rgba(0, 0, 0, 0.9),
+    2px 2px 3px 1px rgba(0, 0, 0, 0.9),
     inset -1px -1px 2px 1px rgba(255, 255, 255, 0.2),
-    inset  1px  1px 2px 1px rgba(0, 0, 0, 0.9);
+    inset 1px 1px 2px 1px rgba(0, 0, 0, 0.9);
   overflow: hidden;
 }
 
@@ -1215,7 +1279,10 @@ input, button, [role="button"],
   transform: translate(-50%, 0);
 }
 
-.owl-wings { position: absolute; inset: 0; }
+.owl-wings {
+  position: absolute;
+  inset: 0;
+}
 
 .owl-wing {
   position: absolute;
@@ -1227,27 +1294,39 @@ input, button, [role="button"],
   z-index: 0;
 }
 
-.owl-wing-left  { left: -7.5px;  transform: rotate(-60deg); }
-.owl-wing-right { right: -7.5px; transform: rotate(150deg); }
+.owl-wing-left {
+  left: -7.5px;
+  transform: rotate(-60deg);
+}
+.owl-wing-right {
+  right: -7.5px;
+  transform: rotate(150deg);
+}
 
 .owl-body {
   position: absolute;
-  top: 0; left: 50%;
-  width: 100%; height: 100%;
+  top: 0;
+  left: 50%;
+  width: 100%;
+  height: 100%;
   border-radius: 50% !important;
-  background: linear-gradient(180deg,
-    hsl(var(--owl-body))      0%,
-    hsl(var(--owl-body))      10%,
+  background: linear-gradient(
+    180deg,
+    hsl(var(--owl-body)) 0%,
+    hsl(var(--owl-body)) 10%,
     hsl(var(--owl-body-deep)) 20%,
-    hsl(var(--owl-body-deep)) 100%);
+    hsl(var(--owl-body-deep)) 100%
+  );
   transform: translate(-50%, 0);
   z-index: 10;
 }
 
 .owl-abdomen {
   position: absolute;
-  top: 24px; left: 50%;
-  width: 56px; height: 48px;
+  top: 24px;
+  left: 50%;
+  width: 56px;
+  height: 48px;
   border-radius: 50% !important;
   background: hsl(var(--owl-abdomen));
   transform: translate(-50%, 0);
@@ -1255,7 +1334,8 @@ input, button, [role="button"],
 
 .owl-head {
   position: absolute;
-  top: 0; left: 50%;
+  top: 0;
+  left: 50%;
   width: 90px;
   transform: translate(-50%, 0);
   z-index: 99;
@@ -1263,26 +1343,34 @@ input, button, [role="button"],
 
 .owl-eyes {
   position: absolute;
-  width: 90px; height: 50px;
-  top: 50%; left: 50%;
+  width: 90px;
+  height: 50px;
+  top: 50%;
+  left: 50%;
   transform: translate(-50%, 0);
 }
 
 .owl-eye {
   position: absolute;
-  width: 40px; height: 40px;
+  width: 40px;
+  height: 40px;
   border-radius: 50% !important;
   background: hsl(var(--owl-feature));
 }
 
-.owl-eye-left  { left: 5px; }
-.owl-eye-right { right: 5px; }
+.owl-eye-left {
+  left: 5px;
+}
+.owl-eye-right {
+  right: 5px;
+}
 
 .owl-eye-core {
   position: absolute;
   top: calc(50% - 16.5px);
   left: calc(50% - 16.5px);
-  width: 33px; height: 33px;
+  width: 33px;
+  height: 33px;
   border-radius: 50% !important;
   background: hsl(var(--owl-eye-gold));
   overflow: hidden;
@@ -1292,36 +1380,49 @@ input, button, [role="button"],
 }
 
 .owl-eye-core::before {
-  content: "";
+  content: '';
   position: absolute;
   top: calc(50% - 7.5px);
   left: calc(50% - 7.5px);
-  width: 15px; height: 15px;
+  width: 15px;
+  height: 15px;
   border-radius: 50% !important;
   background: hsl(var(--owl-feature));
 }
 
 .owl-eye-core::after {
-  content: "";
+  content: '';
   position: absolute;
-  top: 30%; left: 20%;
-  width: 5px; height: 5px;
+  top: 30%;
+  left: 20%;
+  width: 5px;
+  height: 5px;
   border-radius: 50% !important;
   background: hsl(0 0% 100%);
 }
 
 .owl-beak {
   position: absolute;
-  top: 25px; left: 50%;
-  width: 10px; height: 17.5px;
+  top: 25px;
+  left: 50%;
+  width: 10px;
+  height: 17.5px;
   border-radius: 80% !important;
   background: hsl(var(--owl-beak));
   transform: translate(-50%, 0);
 }
 
 @keyframes owl-blink {
-  10%, 30%, 100% { transform: scaleY(1); }
-  0%, 15%, 25%   { transform: scaleY(0); }
+  10%,
+  30%,
+  100% {
+    transform: scaleY(1);
+  }
+  0%,
+  15%,
+  25% {
+    transform: scaleY(0);
+  }
 }
 
 /* ============================================================
@@ -1329,20 +1430,40 @@ input, button, [role="button"],
    ============================================================ */
 
 @media (max-width: 1100px) {
-  .rp-doc-layout__outline { display: none !important; }
-  :root { --toc-w: 0px; --rp-outline-width: 0px; }
+  .rp-doc-layout__outline {
+    display: none !important;
+  }
+  :root {
+    --toc-w: 0px;
+    --rp-outline-width: 0px;
+  }
 }
 
 @media (max-width: 760px) {
-  .rp-doc-layout__sidebar { display: none !important; }
-  :root { --sidebar-w: 0px; --rp-sidebar-width: 0px; }
-  .owl-h1 { font-size: 34px !important; }
-  .owl-cards { grid-template-columns: 1fr !important; }
-  .rp-prev-next-page { grid-template-columns: 1fr !important; }
+  .rp-doc-layout__sidebar {
+    display: none !important;
+  }
+  :root {
+    --sidebar-w: 0px;
+    --rp-sidebar-width: 0px;
+  }
+  .owl-h1 {
+    font-size: 34px !important;
+  }
+  .owl-cards {
+    grid-template-columns: 1fr !important;
+  }
+  .rp-prev-next-page {
+    grid-template-columns: 1fr !important;
+  }
 }
 
 @media (max-width: 480px) {
   .rp-search-button__word,
-  .rp-search-button__hotkey { display: none !important; }
-  .rp-search-button { min-width: unset !important; }
+  .rp-search-button__hotkey {
+    display: none !important;
+  }
+  .rp-search-button {
+    min-width: unset !important;
+  }
 }

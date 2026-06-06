@@ -1,10 +1,10 @@
-# How OwlID works
+# How Owl ID works
 
-A design-level tour of OwlID's privacy model, trust anchoring, and data flow.
+A design-level tour of Owl ID's privacy model, trust anchoring, and data flow.
 For exact function signatures use the [SDK reference](/sdk/verifier); for raw
 routes see the [HTTP API](/api).
 
-OwlID lets a **holder** prove facts about themselves to a **verifier** without
+Owl ID lets a **holder** prove facts about themselves to a **verifier** without
 revealing the underlying documents. An **issuer** vouches for the holder's
 identity once; from then on the holder presents privacy-preserving proofs as
 often as they like, and the verifier confirms them against trust state
@@ -16,7 +16,7 @@ sequenceDiagram
     actor Issuer
     actor Holder
     actor Verifier
-    participant Owl as OwlID platform
+    participant Owl as Owl ID platform
     Issuer->>Holder: SD-JWT VC (signed credential, stored in the wallet)
     Verifier->>Holder: request (which claims / predicates, + a nonce)
     Holder->>Holder: select disclosures, build presentation, sign KB-JWT
@@ -30,7 +30,7 @@ holder later discloses, or to whom. The holder controls every presentation.
 
 ## The credential — SD-JWT VC
 
-OwlID issues credentials as **SD-JWT VC** (`application/dc+sd-jwt`), an IETF
+Owl ID issues credentials as **SD-JWT VC** (`application/dc+sd-jwt`), an IETF
 standard. A credential is:
 
 - an **issuer-signed JWT** carrying salted SHA-256 hashes of each claim, the
@@ -41,7 +41,7 @@ standard. A credential is:
   verifier's nonce.
 
 Because the credential is a published standard, any conformant verifier can
-read an OwlID presentation — OwlID is not a walled garden.
+read an Owl ID presentation — Owl ID is not a walled garden.
 
 ## Selective disclosure
 
@@ -90,7 +90,7 @@ presentation cannot be replayed.
 
 ## Trust anchored on Midnight
 
-Midnight is OwlID's **required trust core** — there is no version of OwlID that
+Midnight is Owl ID's **required trust core** — there is no version of Owl ID that
 runs without it. Three on-chain Compact contracts hold the trust state, and the
 standards-shaped formats verifiers consume are projections of that state:
 
@@ -116,8 +116,8 @@ the local mirror, the on-chain registry, and the signed status list.
 
 ## Standards
 
-OwlID's whole public surface is built from published standards, so credentials
-and presentations interoperate beyond OwlID:
+Owl ID's whole public surface is built from published standards, so credentials
+and presentations interoperate beyond Owl ID:
 
 - **SD-JWT VC** — the credential format.
 - **OpenID4VCI** — issuance, including Batch Credential issuance (one-time-use
@@ -148,7 +148,7 @@ eIDAS LoA-high / Trusted-List infrastructure.
   slots, document hashes, predicate attestation keys. No PII ever reaches the
   chain.
 
-OwlID is built for data minimization: there is very little personal data to
+Owl ID is built for data minimization: there is very little personal data to
 erase because the platform mostly stores hashes. Right-to-erasure is primarily
 a local wallet delete; server-side records are erasable on request.
 

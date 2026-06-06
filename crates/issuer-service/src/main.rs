@@ -11,6 +11,10 @@
 //! - QR code polling (BankID)
 //! - Webhook async (Onfido, Jumio)
 
+// Intentional `+`-connector prose in doc comments trips clippy's markdown
+// list heuristic; the lint is cosmetic (rustdoc rendering only).
+#![allow(clippy::doc_lazy_continuation)]
+
 mod admin_auth;
 mod config;
 mod midnight;
@@ -33,7 +37,9 @@ use owl_issuer_service::{
     FormFieldType, IdentitySubmissionForm, IdpDatabase, MockBankIdProvider, MockDigiDProvider,
     MockProviderFactory, ProviderDescriptor, ProviderFlowType, ProviderInfo, ProviderRegistry,
     SessionStatus, VerificationLevel, VerificationStart, VerifiedIdentityClaims, WebhookPayload,
-    db::{CredentialRepository, ProviderSettingsRepository, create_pool},
+    db::{
+        CredentialRecoveryRepository, CredentialRepository, ProviderSettingsRepository, create_pool,
+    },
     middleware::{InMemoryRateLimiter, RateLimitConfig, rate_limit, validate_session_bearer},
 };
 use serde::{Deserialize, Serialize};
@@ -112,7 +118,10 @@ async fn register_trusted_issuer(
             tracing::warn!(
                 "Startup: issuer registration attempt {attempt}/{ATTEMPTS} failed: {} \
                  — retrying in {backoff}s",
-                last_error.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+                last_error
+                    .as_ref()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default(),
             );
             tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
         }
@@ -137,6 +146,8 @@ async fn register_trusted_issuer(
         submit_identity,
         get_claims,
         issue_credential,
+        list_recovery_backups,
+        store_recovery_backup,
         auto_verify,
         complete_verification,
         handle_saml_callback,
@@ -156,6 +167,9 @@ async fn register_trusted_issuer(
         SessionResponse,
         IssueCredentialRequest,
         IssueCredentialResponse,
+        RecoveryBackupRequest,
+        RecoveryBackupResponse,
+        RecoveryBackupsResponse,
         CompleteVerificationResponse,
         OidcLoginResponse,
         OidcCallbackQuery,
@@ -251,6 +265,10 @@ struct AppState {
     /// Holder app base URL. OAuth/OIDC + webhook callbacks 302 here so the
     /// user lands on the same `/callback` success page across providers.
     app_url: String,
+    /// Optional encrypted recovery backup repository. Disabled when Postgres
+    /// is unavailable; credentials still issue normally.
+    recovery_repo: Option<CredentialRecoveryRepository>,
+    recovery_index_secret: Vec<u8>,
 }
 
 #[tokio::main]
@@ -462,6 +480,36 @@ async fn main() -> anyhow::Result<()> {
         );
         hex::encode(keypair.to_bytes())
     };
+    // Recovery subject-index HMAC key. Deliberately decoupled from the issuer
+    // signing key: subject hashes are stable for the life of THIS secret, so
+    // tying it to the signing key would orphan every stored backup the moment
+    // that key rotated. Resolution: operator env first, else a dedicated
+    // persisted row (generated once). When no DB is available recovery itself
+    // is disabled, so the empty fallback is never consulted.
+    let recovery_index_secret: Vec<u8> = if let Ok(env_secret) =
+        std::env::var("ISSUER_RECOVERY_INDEX_SECRET")
+    {
+        env_secret.into_bytes()
+    } else if let Some(ref pool) = db_pool {
+        let repo = owl_issuer_service::db::ServiceSecretsRepository::new(pool.clone());
+        match repo
+            .get_or_create("recovery_index_secret", || {
+                hex::encode(owl_crypto::KeyPair::generate().to_bytes())
+            })
+            .await
+        {
+            Ok(secret) => secret.into_bytes(),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load persisted recovery index secret ({}); recovery lookups will not be stable across restarts.",
+                    e
+                );
+                hex::encode(owl_crypto::KeyPair::generate().to_bytes()).into_bytes()
+            }
+        }
+    } else {
+        Vec::new()
+    };
 
     // Register the active pubkey with the verification-service BEFORE
     // accepting issuance requests, so every freshly-issued credential
@@ -582,6 +630,10 @@ async fn main() -> anyhow::Result<()> {
         midnight: midnight_client.clone(),
         oidc_state,
         app_url: issuer_config.app_url.clone(),
+        recovery_repo: db_pool
+            .as_ref()
+            .map(|pool| CredentialRecoveryRepository::new(pool.clone())),
+        recovery_index_secret,
     };
 
     // Background cleanup of expired sessions + claims. Without this the
@@ -693,6 +745,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/{id}/submit", post(submit_identity))
         .route("/sessions/{id}/claims", get(get_claims))
         .route("/sessions/{id}/issue", post(issue_credential))
+        .route(
+            "/sessions/{id}/recovery-backups",
+            get(list_recovery_backups),
+        )
+        .route(
+            "/sessions/{id}/recovery-backups",
+            post(store_recovery_backup),
+        )
         .route("/sessions/{id}/auto-verify", post(auto_verify))
         .route("/sessions/{id}/complete", post(complete_verification))
         .route("/polling/{session_id}", get(poll_session))
@@ -802,10 +862,7 @@ async fn did_json(
     // resolvers can fetch it (the credentialed CORS layer would block
     // them; this endpoint carries no credentials and no secret).
     Ok((
-        [(
-            axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
-            "*",
-        )],
+        [(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
         Json(did_web::did_document(
             &state.issuer_public_url,
             &kp.public_key(),
@@ -903,7 +960,10 @@ async fn oid4vci_credential(
     .await?;
     if !resp.0.success {
         return Err(ApiError::Internal(
-            resp.0.error.clone().unwrap_or_else(|| "issuance failed".into()),
+            resp.0
+                .error
+                .clone()
+                .unwrap_or_else(|| "issuance failed".into()),
         ));
     }
     // OID4VCI Credential Response: single → `credential`; batch →
@@ -965,10 +1025,7 @@ async fn status_list(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let uri = format!(
-        "{}/status/1",
-        state.issuer_public_url.trim_end_matches('/')
-    );
+    let uri = format!("{}/status/1", state.issuer_public_url.trim_end_matches('/'));
     let jwt = owl_proof_system::status_list::issue_status_list_jwt(&list, &kp, &uri, now, None)
         .map_err(|e| ApiError::Internal(format!("status list: {e}")))?;
 
@@ -1246,6 +1303,31 @@ impl KeyAlgorithm {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IdentityAnchorArgs {
+    did_hash: String,
+    commitment: String,
+    issuer_key_hash: String,
+}
+
+fn credential_identity_anchor_args(
+    owner_public_key: &str,
+    credential_id: &str,
+    issuer_private_key_hex: &str,
+) -> Option<IdentityAnchorArgs> {
+    use sha2::{Digest, Sha256};
+
+    let key_bytes = hex::decode(issuer_private_key_hex).ok()?;
+    let keypair = owl_crypto::KeyPair::from_bytes(&key_bytes).ok()?;
+    let issuer_key_hash = hex::encode(Sha256::digest(keypair.public_key().to_hex().as_bytes()));
+
+    Some(IdentityAnchorArgs {
+        did_hash: hex::encode(Sha256::digest(owner_public_key.as_bytes())),
+        commitment: credential_id.to_string(),
+        issuer_key_hash,
+    })
+}
+
 /// Request to issue a credential
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1287,6 +1369,81 @@ struct IssueCredentialResponse {
     personhood_secret_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryBackupRequest {
+    credential_id: String,
+    ciphertext: String,
+    encryption_version: String,
+    key_label: String,
+    #[serde(default)]
+    metadata: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryBackupResponse {
+    id: String,
+    credential_id: String,
+    ciphertext: String,
+    encryption_version: String,
+    key_label: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryBackupsResponse {
+    backups: Vec<RecoveryBackupResponse>,
+}
+
+fn recovery_subject_material(claims: &VerifiedIdentityClaims) -> Option<String> {
+    let provider = claims.provider_id.to_lowercase();
+    if matches!(provider.as_str(), "google" | "apple" | "microsoft")
+        && !claims.national_id.is_empty()
+    {
+        return Some(format!("oidc:{provider}:{}", claims.national_id));
+    }
+
+    if let Some(document_number) = claims.document_number.as_ref().filter(|v| !v.is_empty()) {
+        let country = claims.issuing_country.as_deref().unwrap_or("unknown");
+        let doc_type = claims.document_type.as_deref().unwrap_or("unknown");
+        return Some(format!(
+            "doc:{provider}:{country}:{doc_type}:{document_number}"
+        ));
+    }
+
+    if !claims.national_id.is_empty() {
+        return Some(format!("eid:{provider}:{}", claims.national_id));
+    }
+
+    None
+}
+
+fn recovery_subject_hash(claims: &VerifiedIdentityClaims, secret: &[u8]) -> Option<String> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let material = recovery_subject_material(claims)?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).ok()?;
+    mac.update(b"owlid:credential-recovery:v1\0");
+    mac.update(material.as_bytes());
+    Some(hex::encode(mac.finalize().into_bytes()))
+}
+
+fn to_recovery_response(
+    backup: owl_issuer_service::db::CredentialRecoveryBackup,
+) -> RecoveryBackupResponse {
+    RecoveryBackupResponse {
+        id: backup.id.to_string(),
+        credential_id: backup.credential_id,
+        ciphertext: backup.ciphertext,
+        encryption_version: backup.encryption_version,
+        key_label: backup.key_label,
+        updated_at: backup.updated_at.to_rfc3339(),
+    }
 }
 
 /// Issue a credential from verified claims
@@ -1391,28 +1548,29 @@ async fn issue_credential(
                 &owl_issuer_service::sd_jwt_bridge::credential_id(vc),
             );
             tokio::spawn(async move {
-                use sha2::{Digest, Sha256};
                 let Ok(cred_id) = cred_id else {
                     tracing::warn!("identity anchor skipped: bad credential id");
                     return;
                 };
-                let did_hash = hex::encode(Sha256::digest(owner_pk.as_bytes()));
-                if let Ok(key_bytes) = hex::decode(&issuer_pk) {
-                    if let Ok(keypair) = owl_crypto::KeyPair::from_bytes(&key_bytes) {
-                        let issuer_key_hash =
-                            hex::encode(Sha256::digest(keypair.public_key().to_hex().as_bytes()));
-                        if let Err(e) = midnight
-                            .register_identity(&cred_id, &did_hash, &issuer_key_hash)
-                            .await
-                        {
-                            tracing::warn!(
-                                "Failed to anchor identity on-chain (non-blocking): {}",
-                                e
-                            );
-                        } else {
-                            tracing::info!("Identity anchored on-chain for DID hash: {}", did_hash);
-                        }
-                    }
+                let Some(anchor) = credential_identity_anchor_args(&owner_pk, &cred_id, &issuer_pk)
+                else {
+                    tracing::warn!("identity anchor skipped: bad issuer keypair");
+                    return;
+                };
+                if let Err(e) = midnight
+                    .register_identity(
+                        &anchor.did_hash,
+                        &anchor.commitment,
+                        &anchor.issuer_key_hash,
+                    )
+                    .await
+                {
+                    tracing::warn!("Failed to anchor identity on-chain (non-blocking): {}", e);
+                } else {
+                    tracing::info!(
+                        "Identity anchored on-chain for DID hash: {}",
+                        anchor.did_hash
+                    );
                 }
             });
         }
@@ -1426,6 +1584,88 @@ async fn issue_credential(
         credentials,
         personhood_secret_hex: personhood_secret.map(hex::encode),
         error: None,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/sessions/{id}/recovery-backups",
+    tag = "credentials",
+    params(("id" = Uuid, Path, description = "Verified session ID")),
+    request_body = RecoveryBackupRequest,
+    responses((status = 200, description = "Encrypted recovery backup stored", body = RecoveryBackupResponse))
+)]
+// Authorization is "proved a fresh provider verification of this identity"
+// (session bearer + matching subject hash). The server cannot prove the caller
+// owns the passkey that sealed a row, so an attacker who re-verifies the same
+// identity AND knows a victim's credential_id could overwrite that row. The
+// blast radius is bounded: the ciphertext is sealed under the victim's passkey
+// PRF, so an attacker's overwrite is undecryptable on restore (it is skipped,
+// not trusted) — at worst a recovery DoS for that one credential, never a leak.
+async fn store_recovery_backup(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<RecoveryBackupRequest>,
+) -> Result<Json<RecoveryBackupResponse>, ApiError> {
+    let repo = state.recovery_repo.as_ref().ok_or_else(|| {
+        ApiError::BadRequest("Credential recovery storage is disabled".to_string())
+    })?;
+    let claims = state
+        .db
+        .get_claims(id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Session is not verified".to_string()))?;
+    let subject_hash = recovery_subject_hash(&claims, &state.recovery_index_secret)
+        .ok_or_else(|| ApiError::BadRequest("Verified identity is not recoverable".to_string()))?;
+
+    if request.credential_id.trim().is_empty() || request.ciphertext.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "credentialId and ciphertext are required".to_string(),
+        ));
+    }
+
+    let backup = repo
+        .upsert(
+            &claims.provider_id,
+            &subject_hash,
+            &request.credential_id,
+            &request.ciphertext,
+            &request.encryption_version,
+            &request.key_label,
+            request.metadata,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(to_recovery_response(backup)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/sessions/{id}/recovery-backups",
+    tag = "credentials",
+    params(("id" = Uuid, Path, description = "Verified session ID")),
+    responses((status = 200, description = "Encrypted recovery backups for this verified identity", body = RecoveryBackupsResponse))
+)]
+async fn list_recovery_backups(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RecoveryBackupsResponse>, ApiError> {
+    let repo = state.recovery_repo.as_ref().ok_or_else(|| {
+        ApiError::BadRequest("Credential recovery storage is disabled".to_string())
+    })?;
+    let claims = state
+        .db
+        .get_claims(id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Session is not verified".to_string()))?;
+    let subject_hash = recovery_subject_hash(&claims, &state.recovery_index_secret)
+        .ok_or_else(|| ApiError::BadRequest("Verified identity is not recoverable".to_string()))?;
+    let backups = repo
+        .list_for_subject(&claims.provider_id, &subject_hash)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(RecoveryBackupsResponse {
+        backups: backups.into_iter().map(to_recovery_response).collect(),
     }))
 }
 
@@ -2218,11 +2458,7 @@ async fn oidc_callback(
         use axum::response::Redirect;
         let base = app.app_url.trim_end_matches('/');
         let url = match (session, err) {
-            (_, Some(e)) => format!(
-                "{}/callback?error={}",
-                base,
-                urlencode(e)
-            ),
+            (_, Some(e)) => format!("{}/callback?error={}", base, urlencode(e)),
             (Some(id), None) => format!("{}/callback?session={}", base, id),
             (None, None) => format!("{}/callback?error=missing_session", base),
         };
@@ -2518,5 +2754,112 @@ impl IntoResponse for ApiError {
         });
 
         (status, Json(body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        credential_identity_anchor_args, recovery_subject_hash, recovery_subject_material,
+    };
+    use chrono::{NaiveDate, Utc};
+    use owl_issuer_service::{VerificationLevel, VerifiedIdentityClaims};
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn credential_identity_anchor_uses_holder_hash_as_did_and_credential_as_commitment() {
+        let issuer = owl_crypto::KeyPair::generate();
+        let issuer_private_key_hex = hex::encode(issuer.to_bytes());
+        let owner_public_key = "holder-public-key-hex";
+        let credential_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        let anchor = credential_identity_anchor_args(
+            owner_public_key,
+            credential_id,
+            &issuer_private_key_hex,
+        )
+        .expect("valid issuer key");
+
+        assert_eq!(
+            anchor.did_hash,
+            hex::encode(Sha256::digest(owner_public_key.as_bytes()))
+        );
+        assert_eq!(anchor.commitment, credential_id);
+        assert_eq!(
+            anchor.issuer_key_hash,
+            hex::encode(Sha256::digest(issuer.public_key().to_hex().as_bytes()))
+        );
+    }
+
+    fn base_claims(provider_id: &str) -> VerifiedIdentityClaims {
+        VerifiedIdentityClaims {
+            first_name: "Ada".to_string(),
+            last_name: "Lovelace".to_string(),
+            date_of_birth: NaiveDate::from_ymd_opt(1900, 1, 1).unwrap(),
+            place_of_birth: String::new(),
+            nationality: String::new(),
+            gender: None,
+            national_id: String::new(),
+            passport_number: None,
+            drivers_license: None,
+            tax_id: None,
+            document_type: None,
+            document_number: None,
+            issuing_country: None,
+            document_expiry: None,
+            document_issue_date: None,
+            portrait_image: None,
+            street_address: String::new(),
+            city: String::new(),
+            postal_code: String::new(),
+            country: String::new(),
+            email: None,
+            email_verified: None,
+            name: None,
+            picture: None,
+            locale: None,
+            hosted_domain: None,
+            is_over_18: false,
+            is_over_21: false,
+            is_over_65: false,
+            is_eu_citizen: false,
+            is_resident: false,
+            resident_country: None,
+            verified_at: Utc::now(),
+            verification_level: VerificationLevel::Low,
+            provider_id: provider_id.to_string(),
+            verification_method: "oidc".to_string(),
+        }
+    }
+
+    #[test]
+    fn recovery_subject_uses_oidc_subject_not_email() {
+        let mut claims = base_claims("google");
+        claims.national_id = "google-sub-123".to_string();
+        claims.email = Some("first@example.com".to_string());
+        let first_hash = recovery_subject_hash(&claims, b"secret").expect("recoverable");
+
+        claims.email = Some("renamed@example.com".to_string());
+        assert_eq!(
+            recovery_subject_material(&claims).as_deref(),
+            Some("oidc:google:google-sub-123")
+        );
+        assert_eq!(
+            first_hash,
+            recovery_subject_hash(&claims, b"secret").expect("recoverable")
+        );
+    }
+
+    #[test]
+    fn recovery_subject_uses_document_identity_when_available() {
+        let mut claims = base_claims("didit");
+        claims.document_number = Some("AB1234567".to_string());
+        claims.document_type = Some("passport".to_string());
+        claims.issuing_country = Some("NL".to_string());
+
+        assert_eq!(
+            recovery_subject_material(&claims).as_deref(),
+            Some("doc:didit:NL:passport:AB1234567")
+        );
     }
 }

@@ -119,6 +119,38 @@ describe('CredentialStorageManager', () => {
     expect(adapter.dump()).toEqual({})
   })
 
+  test('saveSelectedWebAuthnCredential repairs id without inventing public key', async () => {
+    const m = new CredentialStorageManager(inMemoryAdapter())
+    const repaired = await m.saveSelectedWebAuthnCredential('synced-passkey')
+
+    expect(repaired).toEqual({
+      credentialId: 'synced-passkey',
+      publicKey: undefined,
+      counter: 0,
+      transports: ['internal', 'hybrid'],
+    })
+    expect(await m.loadWebAuthnCredential()).toEqual(repaired)
+  })
+
+  test('saveSelectedWebAuthnCredential preserves registration metadata on id repair', async () => {
+    const m = new CredentialStorageManager(inMemoryAdapter())
+    await m.saveWebAuthnCredential({
+      credentialId: 'old-passkey',
+      publicKey: 'cose-public-key',
+      counter: 7,
+      transports: ['hybrid'],
+    })
+
+    const repaired = await m.saveSelectedWebAuthnCredential('new-passkey')
+
+    expect(repaired).toEqual({
+      credentialId: 'new-passkey',
+      publicKey: 'cose-public-key',
+      counter: 7,
+      transports: ['hybrid'],
+    })
+  })
+
   test('saveUsername / loadUsername round-trip', async () => {
     const m = new CredentialStorageManager(inMemoryAdapter())
     expect(await m.loadUsername()).toBeNull()

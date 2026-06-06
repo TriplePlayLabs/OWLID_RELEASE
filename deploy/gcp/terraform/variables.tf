@@ -178,8 +178,8 @@ variable "proof_server_min_instances" {
 
 variable "proof_server_max_instances" {
   type        = number
-  default     = 10
-  description = "Maximum Cloud Run instances for the hosted proof server. ZK proving is CPU-bound and per-request concurrency is capped at 2, so size by peak holder QPS."
+  default     = 40
+  description = "Maximum Cloud Run instances for the hosted proof server. ZK proving is CPU-bound and per-request concurrency is 4, so 40 instances ~= 160 concurrent proofs. Size by peak holder + sidecar QPS."
 }
 
 variable "proof_server_cors_origin_regex" {

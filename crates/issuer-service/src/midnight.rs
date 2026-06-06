@@ -129,7 +129,8 @@ impl MidnightSidecar {
     // ========================================================================
 
     /// Check if an issuer is trusted on-chain.
-    pub async fn is_issuer_trusted(&self, key_hash_hex: &str) -> Result<bool, MidnightError> {        let resp: IssuerStatusResponse = self
+    pub async fn is_issuer_trusted(&self, key_hash_hex: &str) -> Result<bool, MidnightError> {
+        let resp: IssuerStatusResponse = self
             .http
             .get(format!(
                 "{}/api/issuers/{}/trusted",
@@ -150,7 +151,8 @@ impl MidnightSidecar {
         &self,
         public_key_hex: &str,
         name: &str,
-    ) -> Result<(), MidnightError> {        let resp: SidecarResponse = self
+    ) -> Result<(), MidnightError> {
+        let resp: SidecarResponse = self
             .http
             .post(format!("{}/api/issuers/register", self.base_url))
             .json(&serde_json::json!({
@@ -177,7 +179,8 @@ impl MidnightSidecar {
         did_hash_hex: &str,
         commitment_hex: &str,
         issuer_key_hash_hex: &str,
-    ) -> Result<(), MidnightError> {        let resp: SidecarResponse = self
+    ) -> Result<(), MidnightError> {
+        let resp: SidecarResponse = self
             .http
             .post(format!("{}/api/identities/register", self.base_url))
             .json(&serde_json::json!({

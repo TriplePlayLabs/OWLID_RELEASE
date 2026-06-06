@@ -14,7 +14,10 @@ import {
   WalletEntrySchema,
   WalletFacade,
 } from '@midnight-ntwrk/wallet-sdk-facade'
-import { makeWasmProvingService } from '@midnight-ntwrk/wallet-sdk-capabilities/proving'
+import {
+  makeServerProvingService,
+  makeWasmProvingService,
+} from '@midnight-ntwrk/wallet-sdk-capabilities/proving'
 import { DustWallet } from '@midnight-ntwrk/wallet-sdk-dust-wallet'
 import { HDWallet, Roles } from '@midnight-ntwrk/wallet-sdk-hd'
 import { ShieldedWallet } from '@midnight-ntwrk/wallet-sdk-shielded'
@@ -76,7 +79,16 @@ export interface HeadlessWallet {
   encryptionPublicKey: string
   /** Balance a transaction (add inputs/outputs/fees) */
   balanceTx: (tx: unknown, newCoins?: unknown) => Promise<unknown>
-  /** Submit a balanced transaction to the network */
+  /** Reserve a balanced tx's UTXOs (mark pending) so the next balance picks
+   *  different ones. Run inside the same critical section as its `balanceTx`. */
+  reserve: (balanced: unknown) => Promise<void>
+  /** Broadcast a reserved tx to the mempool, returning at `'Submitted'` (node
+   *  accepted it). Does NOT revert on failure — the caller reverts under its
+   *  serializer. Safe to run OUTSIDE the balance lock so submits pipeline. */
+  broadcast: (balanced: unknown) => Promise<unknown>
+  /** Release a reserved tx's pending UTXOs (idempotent). */
+  revert: (balanced: unknown) => Promise<void>
+  /** Fused reserve+broadcast+revert-on-fail for non-pipelined callers. */
   submitTx: (tx: unknown) => Promise<unknown>
   /** Shut down the wallet cleanly */
   close: () => Promise<void>
@@ -156,12 +168,40 @@ async function initWalletFromSeed(seed: Buffer, config: WalletConfig): Promise<H
         dustSecretKey,
         ledger.LedgerParameters.initialParameters().dust,
       ),
-    // The wallet's balance/dust re-prove leg uses the wallet SDK's own
-    // in-process WASM prover (`@midnight-ntwrk/wallet-sdk-prover-client`)
-    // instead of an external proof server, overriding the URL-based
-    // default. This covers only the standard wallet (zswap/dust) circuits
-    // — the holder's per-kind predicate proof is a separate path.
-    provingService: () => makeWasmProvingService(),
+    // The wallet's balance/dust re-prove leg. In-process WASM is portable
+    // but slow (~10s/balance measured) and serializes on one CPU. When a
+    // proof server is configured, offload to it (~0.2s measured) — it's the
+    // dominant cost in the relay submit pipeline. Because that makes the proof
+    // server a hard dependency on every balance, wrap it with an in-process
+    // WASM FALLBACK: a proof-server outage then merely slows balances instead
+    // of failing every submit. Unset ⇒ pure WASM.
+    provingService: () => {
+      const url = config.proofServerUrl?.trim()
+      if (!url) {
+        console.log(
+          '[wallet] balance proving in-process (WASM); set MIDNIGHT_PROOF_SERVER_URI to offload',
+        )
+        return makeWasmProvingService()
+      }
+      console.log(`[wallet] balance proving via proof server ${url} (WASM fallback on error)`)
+      const server = makeServerProvingService({ provingServerUrl: new URL(url) })
+      let wasmFallback: ReturnType<typeof makeWasmProvingService> | null = null
+      return {
+        prove: async (tx) => {
+          try {
+            return await server.prove(tx)
+          } catch (e) {
+            console.warn(
+              `[wallet] proof-server prove failed, falling back to WASM: ${
+                e instanceof Error ? e.message : String(e)
+              }`,
+            )
+            wasmFallback ??= makeWasmProvingService()
+            return wasmFallback.prove(tx)
+          }
+        },
+      }
+    },
   })
 
   // Start the wallet sync (critical! without this the wallet never connects)
@@ -195,8 +235,50 @@ async function initWalletFromSeed(seed: Buffer, config: WalletConfig): Promise<H
       return facade.finalizeRecipe(recipe)
     },
 
+    async reserve(tx: unknown): Promise<void> {
+      // Atomically reserve this balanced tx's dust/coin UTXOs (mark pending).
+      // `availableCoins = utxos − pending`, so once this returns the next
+      // balance excludes these UTXOs — that is what lets submits pipeline.
+      const f = facade as unknown as {
+        pendingTransactionsService: { addPendingTransaction: (t: unknown) => Promise<void> }
+      }
+      await f.pendingTransactionsService.addPendingTransaction(tx)
+    },
+
+    async broadcast(tx: unknown): Promise<unknown> {
+      // Return at `'Submitted'` — the node accepted the tx into the mempool
+      // (where validity rejects like RpcError 1010 surface), NOT `'InBlock'`.
+      // Block inclusion + GRANDPA finality are tracked out-of-band (the relay
+      // SSE / `watchForTxData`), so the wallet is freed at mempool acceptance
+      // instead of holding through a whole block. No revert here: the caller
+      // reverts under its serializer so pending state is never mutated under a
+      // concurrent balance's UTXO selection.
+      const f = facade as unknown as {
+        submissionService: { submitTransaction: (t: unknown, w?: string) => Promise<unknown> }
+      }
+      await f.submissionService.submitTransaction(tx, 'Submitted')
+      return (tx as { identifiers: () => string[] }).identifiers().at(-1)
+    },
+
+    async revert(tx: unknown): Promise<void> {
+      const f = facade as unknown as { revertTransaction: (t: unknown) => Promise<void> }
+      await f.revertTransaction(tx)
+    },
+
     async submitTx(tx: unknown): Promise<unknown> {
-      return facade.submitTransaction(tx as any)
+      const f = facade as unknown as {
+        pendingTransactionsService: { addPendingTransaction: (t: unknown) => Promise<void> }
+        submissionService: { submitTransaction: (t: unknown, w?: string) => Promise<unknown> }
+        revertTransaction: (t: unknown) => Promise<void>
+      }
+      await f.pendingTransactionsService.addPendingTransaction(tx)
+      try {
+        await f.submissionService.submitTransaction(tx, 'Submitted')
+        return (tx as { identifiers: () => string[] }).identifiers().at(-1)
+      } catch (e) {
+        await f.revertTransaction(tx).catch(() => undefined)
+        throw e
+      }
     },
 
     async close(): Promise<void> {
@@ -324,6 +406,143 @@ export async function getWalletBalances(
   return { unshieldedAddr, shieldedAddr, dustAddr, unshielded, shielded, dust }
 }
 
+/** Aggregate DUST generation telemetry across all registered NIGHT
+ *  UTXOs the wallet currently owns. Mirrors Lace's
+ *  `DustGenerationDetails` shape (`packages/module/blockchain-midnight/
+ *  src/store/side-effects/watch.ts`) so an operator can answer:
+ *    - is dust accruing? (`rate > 0n`)
+ *    - is it about to cap? (`maxCapReachedAt`)
+ *    - is it decaying because a backing NIGHT was spent? (`decayTime`)
+ *    - how much runway do I have at the current rate? (caller's job)
+ *
+ *  Uses `facade.estimateRegistration` for the rate model — same call
+ *  Lace uses to decide whether to surface the "designate NIGHT" CTA.
+ *  Returns `null` when the wallet has no registered NIGHT (and so no
+ *  dust generation is happening).
+ */
+export interface DustGenerationHealth {
+  /** Sum of currently-generated dust across all backing NIGHT UTXOs. */
+  currentValue: bigint
+  /** Sum of `gen.value * night_dust_ratio` across UTXOs — the ceiling
+   *  the wallet would hit if it never spent dust. */
+  maxCap: bigint
+  /** Sum of per-UTXO generation rates (Specks per ms, expressed in
+   *  the SDK's native units). Multiplying by elapsed ms gives accrual. */
+  rate: bigint
+  /** Earliest moment any backing NIGHT was spent — after this point
+   *  the corresponding dust starts decaying. Undefined means none of
+   *  the backing NIGHTs have been spent yet. */
+  decayTimeMs: number | undefined
+  /** Latest moment any UTXO hits its max cap — past this point that
+   *  UTXO stops accruing. */
+  maxCapReachedAtMs: number | undefined
+  /** Number of registered NIGHT UTXOs feeding the rate. */
+  registeredNightCount: number
+  /** Number of NIGHT UTXOs NOT registered for dust generation — these
+   *  produce no dust until `registerNightForDust` runs over them. */
+  unregisteredNightCount: number
+  /** Per-UTXO breakdown. Aggregates above lose signal once one backing
+   *  NIGHT is spent (only THAT UTXO decays). Per-coin gives operators
+   *  the precise picture without summing in their head. */
+  perCoin: ReadonlyArray<{
+    /** Hex-encoded UTXO value (NIGHT face value), informational. */
+    nightValue: string
+    generatedNow: string
+    maxCap: string
+    rate: string
+    decayTimeMs: number | undefined
+    maxCapReachedAtMs: number | undefined
+  }>
+}
+
+export async function dustGenerationHealth(
+  wallet: HeadlessWallet,
+): Promise<DustGenerationHealth | null> {
+  const state = (await Rx.firstValueFrom(wallet.facade.state())) as any
+  const allNight: any[] = state.unshielded?.availableCoins ?? []
+  const registered = allNight.filter((c) => c.meta?.registeredForDustGeneration)
+  const unregistered = allNight.filter((c) => !c.meta?.registeredForDustGeneration)
+  if (registered.length === 0) {
+    return {
+      currentValue: 0n,
+      maxCap: 0n,
+      rate: 0n,
+      decayTimeMs: undefined,
+      maxCapReachedAtMs: undefined,
+      registeredNightCount: 0,
+      unregisteredNightCount: unregistered.length,
+      perCoin: [],
+    }
+  }
+
+  // `estimateRegistration` computes per-utxo dust generation details —
+  // same call Lace uses for its dust-designation preview.
+  let details: ReadonlyArray<any> = []
+  try {
+    const est = await (
+      wallet.facade as unknown as {
+        estimateRegistration: (
+          utxos: readonly any[],
+        ) => Promise<{ dustGenerationEstimations: ReadonlyArray<any> }>
+      }
+    ).estimateRegistration(registered)
+    details = est.dustGenerationEstimations
+  } catch {
+    details = []
+  }
+
+  let currentValue = 0n
+  let maxCap = 0n
+  let rate = 0n
+  let earliestDecay: number | undefined
+  let latestMaxCap: number | undefined
+  const perCoin: Array<{
+    nightValue: string
+    generatedNow: string
+    maxCap: string
+    rate: string
+    decayTimeMs: number | undefined
+    maxCapReachedAtMs: number | undefined
+  }> = []
+  for (const d of details) {
+    const dg = d.dust
+    if (!dg) continue
+    const coinCurrent = BigInt(dg.generatedNow ?? 0n)
+    const coinMaxCap = BigInt(dg.maxCap ?? 0n)
+    const coinRate = BigInt(dg.rate ?? 0n)
+    currentValue += coinCurrent
+    maxCap += coinMaxCap
+    rate += coinRate
+    const dtime = dg.dtime ? new Date(dg.dtime).getTime() : undefined
+    const maxCapAt = dg.maxCapReachedAt ? new Date(dg.maxCapReachedAt).getTime() : undefined
+    if (dtime !== undefined && (earliestDecay === undefined || dtime < earliestDecay)) {
+      earliestDecay = dtime
+    }
+    if (maxCapAt !== undefined && (latestMaxCap === undefined || maxCapAt > latestMaxCap)) {
+      latestMaxCap = maxCapAt
+    }
+    const nightValue = d.utxo?.utxo?.value ?? d.utxo?.value ?? ''
+    perCoin.push({
+      nightValue: String(nightValue ?? ''),
+      generatedNow: coinCurrent.toString(),
+      maxCap: coinMaxCap.toString(),
+      rate: coinRate.toString(),
+      decayTimeMs: dtime,
+      maxCapReachedAtMs: maxCapAt,
+    })
+  }
+  return {
+    currentValue,
+    maxCap,
+    rate,
+    decayTimeMs: earliestDecay,
+    maxCapReachedAtMs: latestMaxCap,
+    registeredNightCount: registered.length,
+    unregisteredNightCount: unregistered.length,
+    perCoin,
+  }
+}
+
 /** Read-only diagnostic snapshot of the wallet's live sync + balance
  *  state. Used to investigate why the deployed sidecar fails to balance
  *  dust while a fresh sync of the same wallet does not. */
@@ -393,9 +612,33 @@ function bigintReplacer(_k: string, v: unknown): unknown {
 /**
  * Register unshielded NIGHT UTXOs for DUST generation.
  * Required before the wallet can pay transaction fees.
+ *
+ * `waitForDust` controls whether the call blocks until `dust.balance`
+ * becomes positive. Deploy.ts wants this (it's the one-shot bootstrap
+ * and downstream code immediately expects dust). The supervisor's
+ * periodic loop does NOT want it — the wait is unbounded and would
+ * wedge the single-writer serializer for the lifetime of one block.
  */
-export async function registerNightForDust(wallet: HeadlessWallet): Promise<boolean> {
-  const state = await Rx.firstValueFrom(wallet.facade.state().pipe(Rx.filter((s) => s.isSynced)))
+export async function registerNightForDust(
+  wallet: HeadlessWallet,
+  options: { waitForDust?: boolean; syncTimeoutMs?: number } = {},
+): Promise<boolean> {
+  const waitForDust = options.waitForDust ?? true
+  // Strict `isSynced` (lag === 0) can stay false indefinitely on
+  // preview while `isCompleteWithin` says ready. Bound the wait so a
+  // caller running inside the supervisor's single-writer serializer
+  // cannot deadlock the chain when sync lag never collapses to zero.
+  const syncTimeoutMs = options.syncTimeoutMs ?? 30_000
+  const state = await Rx.firstValueFrom(
+    Rx.race(
+      wallet.facade.state().pipe(Rx.filter((s) => s.isSynced)),
+      Rx.timer(syncTimeoutMs).pipe(
+        Rx.map(() => {
+          throw new Error(`registerNightForDust: wallet not isSynced within ${syncTimeoutMs}ms`)
+        }),
+      ),
+    ),
+  )
 
   const unregisteredUtxos =
     state.unshielded?.availableCoins.filter(
@@ -421,16 +664,18 @@ export async function registerNightForDust(wallet: HeadlessWallet): Promise<bool
     const txId = await wallet.facade.submitTransaction(finalized)
     console.log(`[wallet] Dust registration submitted: ${txId}`)
 
-    // Wait for dust to appear
-    await Rx.firstValueFrom(
-      wallet.facade.state().pipe(
-        Rx.throttleTime(5_000),
-        Rx.tap((s) => console.log(`[wallet] Dust balance: ${s.dust?.balance(new Date()) ?? 0n}`)),
-        Rx.filter((s) => (s.dust?.balance(new Date()) ?? 0n) > 0n),
-      ),
-    )
-
-    console.log('[wallet] Dust registration complete.')
+    if (waitForDust) {
+      await Rx.firstValueFrom(
+        wallet.facade.state().pipe(
+          Rx.throttleTime(5_000),
+          Rx.tap((s) => console.log(`[wallet] Dust balance: ${s.dust?.balance(new Date()) ?? 0n}`)),
+          Rx.filter((s) => (s.dust?.balance(new Date()) ?? 0n) > 0n),
+        ),
+      )
+      console.log('[wallet] Dust registration complete.')
+    } else {
+      console.log('[wallet] Dust registration submitted (not waiting for confirmation).')
+    }
     return true
   } catch (e) {
     console.error(`[wallet] Failed to register DUST: ${e}`)

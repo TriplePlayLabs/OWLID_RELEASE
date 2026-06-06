@@ -1,7 +1,9 @@
 use crate::hash::hash_bytes;
 use crate::signature::{PublicKey, SignatureAlgorithm, SignatureError};
 use base64::prelude::*;
-use p256::ecdsa::{signature::Verifier, Signature as P256Signature, VerifyingKey as P256VerifyingKey};
+use p256::ecdsa::{
+    Signature as P256Signature, VerifyingKey as P256VerifyingKey, signature::Verifier,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -207,7 +209,9 @@ impl WebAuthnSignature {
         // WebAuthn returns DER-encoded signatures, try DER first, then raw format
         let sig = P256Signature::from_der(&signature_bytes)
             .or_else(|_| P256Signature::from_slice(&signature_bytes))
-            .map_err(|e| WebAuthnError::InvalidSignature(format!("signature parse error: {}", e)))?;
+            .map_err(|e| {
+                WebAuthnError::InvalidSignature(format!("signature parse error: {}", e))
+            })?;
 
         // Get the P-256 verifying key and verify
         let key_bytes = public_key.to_bytes();
@@ -256,9 +260,7 @@ impl CoseKey {
             .map_err(|e| WebAuthnError::InvalidCbor(e.to_string()))?;
 
         // COSE keys are represented as CBOR maps
-        let map = value
-            .as_map()
-            .ok_or(WebAuthnError::InvalidCoseKey)?;
+        let map = value.as_map().ok_or(WebAuthnError::InvalidCoseKey)?;
 
         let mut kty = None;
         let mut alg = None;
@@ -293,8 +295,8 @@ impl CoseKey {
 
     /// Parse a COSE key from hex-encoded CBOR
     pub fn from_hex(hex_str: &str) -> Result<Self, WebAuthnError> {
-        let cbor_bytes = hex::decode(hex_str)
-            .map_err(|e| WebAuthnError::InvalidCbor(e.to_string()))?;
+        let cbor_bytes =
+            hex::decode(hex_str).map_err(|e| WebAuthnError::InvalidCbor(e.to_string()))?;
         Self::from_cbor(&cbor_bytes)
     }
 
@@ -313,7 +315,10 @@ impl CoseKey {
         let map = vec![
             (Value::Integer(1.into()), Value::Integer(self.kty.into())),
             (Value::Integer(3.into()), Value::Integer(self.alg.into())),
-            (Value::Integer((-1i64).into()), Value::Integer(self.crv.into())),
+            (
+                Value::Integer((-1i64).into()),
+                Value::Integer(self.crv.into()),
+            ),
             (Value::Integer((-2i64).into()), Value::Bytes(self.x.clone())),
             (Value::Integer((-3i64).into()), Value::Bytes(self.y.clone())),
         ];
@@ -518,9 +523,9 @@ impl AttestationObject {
         let mut att_stmt = None;
 
         for (key, val) in map {
-            let key_str = key
-                .as_text()
-                .ok_or_else(|| WebAuthnError::InvalidAttestationObject("Key not text".to_string()))?;
+            let key_str = key.as_text().ok_or_else(|| {
+                WebAuthnError::InvalidAttestationObject("Key not text".to_string())
+            })?;
 
             match key_str {
                 "fmt" => {
@@ -537,9 +542,8 @@ impl AttestationObject {
             }
         }
 
-        let fmt = fmt.ok_or_else(|| {
-            WebAuthnError::InvalidAttestationObject("Missing fmt".to_string())
-        })?;
+        let fmt =
+            fmt.ok_or_else(|| WebAuthnError::InvalidAttestationObject("Missing fmt".to_string()))?;
 
         let auth_data_bytes = auth_data_bytes.ok_or_else(|| {
             WebAuthnError::InvalidAttestationObject("Missing authData".to_string())
@@ -567,21 +571,17 @@ impl AttestationObject {
         match self.fmt.as_str() {
             "none" => self.verify_none_attestation(),
             "packed" => self.verify_packed_attestation(),
-            fmt => Err(WebAuthnError::InvalidAttestationObject(
-                format!("Unsupported attestation format: {}", fmt),
-            )),
+            fmt => Err(WebAuthnError::InvalidAttestationObject(format!(
+                "Unsupported attestation format: {}",
+                fmt
+            ))),
         }
     }
 
     /// Verify "none" format attestation
     /// For "none" format, att_stmt must be empty
     fn verify_none_attestation(&self) -> Result<(), WebAuthnError> {
-        if !self.att_stmt.is_object()
-            || !self
-                .att_stmt
-                .as_object()
-                .map_or(false, |m| m.is_empty())
-        {
+        if !self.att_stmt.is_object() || !self.att_stmt.as_object().is_some_and(|m| m.is_empty()) {
             return Err(WebAuthnError::InvalidAttestationObject(
                 "Expected empty att_stmt for 'none' format".into(),
             ));
@@ -705,12 +705,9 @@ impl RegistrationResponse {
         }
 
         // 9. Extract credential data
-        let attested_data = attestation
-            .auth_data
-            .attested_credential_data
-            .ok_or(WebAuthnError::InvalidAttestationObject(
-                "No attested credential data".to_string(),
-            ))?;
+        let attested_data = attestation.auth_data.attested_credential_data.ok_or(
+            WebAuthnError::InvalidAttestationObject("No attested credential data".to_string()),
+        )?;
 
         // 10. Verify the public key is valid by attempting to parse it
         attested_data.credential_public_key.to_public_key()?;
@@ -845,7 +842,9 @@ impl AuthenticationResponse {
         // WebAuthn returns DER-encoded signatures, try DER first, then raw format
         let sig = P256Signature::from_der(&signature_bytes)
             .or_else(|_| P256Signature::from_slice(&signature_bytes))
-            .map_err(|e| WebAuthnError::InvalidSignature(format!("signature parse error: {}", e)))?;
+            .map_err(|e| {
+                WebAuthnError::InvalidSignature(format!("signature parse error: {}", e))
+            })?;
 
         let key_bytes = public_key.to_bytes();
         let verifying_key = P256VerifyingKey::from_sec1_bytes(&key_bytes)
@@ -866,9 +865,9 @@ fn cbor_to_json(value: &ciborium::Value) -> Result<serde_json::Value, WebAuthnEr
     match value {
         ciborium::Value::Integer(i) => {
             let n: i128 = (*i).into();
-            Ok(serde_json::Value::Number(
-                serde_json::Number::from(n as i64),
-            ))
+            Ok(serde_json::Value::Number(serde_json::Number::from(
+                n as i64,
+            )))
         }
         ciborium::Value::Bytes(b) => Ok(serde_json::Value::String(BASE64_STANDARD.encode(b))),
         ciborium::Value::Float(f) => Ok(serde_json::Value::Number(

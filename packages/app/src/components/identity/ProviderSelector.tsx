@@ -39,7 +39,7 @@ export function ProviderSelector({ onSelect, disabled = false }: ProviderSelecto
     return (
       <div className="flex items-center justify-center py-8">
         <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-        <span className="ml-2 text-sm text-muted-foreground">Loading providers...</span>
+        <span className="ml-2 text-sm text-muted-foreground">Loading services…</span>
       </div>
     )
   }
@@ -58,17 +58,15 @@ export function ProviderSelector({ onSelect, disabled = false }: ProviderSelecto
   if (!providers || providers.length === 0) {
     return (
       <div className="text-center py-6">
-        <p className="text-sm text-muted-foreground">No identity providers available.</p>
-        <p className="text-xs text-muted-foreground mt-1">Make sure the IDP service is running.</p>
+        <p className="text-sm text-muted-foreground">No services available right now.</p>
+        <p className="text-xs text-muted-foreground mt-1">Please try again in a moment.</p>
       </div>
     )
   }
 
   return (
     <div className="space-y-2">
-      <p className="text-sm text-muted-foreground mb-3">
-        Select an identity provider to verify your identity:
-      </p>
+      <p className="text-sm text-muted-foreground mb-3">Choose a service to verify with:</p>
       {providers.map((provider) => {
         const BrandIcon = getBrandIcon(provider.id)
         const FlowIcon = FLOW_TYPE_ICONS[provider.flowType] || Shield

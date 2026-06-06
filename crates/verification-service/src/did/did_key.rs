@@ -11,7 +11,7 @@
 //! canonical synthesised document so the rest of the verify chain
 //! (anchor check, etc.) works uniformly.
 
-use super::{canonical_doc_hash, DidMethodResolver, KeyAlgorithm, ResolvedDid};
+use super::{DidMethodResolver, KeyAlgorithm, ResolvedDid, canonical_doc_hash};
 use async_trait::async_trait;
 use base64::Engine as _;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
@@ -56,7 +56,10 @@ impl DidMethodResolver for DidKeyResolver {
                 let pk = p256::PublicKey::from_sec1_bytes(&raw)
                     .map_err(|e| format!("did:key P-256 decode: {e}"))?;
                 let uncompressed = pk.to_encoded_point(false);
-                (hex::encode(uncompressed.as_bytes()), KeyAlgorithm::EcdsaP256)
+                (
+                    hex::encode(uncompressed.as_bytes()),
+                    KeyAlgorithm::EcdsaP256,
+                )
             }
             other => {
                 return Err(format!(
@@ -193,10 +196,7 @@ mod tests {
         // Public key: deba23... (32B). The DID below is the canonical
         // base58btc("\xed\x01" || raw) form.
         let raw_hex = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
-        let raw: [u8; 32] = hex::decode(raw_hex)
-            .unwrap()
-            .try_into()
-            .unwrap();
+        let raw: [u8; 32] = hex::decode(raw_hex).unwrap().try_into().unwrap();
         let did = encode_ed25519_did_key(&raw);
         let resolved = DidKeyResolver.resolve(&did).await.unwrap();
         assert_eq!(resolved.key_alg, KeyAlgorithm::Ed25519);

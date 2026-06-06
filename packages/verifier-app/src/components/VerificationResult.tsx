@@ -54,8 +54,8 @@ export function VerificationResult({ result, onReset, campaign }: VerificationRe
               </p>
               <p className="text-sm text-muted-foreground">
                 {result.valid
-                  ? 'Every requested check passed on Midnight — no personal data was shared.'
-                  : result.error || 'The holder’s proof could not be verified.'}
+                  ? 'Every check passed, and no personal data was shared.'
+                  : result.error || 'We couldn’t verify this proof.'}
               </p>
             </div>
           </div>
@@ -81,7 +81,7 @@ export function VerificationResult({ result, onReset, campaign }: VerificationRe
           {result.valid && campaign && (
             <div className="flex items-center gap-2 border-t px-5 py-3 text-xs text-muted-foreground">
               <Fingerprint className="h-3.5 w-3.5 shrink-0" />
-              Campaign “{campaign}” — one claim per person, the same human cannot claim twice.
+              Campaign “{campaign}”: one claim per person. The same person can’t claim twice.
             </div>
           )}
         </CardContent>

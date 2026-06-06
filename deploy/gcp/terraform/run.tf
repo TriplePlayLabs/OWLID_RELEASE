@@ -6,12 +6,16 @@ resource "google_cloud_run_v2_service" "verification" {
   template {
     service_account = google_service_account.runtime.email
 
-    # /predicates/{kind}/relay proxies to the sidecar which submits a
-    # holder-proven tx on Midnight + waits for `watchForTxData` to
-    # observe finalization (typically 30-90s, occasionally minutes on
-    # preview). Cloud Run's default 300s request timeout fires before
-    # the chain confirms and the browser sees ERR_NETWORK_CHANGED.
-    timeout = "900s"
+    # /predicates/job/{jobId}/events SSE streams the full relay
+    # lifecycle PLUS the subsequent `watchForTxData` finalization
+    # wait. Chain finality on preview can take several minutes per tx;
+    # under a queued backlog the stream may sit longer than that. Use
+    # the Cloud Run gen1 max (3600 s / 1 hr) so the chain has room to
+    # finalize before GCP kills the request — the browser-side
+    # `ERR_NETWORK_CHANGED` observed earlier was actually the 900 s
+    # cap firing (httpRequest.latency: 901.0001s, status: 200 in
+    # Cloud Logging).
+    timeout = "3600s"
 
     scaling {
       min_instance_count = 1
@@ -166,11 +170,11 @@ resource "google_cloud_run_v2_service" "sidecar" {
     # + private-state DB. It must stay warm — wallet sync alone takes
     # minutes — so: always one instance, CPU always allocated (no
     # request-scoped throttling), single instance (single chain writer).
-    # /api/predicates/{kind}/relay submits + waits for chain
-    # finalization (watchForTxData), which takes minutes on preview.
-    # Match the verification-service timeout so the proxied path
+    # /api/predicates/job/{jobId}/events SSE streams the relay
+    # lifecycle + chain finalization. Match the verification-service
+    # timeout (3600 s, Cloud Run gen1 max) so the proxied path
     # doesn't hit the upstream cap before the chain confirms.
-    timeout = "900s"
+    timeout = "3600s"
     scaling {
       min_instance_count = 1
       max_instance_count = 1
@@ -192,7 +196,12 @@ resource "google_cloud_run_v2_service" "sidecar" {
           MIDNIGHT_NODE_WS_URL                   = var.midnight_node_ws_url
           MIDNIGHT_INDEXER_URI                   = var.midnight_indexer_uri
           MIDNIGHT_INDEXER_WS_URI                = var.midnight_indexer_ws_uri
-          MIDNIGHT_PROOF_SERVER_URI              = var.midnight_proof_server_uri
+          # Wallet balance leg offloads its dust re-prove here (MIDNIGHT.md
+          # §3.5). Point at OUR hosted proof-server (scaled: min1/max40,
+          # concurrency 4) rather than Midnight's shared preview endpoint, so
+          # the balance hot path runs on capacity we control. WASM fallback
+          # covers an outage. Predictable run_url ⇒ no TF cycle.
+          MIDNIGHT_PROOF_SERVER_URI              = local.run_url["proof-server"]
           MIDNIGHT_ISSUER_REGISTRY_ADDRESS       = var.midnight_issuer_registry_address
           MIDNIGHT_REVOCATION_REGISTRY_ADDRESS   = var.midnight_revocation_registry_address
           MIDNIGHT_IDENTITY_REGISTRY_ADDRESS     = var.midnight_identity_registry_address
@@ -296,10 +305,12 @@ resource "google_cloud_run_v2_service" "proof_server" {
       max_instance_count = var.proof_server_max_instances
     }
 
-    # Proving is CPU-bound and not horizontally cheap: keep concurrency low
-    # so each instance commits its CPUs to one (or two) provers rather than
-    # context-switching across many.
-    max_instance_request_concurrency = 2
+    # Proving is CPU-bound. Concurrency matches the prover's 4 vCPU (one proof
+    # per core); past that, scale out via max_instance_count rather than
+    # oversubscribing a box. The proof server is on the critical path for both
+    # the sidecar balance leg and the holder app, so set min_instances >= 1 in
+    # tfvars for the deployed env to avoid cold-start SRS fetches.
+    max_instance_request_concurrency = 4
 
     # Cloud Run multi-container: the proxy is the ingress (declares `ports`)
     # and the upstream prover is a private sidecar reached over localhost.

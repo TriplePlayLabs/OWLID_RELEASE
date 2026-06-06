@@ -9,8 +9,8 @@ import { Button } from '@owlid/ui/components/ui/button'
 import { Input } from '@owlid/ui/components/ui/input'
 import { openConfirmModal } from '@owlid/ui/modal'
 import { RecentProofRow } from '~/components/identity/RecentProofRow'
-import { buildQrPayload, groupProofsByDay } from '~/lib/proof-display'
-import { openProofQrModal } from '~/features/identity/proofs/ProofQrModal'
+import { buildQrPayload, filterProofs, groupProofsByDay } from '~/lib/proof-display'
+import { openProofDetailsModal } from '~/features/identity/proofs/ProofDetailsModal'
 
 export const Route = createFileRoute('/_identity/recent-proofs')({
   component: RecentProofsPage,
@@ -41,16 +41,7 @@ function RecentProofsPage() {
   const [query, setQuery] = useState('')
 
   const items = proofs.data ?? []
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return items
-    return items.filter(
-      (p) =>
-        p.claim.toLowerCase().includes(q) ||
-        p.name.toLowerCase().includes(q) ||
-        p.id.toLowerCase().includes(q),
-    )
-  }, [items, query])
+  const filtered = useMemo(() => filterProofs(items, query), [items, query])
 
   const grouped = useMemo(() => groupProofsByDay(filtered), [filtered])
 
@@ -86,7 +77,7 @@ function RecentProofsPage() {
     const text = buildQrPayload(p)
     if (navigator.share) {
       try {
-        await navigator.share({ title: `OwlID proof: ${p.claim}`, text })
+        await navigator.share({ title: `Owl ID proof: ${p.claim}`, text })
         return
       } catch {
         /* fall through */
@@ -97,12 +88,12 @@ function RecentProofsPage() {
   }
 
   return (
-    <div className="w-full max-w-3xl mx-auto px-4 pt-6 md:pt-10 pb-16">
-      <BackLink to="/wallet" />
-      <header className="flex items-start justify-between gap-3 mb-6">
-        <div className="space-y-1">
+    <div className="w-full max-w-md mx-auto px-4 pt-6 pb-12 space-y-6">
+      <BackLink to="/wallet" label="Back to wallet" />
+      <header className="flex items-start justify-between gap-3">
+        <div>
           <h1 className="text-2xl font-semibold tracking-tight">Recent proofs</h1>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-muted-foreground mt-1">
             Cryptographic proofs minted on this device. Tap a row for QR, copy, or share.
           </p>
         </div>
@@ -119,7 +110,7 @@ function RecentProofsPage() {
       </header>
 
       {items.length > 0 && (
-        <div className="relative mb-4">
+        <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
             value={query}
@@ -181,10 +172,10 @@ function RecentProofsPage() {
               <h2 className="text-xs uppercase tracking-wider text-muted-foreground">{label}</h2>
               <ul className="rounded-xl border border-white/10 bg-card/30 divide-y divide-white/5 overflow-hidden">
                 {entries.map((p) => (
-                  <li key={p.id + p.createdAt}>
+                  <li key={p.id}>
                     <RecentProofRow
                       proof={p}
-                      onShowQr={() => openProofQrModal({ proof: p })}
+                      onShowDetails={() => openProofDetailsModal({ proof: p })}
                       onCopy={() => handleCopy(p)}
                       onShare={() => handleShare(p)}
                       onDelete={() => handleDelete(p)}

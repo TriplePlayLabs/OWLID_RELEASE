@@ -17,6 +17,8 @@ import type {
   CheckRevocationRequest,
   CheckRevocationResponse,
   RevocationEntry,
+  RevokeOwnCredentialRequest,
+  RevokeOwnCredentialResponse,
 } from '../models/index.js'
 import {
   CheckRevocationRequestFromJSON,
@@ -25,10 +27,18 @@ import {
   CheckRevocationResponseToJSON,
   RevocationEntryFromJSON,
   RevocationEntryToJSON,
+  RevokeOwnCredentialRequestFromJSON,
+  RevokeOwnCredentialRequestToJSON,
+  RevokeOwnCredentialResponseFromJSON,
+  RevokeOwnCredentialResponseToJSON,
 } from '../models/index.js'
 
 export interface CheckRevocationOperationRequest {
   checkRevocationRequest: CheckRevocationRequest
+}
+
+export interface RevokeOwnCredentialOperationRequest {
+  revokeOwnCredentialRequest: RevokeOwnCredentialRequest
 }
 
 /**
@@ -74,6 +84,28 @@ export interface RevocationsApiInterface {
   listRevoked(
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<Array<RevocationEntry>>
+
+  /**
+   * Unlike `/revocations/revoke` (admin), this needs no admin key. The holder presents the credential with a KB-JWT signed by the `cnf` holder key, bound to a fresh server challenge + the self-revoke audience. We verify the issuer signature (which binds `cnf` ↔ `credential_id`) and the KB-JWT (proof of possession), then revoke that single credential on-chain with the ISSUER key. A holder can therefore only ever revoke a credential they can prove they hold — never someone else\'s.
+   * @summary Revoke your OWN credential by proving possession of its holder key.
+   * @param {RevokeOwnCredentialRequest} revokeOwnCredentialRequest
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof RevocationsApiInterface
+   */
+  revokeOwnCredentialRaw(
+    requestParameters: RevokeOwnCredentialOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<RevokeOwnCredentialResponse>>
+
+  /**
+   * Unlike `/revocations/revoke` (admin), this needs no admin key. The holder presents the credential with a KB-JWT signed by the `cnf` holder key, bound to a fresh server challenge + the self-revoke audience. We verify the issuer signature (which binds `cnf` ↔ `credential_id`) and the KB-JWT (proof of possession), then revoke that single credential on-chain with the ISSUER key. A holder can therefore only ever revoke a credential they can prove they hold — never someone else\'s.
+   * Revoke your OWN credential by proving possession of its holder key.
+   */
+  revokeOwnCredential(
+    requestParameters: RevokeOwnCredentialOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<RevokeOwnCredentialResponse>
 }
 
 /**
@@ -157,6 +189,55 @@ export class RevocationsApi extends runtime.BaseAPI implements RevocationsApiInt
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<Array<RevocationEntry>> {
     const response = await this.listRevokedRaw(initOverrides)
+    return await response.value()
+  }
+
+  /**
+   * Unlike `/revocations/revoke` (admin), this needs no admin key. The holder presents the credential with a KB-JWT signed by the `cnf` holder key, bound to a fresh server challenge + the self-revoke audience. We verify the issuer signature (which binds `cnf` ↔ `credential_id`) and the KB-JWT (proof of possession), then revoke that single credential on-chain with the ISSUER key. A holder can therefore only ever revoke a credential they can prove they hold — never someone else\'s.
+   * Revoke your OWN credential by proving possession of its holder key.
+   */
+  async revokeOwnCredentialRaw(
+    requestParameters: RevokeOwnCredentialOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<RevokeOwnCredentialResponse>> {
+    if (requestParameters['revokeOwnCredentialRequest'] == null) {
+      throw new runtime.RequiredError(
+        'revokeOwnCredentialRequest',
+        'Required parameter "revokeOwnCredentialRequest" was null or undefined when calling revokeOwnCredential().',
+      )
+    }
+
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    headerParameters['Content-Type'] = 'application/json'
+
+    const response = await this.request(
+      {
+        path: `/revocations/revoke-mine`,
+        method: 'POST',
+        headers: headerParameters,
+        query: queryParameters,
+        body: RevokeOwnCredentialRequestToJSON(requestParameters['revokeOwnCredentialRequest']),
+      },
+      initOverrides,
+    )
+
+    return new runtime.JSONApiResponse(response, (jsonValue) =>
+      RevokeOwnCredentialResponseFromJSON(jsonValue),
+    )
+  }
+
+  /**
+   * Unlike `/revocations/revoke` (admin), this needs no admin key. The holder presents the credential with a KB-JWT signed by the `cnf` holder key, bound to a fresh server challenge + the self-revoke audience. We verify the issuer signature (which binds `cnf` ↔ `credential_id`) and the KB-JWT (proof of possession), then revoke that single credential on-chain with the ISSUER key. A holder can therefore only ever revoke a credential they can prove they hold — never someone else\'s.
+   * Revoke your OWN credential by proving possession of its holder key.
+   */
+  async revokeOwnCredential(
+    requestParameters: RevokeOwnCredentialOperationRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<RevokeOwnCredentialResponse> {
+    const response = await this.revokeOwnCredentialRaw(requestParameters, initOverrides)
     return await response.value()
   }
 }

@@ -56,7 +56,7 @@ export function QrScanner({ onScan, onCancel: _onCancel, caption }: QrScannerPro
       )}
 
       <p className="text-xs text-center text-zinc-500">
-        {caption ?? 'Point your camera at an OwlID proof QR code'}
+        {caption ?? 'Point your camera at an Owl ID proof QR code'}
       </p>
     </div>
   )

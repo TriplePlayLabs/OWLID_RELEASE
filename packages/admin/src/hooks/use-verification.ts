@@ -144,7 +144,8 @@ export function useVerifyToken() {
     mutationFn: async (req) => {
       const r = await getVerificationApi().verifyDcql({
         verifyDcqlRequest: {
-          vpToken: { cred0: req.presentation },
+          // OID4VP 1.0 §8.1 — vp_token values are arrays of presentations.
+          vpToken: { cred0: [req.presentation] },
           challenge: req.challenge,
           audience: req.audience,
           query: { credentials: [{ id: 'cred0', format: 'dc+sd-jwt', claims: [] }] },

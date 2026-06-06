@@ -31,10 +31,16 @@ import {
 /** Caller-supplied PRF unwrap. Called once per chosen credential per
  *  presentation; the resulting hex seed is held in memory only for the
  *  span of `present()` and is dropped before it returns. */
-export type UnwrapHolderKeyFn = (
-  passkeyCredentialId: string,
+export type OpenHolderKeyFn = (
+  passkeyCredentialId: string | null,
   wrappedHolderSeed: string,
 ) => Promise<string>
+
+/** Audience the self-revocation KB-JWT is bound to. MUST match
+ *  `api::SELF_REVOKE_AUDIENCE` in the verification-service — a presentation
+ *  built for a verifier (different `aud`) therefore can't be replayed to
+ *  revoke the credential. */
+export const SELF_REVOKE_AUDIENCE = 'owlid:revocation:self'
 
 export interface WalletPresentRequest {
   dcql: DcqlRequest
@@ -115,7 +121,7 @@ export class OwlWallet {
 
   constructor(
     private readonly storage: CredentialStorageManager,
-    private readonly unwrap: UnwrapHolderKeyFn,
+    private readonly openHolderKey: OpenHolderKeyFn,
     private readonly passkeyResolver: () => Promise<string | null>,
     opts: OwlWalletOptions = {},
   ) {
@@ -143,9 +149,6 @@ export class OwlWallet {
     }
 
     const passkeyId = await this.passkeyResolver()
-    if (!passkeyId) {
-      throw new Error('No passkey found — re-register required.')
-    }
 
     const chosen = chooseAcrossSets(summary, req.dcql, req.overrides)
 
@@ -187,7 +190,7 @@ export class OwlWallet {
       // the user sees an unexplained passkey dialog mid-flow.
       const credLabel = pick.dcqlId
       req.onAttestProgress?.({ stage: 'unlock', predicate: credLabel })
-      const holderKeyHex = await this.unwrap(passkeyId, wrapped)
+      const holderKeyHex = await this.openHolderKey(passkeyId, wrapped)
       req.onAttestProgress?.({ stage: 'sign', predicate: credLabel })
       const presentation = presentSdJwtVc(pick.credential.sdJwtVc, holderKeyHex, pick.disclosures, {
         aud: req.aud,
@@ -202,6 +205,53 @@ export class OwlWallet {
     }
 
     return { vpToken, used, attested }
+  }
+
+  /**
+   * Revoke ONE of the holder's own credentials on-chain by proving
+   * possession of its `cnf` holder key — no admin key on the device.
+   *
+   * Fetches a one-shot server challenge, signs a KB-JWT over it bound to
+   * {@link SELF_REVOKE_AUDIENCE}, and posts the presentation to
+   * `/revocations/revoke-mine`. The server verifies the proof of
+   * possession (issuer signature binds `cnf` ↔ credential, KB-JWT proves
+   * the holder controls `cnf`) and revokes with the ISSUER key, so a
+   * holder can only ever revoke a credential they can prove they hold.
+   *
+   * Triggers a passkey user-verification prompt (the unlock gesture) —
+   * this is a destructive, irreversible action.
+   */
+  async revoke(
+    credentialId: string,
+    reason?: string,
+  ): Promise<{ revoked: boolean; credentialId: string; alreadyRevoked: boolean }> {
+    const credentials = await this.storage.listCredentials()
+    const cred = credentials.find((c) => c.credentialId === credentialId)
+    if (!cred) throw new Error(`No credential ${credentialId} in this wallet`)
+
+    const wrapped = await this.storage.getCredentialKeyWrapped(credentialId)
+    if (!wrapped) throw new Error(`Missing holder key for credential ${credentialId}`)
+
+    // Lazy import keeps the verifier-client init off the cheaper paths.
+    const { getVerificationApi, getRevocationsApi } = await import('@owlid/verifier-client')
+    const { challenge } = await getVerificationApi().generateChallenge()
+
+    const passkeyId = await this.passkeyResolver()
+    const holderKeyHex = await this.openHolderKey(passkeyId, wrapped)
+    // Disclose nothing — revocation needs only proof of possession.
+    const presentation = presentSdJwtVc(cred.sdJwtVc, holderKeyHex, [], {
+      aud: SELF_REVOKE_AUDIENCE,
+      nonce: challenge,
+    })
+
+    const res = await getRevocationsApi().revokeOwnCredential({
+      revokeOwnCredentialRequest: { presentation, challenge, reason: reason ?? null },
+    })
+    return {
+      revoked: res.revoked,
+      credentialId: res.credentialId,
+      alreadyRevoked: res.alreadyRevoked,
+    }
   }
 }
 
@@ -243,6 +293,49 @@ function requiredAttestationsFor(
     case 'unique_personhood':
       return [{ predicate: 'unique_personhood', epoch: ext.epoch, appId: ext.appId }]
   }
+}
+
+/** Predicates whose on-chain attestation key carries NO verifier-supplied
+ *  input, so they can be attested ahead of any presentation. Verifier-keyed
+ *  predicates (`nationality_in`/`resident_in` per-verifier salt, campaign-
+ *  scoped `unique_personhood`, arbitrary age thresholds) are excluded — they
+ *  can only be attested at presentation time with the verifier's parameters.
+ *  `age@18` is included as the overwhelmingly common threshold. */
+const PREWARMABLE_PREDICATES: ReadonlyArray<{ predicate: string; threshold?: number }> = [
+  { predicate: 'email_verified' },
+  { predicate: 'age', threshold: 18 },
+]
+
+export interface PrewarmOptions {
+  credential: WalletCredential
+  /** Override which (predicate, threshold) tuples to pre-attest. Defaults to
+   *  the keyless set above; the orchestrator skips any the credential is not
+   *  stamped with. */
+  predicates?: ReadonlyArray<{ predicate: string; threshold?: number }>
+  predicateAssets?: PredicateAssets
+  predicateTransport?: PredicateTransport
+  onProgress?: (event: AttestProgress) => void
+  provingConfig?: ProvingProviderConfig
+  signal?: AbortSignal
+}
+
+/**
+ * Pre-attest a credential's keyless predicates off the presentation hot path —
+ * call it (fire-and-forget) right after issuance. By the time the holder ever
+ * presents, `isAttested` is already true, so the orchestrator hits the
+ * `already-attested` fast path and the presentation never waits on a chain
+ * write. Reuses the same prove→relay pipeline as `present()`.
+ */
+export async function prewarmCredentialAttestations(opts: PrewarmOptions): Promise<EnsureResult[]> {
+  return ensureCredentialPredicatesAttested(
+    walletCredentialToProofJson(opts.credential),
+    opts.predicateAssets ?? createPredicateAssets(),
+    opts.predicateTransport ?? createPredicateTransport(),
+    opts.onProgress,
+    opts.predicates ?? PREWARMABLE_PREDICATES,
+    opts.provingConfig,
+    opts.signal,
+  )
 }
 
 /** Build the orchestrator-shaped `Credential.toJson()` view from a

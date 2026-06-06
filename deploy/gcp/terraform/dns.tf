@@ -39,6 +39,15 @@ resource "google_cloud_run_domain_mapping" "subdomain" {
   spec {
     route_name = each.value
   }
+
+  # The google provider defaults spec.certificate_mode to AUTOMATIC, but
+  # these mappings were created with it unset. Reconciling it force-replaces
+  # a working, already-provisioned Google-managed cert (a brief TLS outage on
+  # a live subdomain). The cert is already automatic in effect, so ignore the
+  # attribute instead of churning it.
+  lifecycle {
+    ignore_changes = [spec[0].certificate_mode]
+  }
 }
 
 resource "google_dns_record_set" "cname" {

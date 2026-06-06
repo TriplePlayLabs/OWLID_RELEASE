@@ -48,6 +48,10 @@
 //! # }
 //! ```
 
+// Intentional `+`-connector prose in doc comments trips clippy's markdown
+// list heuristic; the lint is cosmetic (rustdoc rendering only).
+#![allow(clippy::doc_lazy_continuation)]
+
 pub mod credential_bridge;
 pub mod database;
 pub mod db;
@@ -66,7 +70,7 @@ pub mod sd_jwt_bridge;
 pub mod webhooks;
 
 // Re-export main types
-pub use credential_bridge::{derive_personhood, BridgeConfig, CredentialBridge};
+pub use credential_bridge::{BridgeConfig, CredentialBridge, derive_personhood};
 pub use database::IdpDatabase;
 pub use error::{IdpError, PendingDetails, Result, VerificationWarning};
 pub use issuance::issue_credential_direct;

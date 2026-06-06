@@ -8,8 +8,8 @@ use crate::error::{IdpError, Result};
 use crate::sd_jwt_bridge::{claims_to_sd_jwt_vc, credential_id};
 use chrono::Datelike;
 use owl_crypto::{KeyPair, PublicKey, SignatureAlgorithm};
-use owl_proof_system::predicates::{self, PredicateParams};
 use owl_proof_system::PredicateAttestation;
+use owl_proof_system::predicates::{self, PredicateParams};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -211,7 +211,7 @@ fn derive_predicate_attestations(
             },
             (_, "kyc", PredicateParams::Threshold(t)) => PredicateAttestation {
                 predicate: "kyc".to_string(),
-                threshold: Some(*t as u64),
+                threshold: Some(*t),
                 ..Default::default()
             },
             // nationality + residency: the issuer stamps the holder's

@@ -201,7 +201,7 @@ export function formatPresentationError(err: unknown): FriendlyPresentationError
     return {
       title: 'Wallet key missing',
       body: 'We couldn’t find the signing key for this credential.',
-      hint: 'You may need to re-register your passkey or re-import the credential.',
+      hint: 'Sign in with the passkey that originally saved this credential, or re-add the credential.',
       retryable: false,
       raw,
     }

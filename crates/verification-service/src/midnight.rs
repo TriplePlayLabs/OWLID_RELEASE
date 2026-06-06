@@ -118,12 +118,20 @@ pub struct PredicateSnapshotResponse {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RelayResponse {
-    #[serde(rename = "txId", default)]
-    pub tx_id: Option<String>,
+    #[serde(rename = "jobId", default)]
+    pub job_id: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttestedResponse {
+    #[serde(default)]
+    attested: Option<bool>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 // ============================================================================
@@ -184,7 +192,8 @@ impl MidnightSidecar {
     // ========================================================================
 
     /// Check if an issuer is trusted on-chain.
-    pub async fn is_issuer_trusted(&self, key_hash_hex: &str) -> Result<bool, MidnightError> {        let resp: IssuerStatusResponse = self
+    pub async fn is_issuer_trusted(&self, key_hash_hex: &str) -> Result<bool, MidnightError> {
+        let resp: IssuerStatusResponse = self
             .http
             .get(format!(
                 "{}/api/issuers/{}/trusted",
@@ -205,7 +214,8 @@ impl MidnightSidecar {
         &self,
         public_key_hex: &str,
         name: &str,
-    ) -> Result<(), MidnightError> {        let resp: SidecarResponse = self
+    ) -> Result<(), MidnightError> {
+        let resp: SidecarResponse = self
             .http
             .post(format!("{}/api/issuers/register", self.base_url))
             .json(&serde_json::json!({
@@ -227,7 +237,11 @@ impl MidnightSidecar {
     // ========================================================================
 
     /// Check if a credential is revoked on-chain.
-    pub async fn is_credential_revoked(&self, credential_id_hex: &str) -> Result<bool, MidnightError> {        let credential_id_hex = owl_proof_system::sd_jwt::credential_id_hex(credential_id_hex)
+    pub async fn is_credential_revoked(
+        &self,
+        credential_id_hex: &str,
+    ) -> Result<bool, MidnightError> {
+        let credential_id_hex = owl_proof_system::sd_jwt::credential_id_hex(credential_id_hex)
             .map_err(|e| MidnightError::Sidecar(format!("credential id: {e}")))?;
         let resp: RevocationStatusResponse = self
             .http
@@ -251,7 +265,8 @@ impl MidnightSidecar {
         credential_id_hex: &str,
         issuer_key_hash_hex: &str,
         reason: &str,
-    ) -> Result<(), MidnightError> {        let credential_id_hex = owl_proof_system::sd_jwt::credential_id_hex(credential_id_hex)
+    ) -> Result<(), MidnightError> {
+        let credential_id_hex = owl_proof_system::sd_jwt::credential_id_hex(credential_id_hex)
             .map_err(|e| MidnightError::Sidecar(format!("credential id: {e}")))?;
         let resp: SidecarResponse = self
             .http
@@ -277,7 +292,8 @@ impl MidnightSidecar {
         credential_id_hex: &str,
         issuer_key_hash_hex: &str,
         reason: &str,
-    ) -> Result<(), MidnightError> {        let credential_id_hex = owl_proof_system::sd_jwt::credential_id_hex(credential_id_hex)
+    ) -> Result<(), MidnightError> {
+        let credential_id_hex = owl_proof_system::sd_jwt::credential_id_hex(credential_id_hex)
             .map_err(|e| MidnightError::Sidecar(format!("credential id: {e}")))?;
         let resp: SidecarResponse = self
             .http
@@ -302,7 +318,8 @@ impl MidnightSidecar {
         &self,
         credential_id_hex: &str,
         issuer_key_hash_hex: &str,
-    ) -> Result<(), MidnightError> {        let credential_id_hex = owl_proof_system::sd_jwt::credential_id_hex(credential_id_hex)
+    ) -> Result<(), MidnightError> {
+        let credential_id_hex = owl_proof_system::sd_jwt::credential_id_hex(credential_id_hex)
             .map_err(|e| MidnightError::Sidecar(format!("credential id: {e}")))?;
         let resp: SidecarResponse = self
             .http
@@ -333,7 +350,8 @@ impl MidnightSidecar {
         did_hash_hex: &str,
         commitment_hex: &str,
         issuer_key_hash_hex: &str,
-    ) -> Result<(), MidnightError> {        let resp: SidecarResponse = self
+    ) -> Result<(), MidnightError> {
+        let resp: SidecarResponse = self
             .http
             .post(format!("{}/api/identities/register", self.base_url))
             .json(&serde_json::json!({
@@ -355,7 +373,8 @@ impl MidnightSidecar {
     pub async fn get_commitment(
         &self,
         did_hash_hex: &str,
-    ) -> Result<CommitmentResponse, MidnightError> {        let resp: CommitmentResponse = self
+    ) -> Result<CommitmentResponse, MidnightError> {
+        let resp: CommitmentResponse = self
             .http
             .get(format!(
                 "{}/api/identities/{}/commitment",
@@ -382,7 +401,10 @@ impl MidnightSidecar {
     ) -> Result<PredicateSnapshotResponse, MidnightError> {
         let resp: PredicateSnapshotResponse = self
             .http
-            .get(format!("{}/api/predicates/{}/snapshot", self.base_url, kind))
+            .get(format!(
+                "{}/api/predicates/{}/snapshot",
+                self.base_url, kind
+            ))
             .send()
             .await?
             .json()
@@ -417,28 +439,59 @@ impl MidnightSidecar {
         Ok(resp)
     }
 
-    /// Open the upstream SSE stream of phase transitions for a relay
-    /// job (or raw chain tx). The verification-service forwards the
-    /// returned byte stream untouched to the holder so the system
-    /// uses one notification transport end-to-end (SSE for
-    /// server→client pushes; no polling at any layer).
-    ///
-    /// Disables the global reqwest timeout for this request since SSE
-    /// streams are long-lived; the connection ends when the upstream
-    /// emits the terminal status, when the holder aborts the
-    /// EventSource, or when an underlying TCP-level idle teardown
-    /// fires (the upstream emits `ping` events every 25 s to prevent
-    /// proxies from idling out).
-    pub async fn open_tx_events_stream(
+    /// Authoritative live-ledger membership check for a per-kind
+    /// predicate attestation key. The verifier's local set is mirrored
+    /// from the sidecar SSE stream and is eventually-consistent, so a
+    /// freshly-landed attestation can be on-chain before the mirror
+    /// records it; this is the read-through used on a cache miss to
+    /// close that race. `kind` is the sidecar predicate-kind segment
+    /// (`age|kyc|residency|email|nationality|age_range|personhood`);
+    /// `key_hex` is the 32-byte attestation key in hex.
+    pub async fn is_attested_on_chain(
         &self,
-        tx_id: &str,
-    ) -> Result<reqwest::Response, MidnightError> {
-        let resp = self
+        kind: &str,
+        key_hex: &str,
+    ) -> Result<bool, MidnightError> {
+        let resp: AttestedResponse = self
             .http
             .get(format!(
-                "{}/api/predicates/tx/{}/events",
-                self.base_url, tx_id
+                "{}/api/predicates/{}/{}/attested",
+                self.base_url, kind, key_hex
             ))
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(err) = resp.error {
+            return Err(MidnightError::Sidecar(err));
+        }
+        Ok(resp.attested.unwrap_or(false))
+    }
+
+    /// Open the upstream SSE stream of phase transitions for a relay
+    /// job. Walks the job lifecycle through `queued → balancing →
+    /// submitting → submitted`, then switches to the chain-side wait.
+    /// Use for ids returned by `/predicates/{kind}/relay`.
+    pub async fn open_job_events_stream(
+        &self,
+        job_id: &str,
+    ) -> Result<reqwest::Response, MidnightError> {
+        self.open_events_stream(&format!(
+            "{}/api/predicates/job/{}/events",
+            self.base_url, job_id
+        ))
+        .await
+    }
+
+    /// Shared open-stream impl. Disables the global reqwest timeout
+    /// since SSE streams are long-lived; the connection ends when the
+    /// upstream emits a terminal status, when the holder aborts the
+    /// EventSource, or when a TCP idle teardown fires (upstream emits
+    /// `ping` every 10 s to prevent proxies from idling out).
+    async fn open_events_stream(&self, url: &str) -> Result<reqwest::Response, MidnightError> {
+        let resp = self
+            .http
+            .get(url)
             .timeout(std::time::Duration::from_secs(60 * 60))
             .send()
             .await?;

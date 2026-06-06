@@ -178,6 +178,7 @@ pub enum FormFieldType {
 }
 
 /// Result of polling a verification session
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PollResult {

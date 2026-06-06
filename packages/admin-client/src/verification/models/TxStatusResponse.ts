@@ -23,7 +23,7 @@ export interface TxStatusResponse {
    * Latest known phase. One of: `queued | balancing | submitting |
    * submitted | balance-failed | submit-failed | SucceedEntirely |
    * FailEntirely | FailFallible`. The system uses SSE end-to-end for
-   * these updates — see `GET /predicates/tx/{tx_id}/events`.
+   * these updates — see `GET /predicates/job/{job_id}/events`.
    * @type {string}
    * @memberof TxStatusResponse
    */

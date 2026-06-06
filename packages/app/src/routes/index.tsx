@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { Fingerprint, Loader2, ShieldCheck, Wallet } from 'lucide-react'
 import { Button } from '@owlid/ui/components/ui/button'
@@ -51,28 +51,28 @@ function HomePage() {
   return (
     <div className="w-full max-w-md mx-auto px-4 pt-12 pb-16 flex flex-col items-center text-center">
       <div className="mb-8 flex flex-col items-center gap-2">
-        <h1 className="text-3xl font-semibold tracking-tight text-white">OwlID</h1>
+        <h1 className="text-3xl font-semibold tracking-tight text-white">Owl ID</h1>
         <p className="text-sm text-muted-foreground max-w-sm">
-          A privacy-preserving digital identity wallet. Verify yourself once, prove what you need —
-          nothing more.
+          Prove who you are without oversharing. Set yourself up once, then share only what each
+          request actually needs.
         </p>
       </div>
 
       <div className="w-full space-y-2 mb-10">
         <Feature
           icon={<Fingerprint className="w-4 h-4" />}
-          title="Passkey-secured"
-          desc="One device passkey unlocks every credential. Keys never leave your device."
+          title="Only you can unlock it"
+          desc="Your face or fingerprint unlocks everything. Nothing secret ever leaves your device."
         />
         <Feature
           icon={<Wallet className="w-4 h-4" />}
-          title="Carry many cards"
-          desc="Add Google, KYC providers, government IDs. Use whichever fits the request."
+          title="All your IDs in one place"
+          desc="Add your Google account, ID checks, and government IDs. Pick the right one for each situation."
         />
         <Feature
           icon={<ShieldCheck className="w-4 h-4" />}
-          title="Disclose only what's asked"
-          desc="Each presentation reveals just the claim a verifier requested. Nothing else."
+          title="Share only what's asked"
+          desc="Show just the one fact someone needs, like proof you're over 18, and nothing more."
         />
       </div>
 
@@ -86,7 +86,7 @@ function HomePage() {
         Get started
       </Button>
       <p className="mt-3 text-xs text-muted-foreground">
-        Already have a passkey on this device?{' '}
+        Already have a wallet passkey?{' '}
         <button
           type="button"
           onClick={() => navigate({ to: '/login' })}
@@ -94,6 +94,12 @@ function HomePage() {
         >
           Sign in
         </button>
+      </p>
+      <p className="mt-2 text-xs text-muted-foreground">
+        New to this?{' '}
+        <Link to="/faq" className="underline hover:text-foreground">
+          Read the FAQ
+        </Link>
       </p>
     </div>
   )

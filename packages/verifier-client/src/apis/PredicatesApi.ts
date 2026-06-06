@@ -46,8 +46,8 @@ export interface RelayPredicateProofRequest {
   relayProofRequest: RelayProofRequest
 }
 
-export interface StreamPredicateTxEventsRequest {
-  txId: string
+export interface StreamPredicateJobEventsRequest {
+  jobId: string
 }
 
 /**
@@ -59,7 +59,7 @@ export interface StreamPredicateTxEventsRequest {
 export interface PredicatesApiInterface {
   /**
    *
-   * @summary Recompute the Midnight attestation key from the credential\'s issuer-signed credential_id + requested predicate (binding it to *this* credential), then check membership in the SSE-mirrored set. No ZK proof verified inline — the Midnight node already verified it in consensus when the attest tx was processed.
+   * @summary Recompute the Midnight attestation key from the credential\'s issuer-signed credential_id + requested predicate (binding it to *this* credential), then check membership: local SSE-mirrored set first, then an authoritative on-chain read-through on a miss. No ZK proof verified inline — the Midnight node already verified it in consensus when the attest tx was processed.
    * @param {CheckPredicateRequest} checkPredicateRequest
    * @param {*} [options] Override http request option.
    * @throws {RequiredError}
@@ -71,7 +71,7 @@ export interface PredicatesApiInterface {
   ): Promise<runtime.ApiResponse<CheckPredicateResponse>>
 
   /**
-   * Recompute the Midnight attestation key from the credential\'s issuer-signed credential_id + requested predicate (binding it to *this* credential), then check membership in the SSE-mirrored set. No ZK proof verified inline — the Midnight node already verified it in consensus when the attest tx was processed.
+   * Recompute the Midnight attestation key from the credential\'s issuer-signed credential_id + requested predicate (binding it to *this* credential), then check membership: local SSE-mirrored set first, then an authoritative on-chain read-through on a miss. No ZK proof verified inline — the Midnight node already verified it in consensus when the attest tx was processed.
    */
   checkPredicateAttested(
     requestParameters: CheckPredicateAttestedRequest,
@@ -123,22 +123,22 @@ export interface PredicatesApiInterface {
 
   /**
    *
-   * @summary SSE stream of phase transitions for a relay job (or raw chain tx). Forwards the sidecar\'s upstream `GET /api/predicates/tx/{id}/events` byte-for-byte to the holder so the in-process eventBus pushes reach the browser as `text/event-stream` events. The whole system uses exactly two notification transports end-to-end: WS for two-way channels (presentation sockets) and SSE for server→client pushes. No polling, no long-polling, no rapid-fire HTTP.
-   * @param {string} txId Midnight tx id or relay job id (returned by /predicates/{kind}/relay)
+   * @summary SSE stream of phase transitions for a relay job. Drives via the sidecar\'s in-process eventBus through `queued → balancing → submitting → submitted`, then switches to chain-side finalization via `watchForTxData`. Forwards the sidecar\'s upstream `GET /api/predicates/job/{jobId}/events` byte-for-byte to the holder; the system uses exactly two notification transports end-to-end (WS for two-way channels, SSE for server→client pushes).
+   * @param {string} jobId Relay job id returned by /predicates/{kind}/relay
    * @param {*} [options] Override http request option.
    * @throws {RequiredError}
    * @memberof PredicatesApiInterface
    */
-  streamPredicateTxEventsRaw(
-    requestParameters: StreamPredicateTxEventsRequest,
+  streamPredicateJobEventsRaw(
+    requestParameters: StreamPredicateJobEventsRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<runtime.ApiResponse<void>>
 
   /**
-   * SSE stream of phase transitions for a relay job (or raw chain tx). Forwards the sidecar\'s upstream `GET /api/predicates/tx/{id}/events` byte-for-byte to the holder so the in-process eventBus pushes reach the browser as `text/event-stream` events. The whole system uses exactly two notification transports end-to-end: WS for two-way channels (presentation sockets) and SSE for server→client pushes. No polling, no long-polling, no rapid-fire HTTP.
+   * SSE stream of phase transitions for a relay job. Drives via the sidecar\'s in-process eventBus through `queued → balancing → submitting → submitted`, then switches to chain-side finalization via `watchForTxData`. Forwards the sidecar\'s upstream `GET /api/predicates/job/{jobId}/events` byte-for-byte to the holder; the system uses exactly two notification transports end-to-end (WS for two-way channels, SSE for server→client pushes).
    */
-  streamPredicateTxEvents(
-    requestParameters: StreamPredicateTxEventsRequest,
+  streamPredicateJobEvents(
+    requestParameters: StreamPredicateJobEventsRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<void>
 }
@@ -148,7 +148,7 @@ export interface PredicatesApiInterface {
  */
 export class PredicatesApi extends runtime.BaseAPI implements PredicatesApiInterface {
   /**
-   * Recompute the Midnight attestation key from the credential\'s issuer-signed credential_id + requested predicate (binding it to *this* credential), then check membership in the SSE-mirrored set. No ZK proof verified inline — the Midnight node already verified it in consensus when the attest tx was processed.
+   * Recompute the Midnight attestation key from the credential\'s issuer-signed credential_id + requested predicate (binding it to *this* credential), then check membership: local SSE-mirrored set first, then an authoritative on-chain read-through on a miss. No ZK proof verified inline — the Midnight node already verified it in consensus when the attest tx was processed.
    */
   async checkPredicateAttestedRaw(
     requestParameters: CheckPredicateAttestedRequest,
@@ -184,7 +184,7 @@ export class PredicatesApi extends runtime.BaseAPI implements PredicatesApiInter
   }
 
   /**
-   * Recompute the Midnight attestation key from the credential\'s issuer-signed credential_id + requested predicate (binding it to *this* credential), then check membership in the SSE-mirrored set. No ZK proof verified inline — the Midnight node already verified it in consensus when the attest tx was processed.
+   * Recompute the Midnight attestation key from the credential\'s issuer-signed credential_id + requested predicate (binding it to *this* credential), then check membership: local SSE-mirrored set first, then an authoritative on-chain read-through on a miss. No ZK proof verified inline — the Midnight node already verified it in consensus when the attest tx was processed.
    */
   async checkPredicateAttested(
     requestParameters: CheckPredicateAttestedRequest,
@@ -299,16 +299,16 @@ export class PredicatesApi extends runtime.BaseAPI implements PredicatesApiInter
   }
 
   /**
-   * SSE stream of phase transitions for a relay job (or raw chain tx). Forwards the sidecar\'s upstream `GET /api/predicates/tx/{id}/events` byte-for-byte to the holder so the in-process eventBus pushes reach the browser as `text/event-stream` events. The whole system uses exactly two notification transports end-to-end: WS for two-way channels (presentation sockets) and SSE for server→client pushes. No polling, no long-polling, no rapid-fire HTTP.
+   * SSE stream of phase transitions for a relay job. Drives via the sidecar\'s in-process eventBus through `queued → balancing → submitting → submitted`, then switches to chain-side finalization via `watchForTxData`. Forwards the sidecar\'s upstream `GET /api/predicates/job/{jobId}/events` byte-for-byte to the holder; the system uses exactly two notification transports end-to-end (WS for two-way channels, SSE for server→client pushes).
    */
-  async streamPredicateTxEventsRaw(
-    requestParameters: StreamPredicateTxEventsRequest,
+  async streamPredicateJobEventsRaw(
+    requestParameters: StreamPredicateJobEventsRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<runtime.ApiResponse<void>> {
-    if (requestParameters['txId'] == null) {
+    if (requestParameters['jobId'] == null) {
       throw new runtime.RequiredError(
-        'txId',
-        'Required parameter "txId" was null or undefined when calling streamPredicateTxEvents().',
+        'jobId',
+        'Required parameter "jobId" was null or undefined when calling streamPredicateJobEvents().',
       )
     }
 
@@ -318,9 +318,9 @@ export class PredicatesApi extends runtime.BaseAPI implements PredicatesApiInter
 
     const response = await this.request(
       {
-        path: `/predicates/tx/{tx_id}/events`.replace(
-          `{${'tx_id'}}`,
-          encodeURIComponent(String(requestParameters['txId'])),
+        path: `/predicates/job/{job_id}/events`.replace(
+          `{${'job_id'}}`,
+          encodeURIComponent(String(requestParameters['jobId'])),
         ),
         method: 'GET',
         headers: headerParameters,
@@ -333,12 +333,12 @@ export class PredicatesApi extends runtime.BaseAPI implements PredicatesApiInter
   }
 
   /**
-   * SSE stream of phase transitions for a relay job (or raw chain tx). Forwards the sidecar\'s upstream `GET /api/predicates/tx/{id}/events` byte-for-byte to the holder so the in-process eventBus pushes reach the browser as `text/event-stream` events. The whole system uses exactly two notification transports end-to-end: WS for two-way channels (presentation sockets) and SSE for server→client pushes. No polling, no long-polling, no rapid-fire HTTP.
+   * SSE stream of phase transitions for a relay job. Drives via the sidecar\'s in-process eventBus through `queued → balancing → submitting → submitted`, then switches to chain-side finalization via `watchForTxData`. Forwards the sidecar\'s upstream `GET /api/predicates/job/{jobId}/events` byte-for-byte to the holder; the system uses exactly two notification transports end-to-end (WS for two-way channels, SSE for server→client pushes).
    */
-  async streamPredicateTxEvents(
-    requestParameters: StreamPredicateTxEventsRequest,
+  async streamPredicateJobEvents(
+    requestParameters: StreamPredicateJobEventsRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<void> {
-    await this.streamPredicateTxEventsRaw(requestParameters, initOverrides)
+    await this.streamPredicateJobEventsRaw(requestParameters, initOverrides)
   }
 }

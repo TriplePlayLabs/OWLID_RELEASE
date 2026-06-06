@@ -269,113 +269,113 @@ predicates.post('/:kind/relay', async (c) => {
   }
 })
 
-/** GET /api/predicates/tx/:txId/events — SSE stream of phase
- *  transitions for a relay job (or raw chain tx). The system uses
- *  exactly two notification transports end-to-end: WS for two-way
- *  channels (presentation sockets) and SSE for server→client pushes.
- *  No polling.
- *
- *  Lifecycle:
- *    1. Emit a `status` SSE event with the current snapshot so a
- *       late subscriber catches up to the latest known state.
- *    2. If the job is still in-flight (`queued|balancing|submitting`),
- *       tail the in-process eventBus for `relay` events matching the
- *       jobId. Each transition is one SSE event.
- *    3. Once the job reaches `submitted` with a real chain `txId`,
- *       await `watchForTxData` (an indexer WebSocket subscription —
- *       also push, not poll) and emit ONE final SSE event with the
- *       terminal chain status.
- *    4. On terminal status (`SucceedEntirely | FailEntirely |
- *       FailFallible | balance-failed | submit-failed`) the server
- *       closes the stream. The client closes its EventSource. */
-predicates.get('/tx/:txId/events', (c) => {
-  const idOrJobId = c.req.param('txId')
-  if (!idOrJobId) return c.json({ error: 'txId required' }, 400)
-  return streamSSE(c, async (stream) => {
-    let id = 0
-    const writeStatus = async (txId: string, status: string, error?: string): Promise<void> => {
+// Terminal phase sets, shared by the two SSE routes below.
+const TERMINAL_JOB = new Set(['balance-failed', 'submit-failed'])
+const TERMINAL_CHAIN = new Set(['SucceedEntirely', 'FailEntirely', 'FailFallible'])
+
+/** Shared SSE-write helpers. The two transports (WS for two-way
+ *  channels, SSE for server→client) are fixed at the system level;
+ *  every status update goes out as `event: status` with a JSON
+ *  `{txId, status, error?}` payload, terminated by either a terminal
+ *  job phase or a terminal chain status. */
+type SSEStream = Parameters<Parameters<typeof streamSSE>[1]>[0]
+function makeWriter(stream: SSEStream): {
+  writeStatus: (txId: string, status: string, error?: string) => Promise<void>
+  startKeepAlive: () => () => void
+} {
+  let id = 0
+  return {
+    writeStatus: async (txId, status, error) => {
       await stream.writeSSE({
         id: String(++id),
         event: 'status',
         data: JSON.stringify({ txId, status, error }),
       })
-    }
-    const TERMINAL_JOB = new Set(['balance-failed', 'submit-failed'])
-    const TERMINAL_CHAIN = new Set(['SucceedEntirely', 'FailEntirely', 'FailFallible'])
+    },
+    startKeepAlive: () => {
+      // Keep-alive every 10 s so Cloud Run / GFE edge proxies see
+      // bytes flowing and don't kill the stream as idle. The Cloud
+      // Run request timeout (900 s) still applies as a hard upper
+      // bound; the client reconnects on disconnect.
+      const timer = setInterval(() => {
+        void stream.writeSSE({ event: 'ping', data: '{}' })
+      }, 10_000)
+      return () => clearInterval(timer)
+    },
+  }
+}
 
-    // Keep-alive every 10 s so Cloud Run / GFE edge proxies see
-    // bytes flowing and don't kill the stream as idle. The Cloud Run
-    // request timeout (900 s) still applies as a hard upper bound;
-    // the client reconnects on disconnect, so an actual idle-cap kill
-    // is recovered transparently.
-    const keepAlive = setInterval(() => {
-      void stream.writeSSE({ event: 'ping', data: '{}' })
-    }, 10_000)
+/** GET /api/predicates/job/:jobId/events — SSE stream of phase
+ *  transitions for a relay job. Drives via the in-process eventBus
+ *  through `queued → balancing → submitting → submitted`, then
+ *  switches to the chain-side wait via `watchForTxData`. Terminates
+ *  on terminal job phase (`balance-failed | submit-failed`) or
+ *  terminal chain status (`SucceedEntirely | FailEntirely |
+ *  FailFallible`). The client closes its EventSource on terminal.
+ *
+ *  Use this endpoint for ids returned by `/predicates/{kind}/relay`. */
+predicates.get('/job/:jobId/events', (c) => {
+  const jobId = c.req.param('jobId')
+  if (!jobId) return c.json({ error: 'jobId required' }, 400)
+  return streamSSE(c, async (stream) => {
+    const { writeStatus, startKeepAlive } = makeWriter(stream)
+    const stopKeepAlive = startKeepAlive()
     let unsubscribe: (() => void) | null = null
     stream.onAbort(() => {
-      clearInterval(keepAlive)
+      stopKeepAlive()
       unsubscribe?.()
     })
-
     try {
       const client = getClient()
-      // 1. Snapshot the current job (if any) so a late subscriber
-      //    catches up. If there is no job entry, treat the caller's
-      //    id as a raw chain tx-id and skip straight to step 3.
-      const job = client.getRelayJob(idOrJobId)
-      let chainTxId: string | null = null
-      if (job) {
-        await writeStatus(job.jobId, job.phase, job.error)
-        if (TERMINAL_JOB.has(job.phase)) {
-          return // stream ends naturally
-        }
-        if (job.phase === 'submitted' && job.txId) {
-          chainTxId = job.txId
-        } else {
-          // 2. Wait for the bus emission that flips us into `submitted`
-          //    (or a terminal failure). After that, switch to watching
-          //    the chain.
-          chainTxId = await new Promise<string | null>((resolve) => {
-            unsubscribe = eventBus.subscribe((event: SidecarEvent) => {
-              if (event.type !== 'relay') return
-              if (event.jobId !== job.jobId) return
-              void writeStatus(job.jobId, event.phase, event.error)
-              if (TERMINAL_JOB.has(event.phase)) {
-                unsubscribe?.()
-                resolve(null)
-                return
-              }
-              if (event.phase === 'submitted' && event.txId) {
-                unsubscribe?.()
-                resolve(event.txId)
-              }
-            })
-          })
-          if (chainTxId === null) return
-        }
-      } else {
-        // Raw chain tx-id path: emit an immediate `pending` snapshot
-        // so the client knows the connection is alive without waiting
-        // for the 10 s keep-alive ping or chain finalization.
-        chainTxId = idOrJobId
-        await writeStatus(chainTxId, 'pending')
+      const job = client.getRelayJob(jobId)
+      // Job not found — most likely the sidecar restarted between
+      // `/relay` accepting the request and the holder opening this
+      // SSE (the `relayJobs` map is in-memory). Job-id and chain
+      // tx-id are both 32-byte hex; fall back to treating the id as
+      // a chain tx-id and waiting on indexer finalization directly.
+      // `watchForTxData` is idempotent: if the chain knows the tx
+      // it'll resolve quickly, if it doesn't it'll keep polling
+      // until our timeout / the caller aborts. Either way the
+      // client sees ONE terminal status and stops — no reconnect
+      // loop.
+      if (!job) {
+        const finalized = await client.awaitChainStatus(jobId)
+        await writeStatus(jobId, finalized)
+        return
       }
-      // 3. Single push wait on the indexer WS. No retry loop, no
-      //    interval timer — watchForTxData resolves exactly once
-      //    when the indexer observes the tx.
+      await writeStatus(job.jobId, job.phase, job.error)
+      if (TERMINAL_JOB.has(job.phase)) return
+      let chainTxId: string | null = job.chainTxId ?? null
+      if (chainTxId === null) {
+        chainTxId = await new Promise<string | null>((resolve) => {
+          unsubscribe = eventBus.subscribe((event: SidecarEvent) => {
+            if (event.type !== 'relay') return
+            if (event.jobId !== job.jobId) return
+            void writeStatus(job.jobId, event.phase, event.error)
+            if (TERMINAL_JOB.has(event.phase)) {
+              unsubscribe?.()
+              resolve(null)
+              return
+            }
+            if (event.phase === 'submitted' && event.txId) {
+              unsubscribe?.()
+              resolve(event.txId)
+            }
+          })
+        })
+        if (chainTxId === null) return
+      }
       const finalized = await client.awaitChainStatus(chainTxId)
       await writeStatus(chainTxId, finalized)
-      if (!TERMINAL_CHAIN.has(finalized) && finalized !== 'unknown') {
-        // Unexpected non-terminal status — emit and close so the
-        // client treats it as terminal rather than waiting forever.
-        // (`watchForTxData` is documented to resolve only on
-        //  finalization, so we shouldn't reach here in practice.)
-      }
+      void TERMINAL_CHAIN
     } catch (e) {
-      await stream.writeSSE({
-        event: 'error',
-        data: JSON.stringify({ message: String(e) }),
-      })
+      // Degraded sidecar (mid-resync: `getClient()` throws) or any
+      // unexpected stream error. Emit a TERMINAL status frame rather
+      // than `event: 'error'`: the client treats `unknown` as terminal
+      // and stops cleanly, instead of reconnecting into a still-degraded
+      // sidecar (the observed 375-request storm). The holder sees one
+      // failed predicate with a clear reason, not a hang.
+      await writeStatus(jobId, 'unknown', String(e))
     }
   })
 })

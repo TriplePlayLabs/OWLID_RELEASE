@@ -125,10 +125,7 @@ impl PresentationSessionStore {
 
     /// Snapshot the OpenID4VP request data for the given session id.
     /// Returns `None` when the session is missing or expired.
-    pub async fn get_request_data(
-        &self,
-        session_id: &str,
-    ) -> Option<SessionRequestData> {
+    pub async fn get_request_data(&self, session_id: &str) -> Option<SessionRequestData> {
         let sessions = self.sessions.read().await;
         let s = sessions.get(session_id)?;
         if s.expires_at < Instant::now() {
@@ -202,7 +199,13 @@ impl PresentationSessionStore {
     /// Buffer a relayed message so a peer that reconnects later can be
     /// caught up. `request` from a verifier and a terminal message from
     /// a holder are the only resumable points in the protocol.
-    async fn buffer_message(&self, session_id: &str, sender_role: &str, msg_type: &str, text: &str) {
+    async fn buffer_message(
+        &self,
+        session_id: &str,
+        sender_role: &str,
+        msg_type: &str,
+        text: &str,
+    ) {
         let mut sessions = self.sessions.write().await;
         let Some(session) = sessions.get_mut(session_id) else {
             return;

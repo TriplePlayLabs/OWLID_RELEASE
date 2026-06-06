@@ -66,6 +66,7 @@ function AddProviderPage() {
     try {
       await verifyAndIssue.mutateAsync({
         providerId: provider.id,
+        providerName: provider.name,
         username: 'user',
         popup,
       })
@@ -82,10 +83,10 @@ function AddProviderPage() {
     <div className="w-full max-w-md mx-auto px-4 pt-6 pb-12">
       {hasCards && <BackLink to="/wallet" />}
 
-      <h1 className="text-lg font-semibold text-white mb-1">Add a provider</h1>
+      <h1 className="text-lg font-semibold text-white mb-1">Add an ID</h1>
       <p className="text-sm text-muted-foreground mb-6">
-        Pick an identity provider to add another credential to your wallet. Each provider issues its
-        own card — multiple providers means stronger proofs you can compose at presentation time.
+        Connect a service like Google, a government ID, or an ID check. Each one adds a card to your
+        wallet, and the more you have, the more you can prove while sharing only what's needed.
       </p>
 
       {verifyAndIssue.isError && (
@@ -104,6 +105,19 @@ function AddProviderPage() {
               {verifyAndIssue.statusMessage || 'Connecting to identity provider'}
             </p>
           </div>
+        </div>
+      ) : verifyAndIssue.awaitingConfirmation ? (
+        <div className="flex flex-col items-center justify-center py-12 space-y-4">
+          <CheckCircle className="w-8 h-8 text-green-500" />
+          <div className="text-center space-y-1">
+            <p className="font-medium">Verification complete</p>
+            <p className="text-sm text-muted-foreground">
+              Tap below to finish saving the credential. Your passkey will unlock the wallet.
+            </p>
+          </div>
+          <Button onClick={verifyAndIssue.confirmAndIssue} className="w-full">
+            Save credential
+          </Button>
         </div>
       ) : verifyAndIssue.isSuccess ? (
         <div className="flex flex-col items-center justify-center py-12 space-y-4">

@@ -29,7 +29,8 @@ fn issuer_url() -> String {
 }
 
 fn verify_url() -> String {
-    std::env::var("VERIFICATION_SERVICE_URL").unwrap_or_else(|_| "http://localhost:8000".to_string())
+    std::env::var("VERIFICATION_SERVICE_URL")
+        .unwrap_or_else(|_| "http://localhost:8000".to_string())
 }
 
 fn api_key() -> String {
@@ -158,7 +159,10 @@ async fn oid4vci_metadata_and_did_web_resolve() {
         "dc+sd-jwt"
     );
     assert!(
-        meta["credential_endpoint"].as_str().unwrap().ends_with("/credential"),
+        meta["credential_endpoint"]
+            .as_str()
+            .unwrap()
+            .ends_with("/credential"),
         "advertises the credential endpoint"
     );
     assert!(meta["token_endpoint"].as_str().unwrap().ends_with("/token"));
@@ -754,7 +758,10 @@ async fn oid4vci_batch_issuance_unlinkability_e2e() {
     let (vc1, _) = SdJwtVc::parse(batch[1].as_str().unwrap()).expect("parse");
     let (p1, c1) = present_with_kb(&http, &vc1, &holder).await;
     let v1 = oid4vp_verify(&http, &p1, &c1).await;
-    assert_eq!(v1["valid"], true, "sibling batch credential must stay valid");
+    assert_eq!(
+        v1["valid"], true,
+        "sibling batch credential must stay valid"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,7 +1117,10 @@ async fn dcql_credential_sets_solver_e2e() {
         .json()
         .await
         .expect("verify json");
-    assert_eq!(vr["valid"], true, "DCQL with values match must accept: {vr}");
+    assert_eq!(
+        vr["valid"], true,
+        "DCQL with values match must accept: {vr}"
+    );
     assert_eq!(vr["perCredential"]["passport"]["valid"], true);
 
     // Mint a fresh nonce, present a NEW vp_token, run DCQL with an
@@ -1166,5 +1176,139 @@ async fn dcql_credential_sets_solver_e2e() {
     assert_eq!(
         vr_fail["valid"], false,
         "DCQL claim-value mismatch must reject the entry"
+    );
+}
+
+/// Audience the holder's KB-JWT must carry for self-revocation. Mirrors
+/// `api::SELF_REVOKE_AUDIENCE` (kept in sync as a wire contract; the binary
+/// crate's modules aren't importable from an integration test).
+const SELF_REVOKE_AUDIENCE: &str = "owlid:revocation:self";
+
+async fn fresh_challenge(http: &Client) -> String {
+    let c: Value = http
+        .get(format!("{}/verify/challenge", verify_url()))
+        .bearer_auth(api_key())
+        .send()
+        .await
+        .expect("challenge")
+        .json()
+        .await
+        .expect("challenge json");
+    c["challenge"].as_str().unwrap().to_string()
+}
+
+/// Holder self-revocation: present the credential with a KB-JWT signed by the
+/// holder's OWN key, bound to the self-revoke audience + a fresh challenge.
+/// The service verifies proof-of-possession and revokes on-chain with the
+/// ISSUER key — no admin key involved.
+#[tokio::test]
+#[ignore]
+async fn holder_self_revokes_with_proof_of_possession() {
+    let http = Client::new();
+    let holder = KeyPair::generate();
+    let sd_jwt_vc = issue_sd_jwt_vc(&http, &holder).await;
+    let cred_id = sd_jwt::credential_id(&sd_jwt_vc);
+
+    let challenge = fresh_challenge(&http).await;
+    let (vc, _kb) = SdJwtVc::parse(&sd_jwt_vc).expect("parse");
+    // Disclose nothing — revocation needs only proof of possession.
+    let presentation = vc
+        .present(
+            &[],
+            Some(KbParams {
+                holder: &holder,
+                aud: SELF_REVOKE_AUDIENCE.to_string(),
+                nonce: challenge.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present");
+
+    let resp = http
+        .post(format!("{}/revocations/revoke-mine", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({ "presentation": presentation, "challenge": challenge }))
+        .send()
+        .await
+        .expect("revoke-mine");
+    assert!(
+        resp.status().is_success(),
+        "self-revoke failed: {}",
+        resp.status()
+    );
+    let body: Value = resp.json().await.expect("json");
+    assert_eq!(body["revoked"], true);
+
+    // The verifier-facing revocation check now reports it revoked.
+    let chk: Value = http
+        .post(format!("{}/revocations/check", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({ "credentialId": cred_id }))
+        .send()
+        .await
+        .expect("check")
+        .json()
+        .await
+        .expect("check json");
+    assert_eq!(
+        chk["status"], "revoked",
+        "self-revoked credential must read as revoked"
+    );
+}
+
+/// A KB-JWT signed by the wrong key is NOT proof of possession: the service
+/// must reject the request and leave the credential untouched. This is the
+/// guarantee that a holder can only ever revoke a credential they hold.
+#[tokio::test]
+#[ignore]
+async fn self_revocation_rejects_a_forged_proof_of_possession() {
+    let http = Client::new();
+    let holder = KeyPair::generate();
+    let attacker = KeyPair::generate(); // does NOT control the credential's cnf key
+    let sd_jwt_vc = issue_sd_jwt_vc(&http, &holder).await;
+    let cred_id = sd_jwt::credential_id(&sd_jwt_vc);
+
+    let challenge = fresh_challenge(&http).await;
+    let (vc, _kb) = SdJwtVc::parse(&sd_jwt_vc).expect("parse");
+    // KB-JWT signed by the attacker's key — proof of possession must fail.
+    let presentation = vc
+        .present(
+            &[],
+            Some(KbParams {
+                holder: &attacker,
+                aud: SELF_REVOKE_AUDIENCE.to_string(),
+                nonce: challenge.clone(),
+                iat: now(),
+            }),
+        )
+        .expect("present");
+
+    let resp = http
+        .post(format!("{}/revocations/revoke-mine", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({ "presentation": presentation, "challenge": challenge }))
+        .send()
+        .await
+        .expect("revoke-mine");
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "a forged proof of possession must be rejected"
+    );
+
+    // ...and the credential is NOT revoked.
+    let chk: Value = http
+        .post(format!("{}/revocations/check", verify_url()))
+        .bearer_auth(api_key())
+        .json(&json!({ "credentialId": cred_id }))
+        .send()
+        .await
+        .expect("check")
+        .json()
+        .await
+        .expect("check json");
+    assert_ne!(
+        chk["status"], "revoked",
+        "a credential must not be revoked by a forged proof"
     );
 }

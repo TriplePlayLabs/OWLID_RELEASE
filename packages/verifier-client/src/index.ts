@@ -164,26 +164,43 @@ export interface PredicateStatusEvent {
  * when the sidecar emits a terminal status and closes the stream.
  */
 export async function* streamPredicateStatus(
-  txId: string,
+  jobId: string,
   opts?: VerifierClientOptions & { signal?: AbortSignal },
 ): AsyncGenerator<PredicateStatusEvent> {
   const apiKey = opts?.apiKey ?? getApiKey()
   const basePath = getVerificationUrl(opts?.basePath)
-  const url = `${basePath}/predicates/tx/${encodeURIComponent(txId)}/events`
+  const url = `${basePath}/predicates/job/${encodeURIComponent(jobId)}/events`
   const TERMINAL = new Set([
     'SucceedEntirely',
     'FailEntirely',
     'FailFallible',
     'balance-failed',
     'submit-failed',
+    // `unknown` means the server couldn't reach a determinate state
+    // (e.g. job-id wasn't in the in-memory map AND the chain didn't
+    // observe the tx). Treat as terminal so a misrouted id can't
+    // spin a reconnect loop forever — without this guard a sidecar
+    // restart that lost the in-memory `relayJobs` table produced
+    // ~30 reconnects per second from every active holder.
+    'unknown',
   ])
   // Back-off schedule used after every transport-level disconnect.
   // Caps at ~30 s so a sustained outage doesn't burn the client; the
   // outer caller can supply its own abort signal for a hard cap.
   const backoff = [1000, 2000, 4000, 8000, 16000, 30000]
+  // Hard cap on reconnects per call. Defence against any server-side
+  // bug that closes the stream without a terminal status — the
+  // signal/abort path is still the primary way to stop early, but
+  // this prevents a runaway loop if the abort signal is missing.
+  const MAX_RECONNECTS = 30
   let attempt = 0
   let seenTerminal = false
   while (!seenTerminal) {
+    if (attempt >= MAX_RECONNECTS) {
+      throw new Error(
+        `predicate status stream gave up after ${MAX_RECONNECTS} reconnects without a terminal status`,
+      )
+    }
     if (opts?.signal?.aborted) return
     let res: Response
     try {
@@ -217,9 +234,12 @@ export async function* streamPredicateStatus(
       attempt++
       continue
     }
-    // Successful connection — reset back-off counter so the next
-    // disconnect retries from the front of the schedule again.
-    attempt = 0
+    // NOTE: do NOT reset `attempt` merely on a 200. A degraded sidecar
+    // (mid-resync: `getClient()` throws) returns 200 then immediately emits
+    // an `error` frame and closes — if that reset the counter, the cap below
+    // would never bite and the client would reconnect ~1/s forever (the
+    // observed 375-request storm). Reset only on REAL progress (a yielded
+    // status event), so empty/error closes accumulate toward MAX_RECONNECTS.
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
@@ -237,6 +257,7 @@ export async function* streamPredicateStatus(
             try {
               const ev = JSON.parse(frame.data) as PredicateStatusEvent
               yield ev
+              attempt = 0 // real progress — reset the reconnect budget
               if (TERMINAL.has(ev.status)) seenTerminal = true
             } catch {
               /* ignore malformed frame */
@@ -244,14 +265,23 @@ export async function* streamPredicateStatus(
           }
           // `ping` keep-alives + unknown event names are ignored.
           if (frame.event === 'error') {
+            // A server-side error frame means the sidecar hit an error
+            // (e.g. MidnightClient not connected during resync). Surface it
+            // to the caller and STOP — reconnecting against a persistently
+            // degraded sidecar just storms. The caller (orchestrator) treats
+            // a thrown status stream as a failed predicate and moves on.
             throw new Error(frame.data || 'sidecar emitted error')
           }
         }
       }
     } catch (e) {
       if (opts?.signal?.aborted) return
-      // Stream errored mid-flight (Cloud Run teardown, browser net
-      // change, ERR_NETWORK_CHANGED). Loop reconnects from the top.
+      // A server `error` frame (vs a transport drop) is terminal — don't
+      // reconnect into a degraded sidecar. Transport drops mid-stream fall
+      // through to the capped backoff-reconnect below.
+      if (e instanceof Error && /sidecar emitted error/.test(e.message)) throw e
+      // Transport-level drop (Cloud Run teardown, ERR_NETWORK_CHANGED):
+      // loop reconnects from the top, under the MAX_RECONNECTS cap.
     } finally {
       try {
         await reader.cancel()
@@ -260,8 +290,13 @@ export async function* streamPredicateStatus(
       }
     }
     if (seenTerminal) return
-    // EOF without terminal status — reconnect immediately. The
-    // sidecar will replay the current job snapshot on first event.
+    // EOF without terminal status — reconnect, BUT with backoff to
+    // avoid hammering when the server keeps returning fast
+    // non-terminal responses (e.g. job-not-found edge case the
+    // server should have collapsed itself but might miss for new
+    // failure modes).
+    await sleep(backoff[Math.min(attempt, backoff.length - 1)])
+    attempt++
   }
 }
 

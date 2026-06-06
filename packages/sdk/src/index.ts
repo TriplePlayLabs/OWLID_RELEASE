@@ -41,12 +41,14 @@ export { respondToPresentation, presentSdJwtVc, type RespondOptions } from './pr
 export {
   OwlWallet,
   matchDcqlAgainst,
+  prewarmCredentialAttestations,
   type OwlWalletOptions,
   type WalletPresentRequest,
   type WalletPresentResult,
   type DcqlMatchEntry,
   type DcqlMatchSummary,
-  type UnwrapHolderKeyFn,
+  type OpenHolderKeyFn,
+  type PrewarmOptions,
 } from './wallet.js'
 
 // Progress signal surfaced from `OwlWallet.present` so the holder app's
@@ -127,8 +129,12 @@ export {
   authenticate,
   isWebAuthnSupported,
   isPlatformAuthenticatorAvailable,
-  wrapHolderKey,
-  unwrapHolderKey,
+  sealHolderKey,
+  sealHolderKeys,
+  openHolderKey,
+  sealRecoveryBundle,
+  openRecoveryBundle,
+  openRecoveryBundles,
 } from './webauthn.js'
 
 // =============================================================================

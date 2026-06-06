@@ -20,29 +20,33 @@ import { mapValues } from '../runtime.js'
  */
 export interface RelayProofResponse {
   /**
-   * Submission status — `submitted` for fire-and-forget relays, or
-   * a terminal finalization status (`SucceedEntirely` |
-   * `FailEntirely` | `FailFallible`) when the sidecar awaited the
-   * finalization itself. Holder polls
-   * `GET /predicates/tx/{txId}/status` to await finalization.
+   * Sidecar-local job id. The chain tx-id is not known at relay
+   * time (the SDK assigns it after `submitTx` returns). Holder
+   * opens `GET /predicates/job/{jobId}/events` to follow the
+   * relay-job lifecycle (queued → balancing → submitting →
+   * submitted), at which point the SSE stream switches to chain
+   * finalization via the indexer.
+   * @type {string}
+   * @memberof RelayProofResponse
+   */
+  jobId: string
+  /**
+   * Submission status at relay time — `queued` for the standard
+   * fire-and-forget path. Terminal statuses arrive over the
+   * `/predicates/job/{jobId}/events` SSE stream, not on this
+   * response.
    * @type {string}
    * @memberof RelayProofResponse
    */
   status: string
-  /**
-   * Chain transaction id.
-   * @type {string}
-   * @memberof RelayProofResponse
-   */
-  txId: string
 }
 
 /**
  * Check if a given object implements the RelayProofResponse interface.
  */
 export function instanceOfRelayProofResponse(value: object): value is RelayProofResponse {
+  if (!('jobId' in value) || value['jobId'] === undefined) return false
   if (!('status' in value) || value['status'] === undefined) return false
-  if (!('txId' in value) || value['txId'] === undefined) return false
   return true
 }
 
@@ -58,8 +62,8 @@ export function RelayProofResponseFromJSONTyped(
     return json
   }
   return {
+    jobId: json['jobId'],
     status: json['status'],
-    txId: json['txId'],
   }
 }
 
@@ -76,7 +80,7 @@ export function RelayProofResponseToJSONTyped(
   }
 
   return {
+    jobId: value['jobId'],
     status: value['status'],
-    txId: value['txId'],
   }
 }

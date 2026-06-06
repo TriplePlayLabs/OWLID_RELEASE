@@ -25,7 +25,11 @@
  */
 export interface StoredWebAuthnCredential {
   credentialId: string
-  publicKey: string
+  /** COSE public key is known after local registration. A synced
+   *  discoverable-passkey repair can recover the credential id but not
+   *  attestation-time public-key bytes, and the wallet only needs the id
+   *  for PRF unlocks after registration. */
+  publicKey?: string
   counter: number
   transports: string[]
 }
@@ -200,6 +204,21 @@ export class CredentialStorageManager {
 
   async saveWebAuthnCredential(cred: StoredWebAuthnCredential): Promise<void> {
     await this.storage.setItem(STORAGE_KEYS.WEBAUTHN_CREDENTIAL, JSON.stringify(cred))
+  }
+
+  async saveSelectedWebAuthnCredential(
+    credentialId: string,
+    transports: string[] = ['internal', 'hybrid'],
+  ): Promise<StoredWebAuthnCredential> {
+    const existing = await this.loadWebAuthnCredential()
+    const next: StoredWebAuthnCredential = {
+      credentialId,
+      publicKey: existing?.publicKey,
+      counter: existing?.counter ?? 0,
+      transports: existing?.transports?.length ? existing.transports : transports,
+    }
+    await this.saveWebAuthnCredential(next)
+    return next
   }
 
   async loadWebAuthnCredential(): Promise<StoredWebAuthnCredential | null> {

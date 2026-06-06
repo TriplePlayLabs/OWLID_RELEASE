@@ -228,7 +228,9 @@ pub async fn openid4vp_response(
     let _ = req.presentation_submission;
 
     let query = match state.presentations.get_request_data(&req.state).await {
-        Some(data) => data.dcql_query.unwrap_or_else(|| dcql::permissive_query(&req.vp_token)),
+        Some(data) => data
+            .dcql_query
+            .unwrap_or_else(|| dcql::permissive_query(&req.vp_token)),
         None => dcql::permissive_query(&req.vp_token),
     };
     let audience = state
@@ -314,11 +316,7 @@ pub struct VerifyDcqlResponse {
 /// fetch the credential's Status List Token, verify its JWS under the
 /// issuer key, and read the credential's bit. Errors propagate so the
 /// caller can decide (here: non-blocking).
-async fn status_list_revoked(
-    uri: &str,
-    issuer_pk: &PublicKey,
-    idx: u64,
-) -> Result<bool, String> {
+async fn status_list_revoked(uri: &str, issuer_pk: &PublicKey, idx: u64) -> Result<bool, String> {
     let jwt = reqwest::get(uri)
         .await
         .map_err(|e| format!("fetch {uri}: {e}"))?
@@ -340,6 +338,9 @@ struct PresentationOutcome {
     response: VerifyResponse,
     vct: Option<String>,
     credential_id: Option<String>,
+    /// Trusted issuer key (hex) that signed the verified credential —
+    /// needed to revoke it on-chain without the caller supplying it.
+    issuer_public_key: Option<String>,
 }
 
 /// Run the full SD-JWT VC verification chain for one presentation:
@@ -366,6 +367,7 @@ async fn verify_one_presentation(
         },
         vct: None,
         credential_id: None,
+        issuer_public_key: None,
     };
 
     let iss = match sd_jwt::peek_iss(presentation) {
@@ -410,20 +412,12 @@ async fn verify_one_presentation(
                 // continuing the verify path.
             }
             Ok(false) => {
-                observability::record_token_verified(
-                    false,
-                    verify_start.elapsed().as_secs_f64(),
-                );
+                observability::record_token_verified(false, verify_start.elapsed().as_secs_f64());
                 return Ok(fail(format!("Untrusted issuer: {iss}")));
             }
             Err(e) => {
-                observability::record_token_verified(
-                    false,
-                    verify_start.elapsed().as_secs_f64(),
-                );
-                return Ok(fail(format!(
-                    "Chain trust check failed for {iss}: {e}"
-                )));
+                observability::record_token_verified(false, verify_start.elapsed().as_secs_f64());
+                return Ok(fail(format!("Chain trust check failed for {iss}: {e}")));
             }
         }
     }
@@ -489,10 +483,7 @@ async fn verify_one_presentation(
     if let Some(ref st) = verified.status {
         match status_list_revoked(&st.uri, &issuer_pk, st.idx).await {
             Ok(true) => {
-                observability::record_token_verified(
-                    false,
-                    verify_start.elapsed().as_secs_f64(),
-                );
+                observability::record_token_verified(false, verify_start.elapsed().as_secs_f64());
                 return Ok(fail("Credential revoked (status list)".to_string()));
             }
             Ok(false) => {}
@@ -524,6 +515,7 @@ async fn verify_one_presentation(
         },
         vct: Some(verified.vct),
         credential_id: Some(cred_id),
+        issuer_public_key: Some(issuer_hex),
     })
 }
 
@@ -548,29 +540,28 @@ pub async fn verify_dcql(
     State(state): State<AppState>,
     Json(request): Json<VerifyDcqlRequest>,
 ) -> Result<Json<VerifyDcqlResponse>, ApiError> {
-    let fail_all = |e: String,
-                    vp_token: &HashMap<String, Vec<String>>|
-     -> Json<VerifyDcqlResponse> {
-        let per_credential = vp_token
-            .keys()
-            .map(|k| {
-                (
-                    k.clone(),
-                    VerifyResponse {
-                        valid: false,
-                        error: Some(e.clone()),
-                        subjects: None,
-                    },
-                )
+    let fail_all =
+        |e: String, vp_token: &HashMap<String, Vec<String>>| -> Json<VerifyDcqlResponse> {
+            let per_credential = vp_token
+                .keys()
+                .map(|k| {
+                    (
+                        k.clone(),
+                        VerifyResponse {
+                            valid: false,
+                            error: Some(e.clone()),
+                            subjects: None,
+                        },
+                    )
+                })
+                .collect();
+            Json(VerifyDcqlResponse {
+                valid: false,
+                per_credential,
+                subjects: serde_json::json!({}),
+                error: Some(e),
             })
-            .collect();
-        Json(VerifyDcqlResponse {
-            valid: false,
-            per_credential,
-            subjects: serde_json::json!({}),
-            error: Some(e),
-        })
-    };
+        };
 
     let challenge = request.challenge.clone();
     let challenge_ok = match state.challenges.validate_server_challenge(&challenge).await {
@@ -651,7 +642,6 @@ pub async fn verify_dcql(
         if response.valid {
             if let Some(q) = query_by_id.get(cred_id) {
                 let vct = outcome.vct.as_deref().unwrap_or_default();
-                let attest_cache = state.attestations.cache();
                 // Midnight-only policy: every DCQL claim must resolve to
                 // a per-kind Midnight predicate attestation (one Compact
                 // contract per kind, single SSE-mirrored set). The
@@ -672,16 +662,34 @@ pub async fn verify_dcql(
                     .as_deref()
                     .or(request.audience.as_deref())
                     .unwrap_or("");
-                if let Err(e) =
-                    dcql::check_credential_query(q, vct, &cred_id_hex, verifier_id, |k| {
-                        attest_cache.is_attested(k)
-                    })
-                {
-                    response = VerifyResponse {
-                        valid: false,
-                        error: Some(e),
-                        subjects: None,
-                    };
+                match dcql::derive_attest_key(q, vct, &cred_id_hex, verifier_id) {
+                    Ok(ak) => {
+                        // DB-first (SSE-mirrored, hot path). On a miss fall
+                        // through to an authoritative on-chain read: the
+                        // mirror is eventually-consistent and lags a
+                        // freshly-landed attestation, so a miss may be
+                        // staleness rather than absence.
+                        let attested = state.attestations.is_attested(&ak.key_hex)
+                            || attestation_on_chain(&state, ak.kind, &ak.key_hex).await;
+                        if !attested {
+                            response = VerifyResponse {
+                                valid: false,
+                                error: Some(format!(
+                                    "DCQL credential {} not attested on Midnight (per-kind \
+                                     predicate attestation Set membership miss)",
+                                    q.id
+                                )),
+                                subjects: None,
+                            };
+                        }
+                    }
+                    Err(e) => {
+                        response = VerifyResponse {
+                            valid: false,
+                            error: Some(e),
+                            subjects: None,
+                        };
+                    }
                 }
             }
         }
@@ -764,9 +772,7 @@ pub async fn add_trusted_issuer(
                 .midnight
                 .register_issuer(&request.public_key, &request.name)
                 .await
-                .map_err(|e| {
-                    ApiError::Internal(format!("Chain register_issuer failed: {e}"))
-                })?;
+                .map_err(|e| ApiError::Internal(format!("Chain register_issuer failed: {e}")))?;
         }
         Err(e) => {
             return Err(ApiError::Internal(format!(
@@ -922,6 +928,152 @@ pub async fn revoke_credential(
         "success": true,
         "message": "Credential revoked successfully"
     })))
+}
+
+/// Audience the holder's KB-JWT must carry for self-revocation. A presentation
+/// built for a verifier (different `aud`) therefore can't be replayed here.
+pub const SELF_REVOKE_AUDIENCE: &str = "owlid:revocation:self";
+
+/// Holder self-revocation request — a presentation of the credential to
+/// revoke (issuer JWS + KB-JWT proof-of-possession) bound to a fresh server
+/// `challenge` and the self-revoke audience.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeOwnCredentialRequest {
+    /// SD-JWT VC presentation: `<issuer-jwt>~<disclosures…>~<kb-jwt>`.
+    presentation: String,
+    /// Challenge from `GET /verify/challenge` — also the KB-JWT `nonce`.
+    challenge: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeOwnCredentialResponse {
+    revoked: bool,
+    credential_id: String,
+    /// True when the credential was already revoked (idempotent no-op).
+    already_revoked: bool,
+}
+
+/// Revoke your OWN credential by proving possession of its holder key.
+///
+/// Unlike `/revocations/revoke` (admin), this needs no admin key. The holder
+/// presents the credential with a KB-JWT signed by the `cnf` holder key, bound
+/// to a fresh server challenge + the self-revoke audience. We verify the issuer
+/// signature (which binds `cnf` ↔ `credential_id`) and the KB-JWT (proof of
+/// possession), then revoke that single credential on-chain with the ISSUER
+/// key. A holder can therefore only ever revoke a credential they can prove
+/// they hold — never someone else's.
+#[utoipa::path(
+    post,
+    path = "/revocations/revoke-mine",
+    request_body = RevokeOwnCredentialRequest,
+    responses(
+        (status = 200, description = "Credential revoked", body = RevokeOwnCredentialResponse),
+        (status = 400, description = "Invalid challenge or proof of possession"),
+    ),
+    tag = "revocations"
+)]
+pub async fn revoke_own_credential(
+    State(state): State<AppState>,
+    Json(request): Json<RevokeOwnCredentialRequest>,
+) -> Result<Json<RevokeOwnCredentialResponse>, ApiError> {
+    // Single-use, time-boxed challenge (consumed atomically — replay-safe).
+    let challenge_ok = state
+        .challenges
+        .validate_server_challenge(&request.challenge)
+        .await?;
+    if !challenge_ok {
+        return Err(ApiError::InvalidInput(
+            "Invalid or expired challenge. Get a fresh one from GET /verify/challenge.".to_string(),
+        ));
+    }
+
+    // Proof of possession: verify issuer JWS + KB-JWT bound to (challenge,
+    // self-revoke audience).
+    let outcome = verify_one_presentation(
+        &state,
+        &request.challenge,
+        Some(SELF_REVOKE_AUDIENCE),
+        &request.presentation,
+    )
+    .await?;
+
+    if !outcome.response.valid {
+        let err = outcome
+            .response
+            .error
+            .unwrap_or_else(|| "rejected".to_string());
+        // Already-revoked is an idempotent success, not a failure.
+        if err.to_lowercase().contains("revoked") {
+            return Ok(Json(RevokeOwnCredentialResponse {
+                revoked: true,
+                credential_id: sd_jwt::credential_id(&request.presentation),
+                already_revoked: true,
+            }));
+        }
+        return Err(ApiError::InvalidInput(format!(
+            "Self-revocation proof rejected: {err}"
+        )));
+    }
+
+    let cred_id = outcome
+        .credential_id
+        .ok_or_else(|| ApiError::Internal("verified presentation missing credential_id".into()))?;
+    let issuer_hex = outcome
+        .issuer_public_key
+        .ok_or_else(|| ApiError::Internal("verified presentation missing issuer key".into()))?;
+    let reason = request
+        .reason
+        .clone()
+        .unwrap_or_else(|| "holder self-revocation".to_string());
+
+    // Chain is the source of truth — write there FIRST; mirror on success.
+    state
+        .midnight
+        .revoke_credential(&cred_id, &issuer_hex, &reason)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Chain revoke failed: {e}")))?;
+
+    state
+        .revocations
+        .revoke(
+            cred_id.clone(),
+            issuer_hex.clone(),
+            Some(reason.clone()),
+            None,
+        )
+        .await?;
+
+    let _ = state
+        .audit
+        .log_event(
+            "credential_self_revoked".to_string(),
+            "revocation".to_string(),
+            cred_id.clone(),
+            Some("holder".to_string()),
+            &format!("Holder self-revoked credential: {cred_id}"),
+            serde_json::json!({ "reason": reason }),
+        )
+        .await;
+
+    observability::record_credential_revoked();
+
+    state.broadcaster.broadcast(crate::ws::RevocationEvent {
+        event: "revoked".to_string(),
+        credential_id: cred_id.clone(),
+        issuer_public_key: issuer_hex,
+        timestamp: chrono::Utc::now().timestamp(),
+        reason: Some(reason),
+    });
+
+    Ok(Json(RevokeOwnCredentialResponse {
+        revoked: true,
+        credential_id: cred_id,
+        already_revoked: false,
+    }))
 }
 
 /// Suspend a credential
@@ -1092,7 +1244,11 @@ pub async fn check_revocation(
     let status = match cache_status {
         Some(s) if s == "revoked" || s == "suspended" => s,
         _ => {
-            match state.midnight.is_credential_revoked(&request.credential_id).await {
+            match state
+                .midnight
+                .is_credential_revoked(&request.credential_id)
+                .await
+            {
                 Ok(true) => {
                     // Catch-up: sync the chain truth into the local cache so
                     // the verify hot path picks it up.
@@ -1174,11 +1330,55 @@ pub struct CheckPredicateResponse {
     pub attested: bool,
 }
 
+/// Map a verifier-side predicate name (`/predicates/attested` request)
+/// to the sidecar predicate-kind URL segment. `email_verified → email`
+/// and `unique_personhood → personhood`; the rest are identical.
+fn predicate_sidecar_kind(predicate: &str) -> Option<&'static str> {
+    Some(match predicate {
+        "age" => "age",
+        "kyc" => "kyc",
+        "nationality" => "nationality",
+        "residency" => "residency",
+        "age_range" => "age_range",
+        "email_verified" => "email",
+        "unique_personhood" => "personhood",
+        _ => return None,
+    })
+}
+
+/// Read-through to the authoritative on-chain attestation set, used on a
+/// local-cache miss. The SSE-mirrored set is eventually-consistent, so a
+/// freshly-landed attestation can be on chain before the mirror records
+/// it — a plain cache miss would then wrongly reject a valid
+/// presentation. On a chain hit we backfill the cache so the next verify
+/// takes the hot path. Chain/transport errors fail closed (treated as
+/// not-attested): the caller already missed the cache, so this only ever
+/// upgrades a miss to a hit, never the reverse.
+async fn attestation_on_chain(state: &AppState, kind: &str, key_hex: &str) -> bool {
+    match state.midnight.is_attested_on_chain(kind, key_hex).await {
+        Ok(true) => {
+            if let Err(e) = state.attestations.record(key_hex.to_string()).await {
+                tracing::warn!("attestation read-through backfill failed for {key_hex}: {e}");
+            }
+            tracing::info!(
+                "attestation {key_hex} ({kind}) confirmed via chain read-through after cache miss"
+            );
+            true
+        }
+        Ok(false) => false,
+        Err(e) => {
+            tracing::warn!("attestation chain read-through failed for {key_hex} ({kind}): {e}");
+            false
+        }
+    }
+}
+
 /// Recompute the Midnight attestation key from the credential's
 /// issuer-signed credential_id + requested predicate (binding it to
-/// *this* credential), then check membership in the SSE-mirrored set.
-/// No ZK proof verified inline — the Midnight node already verified it
-/// in consensus when the attest tx was processed.
+/// *this* credential), then check membership: local SSE-mirrored set
+/// first, then an authoritative on-chain read-through on a miss. No ZK
+/// proof verified inline — the Midnight node already verified it in
+/// consensus when the attest tx was processed.
 #[utoipa::path(
     post,
     path = "/predicates/attested",
@@ -1231,12 +1431,16 @@ pub async fn check_predicate_attested(
                     attestation::COUNTRY_SET_SLOTS,
                 )));
             }
-            let verifier_id = req.verifier_id.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
-                ApiError::InvalidInput(
-                    "verifierId required for nationality (per-verifier salt for setHash)"
-                        .to_string(),
-                )
-            })?;
+            let verifier_id = req
+                .verifier_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    ApiError::InvalidInput(
+                        "verifierId required for nationality (per-verifier salt for setHash)"
+                            .to_string(),
+                    )
+                })?;
             let refs: Vec<&str> = codes.iter().map(String::as_str).collect();
             attestation::nationality_key(&cred_id, verifier_id, &refs)
         }
@@ -1250,12 +1454,16 @@ pub async fn check_predicate_attested(
                     attestation::COUNTRY_SET_SLOTS,
                 )));
             }
-            let verifier_id = req.verifier_id.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
-                ApiError::InvalidInput(
-                    "verifierId required for residency (per-verifier salt for setHash)"
-                        .to_string(),
-                )
-            })?;
+            let verifier_id = req
+                .verifier_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    ApiError::InvalidInput(
+                        "verifierId required for residency (per-verifier salt for setHash)"
+                            .to_string(),
+                    )
+                })?;
             let refs: Vec<&str> = codes.iter().map(String::as_str).collect();
             attestation::residency_key(&cred_id, verifier_id, &refs)
         }
@@ -1287,7 +1495,13 @@ pub async fn check_predicate_attested(
         }
     };
     let key_hex = hex::encode(key);
-    let attested = state.attestations.is_attested(&key_hex);
+    // DB-first; on a miss read the authoritative on-chain set so a fresh
+    // attestation not yet mirrored over SSE isn't reported as absent.
+    let attested = state.attestations.is_attested(&key_hex)
+        || match predicate_sidecar_kind(&req.predicate) {
+            Some(kind) => attestation_on_chain(&state, kind, &key_hex).await,
+            None => false,
+        };
 
     Ok(Json(CheckPredicateResponse {
         predicate: req.predicate,
@@ -1348,10 +1562,13 @@ pub async fn get_predicate_snapshot(
 ) -> Result<Json<PredicateSnapshotResponse>, ApiError> {
     validate_predicate_kind(&kind)?;
     let sidecar = &state.midnight;
-    let s = sidecar
-        .predicate_snapshot(&kind)
-        .await
-        .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+    let s = sidecar.predicate_snapshot(&kind).await.map_err(|e| {
+        // The holder cannot present a predicate whose snapshot fails. Log the
+        // downstream reason (sidecar/indexer) with the kind so a recurring
+        // failure is traceable from logs without reproducing the request.
+        tracing::warn!(kind = %kind, error = %e, "predicate snapshot failed");
+        ApiError::InvalidInput(e.to_string())
+    })?;
     Ok(Json(PredicateSnapshotResponse {
         address: s.address,
         zswap_chain_state: s.zswap_chain_state,
@@ -1371,13 +1588,17 @@ pub struct RelayProofRequest {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayProofResponse {
-    /// Chain transaction id.
-    pub tx_id: String,
-    /// Submission status — `submitted` for fire-and-forget relays, or
-    /// a terminal finalization status (`SucceedEntirely` |
-    /// `FailEntirely` | `FailFallible`) when the sidecar awaited the
-    /// finalization itself. Holder polls
-    /// `GET /predicates/tx/{txId}/status` to await finalization.
+    /// Sidecar-local job id. The chain tx-id is not known at relay
+    /// time (the SDK assigns it after `submitTx` returns). Holder
+    /// opens `GET /predicates/job/{jobId}/events` to follow the
+    /// relay-job lifecycle (queued → balancing → submitting →
+    /// submitted), at which point the SSE stream switches to chain
+    /// finalization via the indexer.
+    pub job_id: String,
+    /// Submission status at relay time — `queued` for the standard
+    /// fire-and-forget path. Terminal statuses arrive over the
+    /// `/predicates/job/{jobId}/events` SSE stream, not on this
+    /// response.
     pub status: String,
 }
 
@@ -1388,7 +1609,7 @@ pub struct TxStatusResponse {
     /// Latest known phase. One of: `queued | balancing | submitting |
     /// submitted | balance-failed | submit-failed | SucceedEntirely |
     /// FailEntirely | FailFallible`. The system uses SSE end-to-end for
-    /// these updates — see `GET /predicates/tx/{tx_id}/events`.
+    /// these updates — see `GET /predicates/job/{job_id}/events`.
     pub status: String,
 }
 
@@ -1420,25 +1641,28 @@ pub async fn relay_predicate_proof(
     let r = sidecar
         .relay_proven_tx(&kind, &req.proven_tx)
         .await
-        .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        .map_err(|e| {
+            tracing::warn!(kind = %kind, error = %e, "predicate relay submit failed");
+            ApiError::InvalidInput(e.to_string())
+        })?;
     Ok(Json(RelayProofResponse {
-        tx_id: r.tx_id.unwrap_or_default(),
+        job_id: r.job_id.unwrap_or_default(),
         status: r.status.unwrap_or_else(|| "unknown".to_string()),
     }))
 }
 
-/// SSE stream of phase transitions for a relay job (or raw chain tx).
-/// Forwards the sidecar's upstream `GET /api/predicates/tx/{id}/events`
-/// byte-for-byte to the holder so the in-process eventBus pushes reach
-/// the browser as `text/event-stream` events. The whole system uses
-/// exactly two notification transports end-to-end: WS for two-way
-/// channels (presentation sockets) and SSE for server→client pushes.
-/// No polling, no long-polling, no rapid-fire HTTP.
+/// SSE stream of phase transitions for a relay job. Drives via the
+/// sidecar's in-process eventBus through `queued → balancing →
+/// submitting → submitted`, then switches to chain-side finalization
+/// via `watchForTxData`. Forwards the sidecar's upstream
+/// `GET /api/predicates/job/{jobId}/events` byte-for-byte to the
+/// holder; the system uses exactly two notification transports
+/// end-to-end (WS for two-way channels, SSE for server→client pushes).
 #[utoipa::path(
     get,
-    path = "/predicates/tx/{tx_id}/events",
+    path = "/predicates/job/{job_id}/events",
     params(
-        ("tx_id" = String, Path, description = "Midnight tx id or relay job id (returned by /predicates/{kind}/relay)"),
+        ("job_id" = String, Path, description = "Relay job id returned by /predicates/{kind}/relay"),
     ),
     responses(
         (status = 200, description = "SSE stream — `event: status` lines with `{txId, status, error?}` JSON, terminated by a terminal status (`SucceedEntirely | FailEntirely | FailFallible | balance-failed | submit-failed`). Periodic `event: ping` lines keep the connection alive."),
@@ -1446,33 +1670,32 @@ pub async fn relay_predicate_proof(
     ),
     tag = "predicates"
 )]
-pub async fn stream_predicate_tx_events(
+pub async fn stream_predicate_job_events(
     State(state): State<AppState>,
-    Path(tx_id): Path<String>,
+    Path(job_id): Path<String>,
 ) -> axum::response::Response {
-    use axum::response::sse::{KeepAlive, Sse};
     let sidecar = &state.midnight;
-    let upstream = match sidecar.open_tx_events_stream(&tx_id).await {
+    let upstream = match sidecar.open_job_events_stream(&job_id).await {
         Ok(u) => u,
         Err(e) => return ApiError::InvalidInput(e.to_string()).into_response(),
     };
-    // Parse the upstream sidecar SSE byte stream into framed
-    // `axum::response::sse::Event` values so axum emits properly
-    // chunked, individually flushed SSE frames to the client. The
-    // raw byte-pipe approach (`Body::from_stream`) was coalesced by
-    // Cloud Run's HTTP/2 frontend, so the first sidecar event would
-    // reach the browser and subsequent ones got buffered until the
-    // server flushed on stream close — making the holder UI appear
-    // stuck on the first phase even though the chain had finalized.
+    forward_sse(upstream).into_response()
+}
+
+/// Wrap an upstream `reqwest::Response` carrying an SSE byte stream as
+/// an axum SSE response. Parses raw bytes into framed
+/// `axum::response::sse::Event` values so axum emits properly chunked,
+/// individually flushed SSE frames — the raw byte-pipe approach
+/// (`Body::from_stream`) was coalesced by Cloud Run's HTTP/2 frontend.
+fn forward_sse(
+    upstream: reqwest::Response,
+) -> axum::response::sse::Sse<
+    impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
+    use axum::response::sse::{KeepAlive, Sse};
     let byte_stream = upstream.bytes_stream();
     let event_stream = parse_sse_byte_stream(byte_stream);
-    // `KeepAlive::default()` writes an SSE comment line every 15 s if
-    // no real event has been sent. Layered on top of the sidecar's
-    // own 10 s `event: ping` so the holder's connection survives even
-    // if the sidecar→verification leg has a transient stall.
-    Sse::new(event_stream)
-        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
-        .into_response()
+    Sse::new(event_stream).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
 }
 
 /// Convert a stream of raw bytes carrying SSE frames (the wire shape

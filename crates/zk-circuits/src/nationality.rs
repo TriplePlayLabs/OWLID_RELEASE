@@ -13,7 +13,7 @@ use ark_r1cs_std::{fields::fp::FpVar, prelude::*};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_snark::SNARK;
-use ark_std::rand::{rngs::OsRng, rngs::StdRng, SeedableRng};
+use ark_std::rand::{SeedableRng, rngs::OsRng, rngs::StdRng};
 use sha2::{Digest, Sha256};
 
 use crate::error::ZkError;
@@ -108,11 +108,14 @@ pub fn setup() -> Result<(ProvingKey<Bls12_381>, PreparedVerifyingKey<Bls12_381>
         merkle_root: None,
     };
 
-    let (pk, vk) = Groth16::<Bls12_381>::circuit_specific_setup(circuit, &mut StdRng::seed_from_u64(0x0C3D_0003))
-        .map_err(|e| ZkError::SetupFailed(e.to_string()))?;
+    let (pk, vk) = Groth16::<Bls12_381>::circuit_specific_setup(
+        circuit,
+        &mut StdRng::seed_from_u64(0x0C3D_0003),
+    )
+    .map_err(|e| ZkError::SetupFailed(e.to_string()))?;
 
-    let pvk = Groth16::<Bls12_381>::process_vk(&vk)
-        .map_err(|e| ZkError::SetupFailed(e.to_string()))?;
+    let pvk =
+        Groth16::<Bls12_381>::process_vk(&vk).map_err(|e| ZkError::SetupFailed(e.to_string()))?;
 
     Ok((pk, pvk))
 }
@@ -176,12 +179,9 @@ pub fn prove(
 }
 
 /// Verify a nationality set membership proof
-pub fn verify(
-    pvk: &PreparedVerifyingKey<Bls12_381>,
-    zk_proof: &ZkProof,
-) -> Result<bool, ZkError> {
-    let proof_bytes =
-        hex::decode(&zk_proof.proof_bytes).map_err(|e| ZkError::VerificationFailed(e.to_string()))?;
+pub fn verify(pvk: &PreparedVerifyingKey<Bls12_381>, zk_proof: &ZkProof) -> Result<bool, ZkError> {
+    let proof_bytes = hex::decode(&zk_proof.proof_bytes)
+        .map_err(|e| ZkError::VerificationFailed(e.to_string()))?;
 
     let proof: ark_groth16::Proof<Bls12_381> =
         CanonicalDeserialize::deserialize_compressed(&proof_bytes[..])
@@ -223,8 +223,8 @@ mod tests {
         let pvk = get_pvk(&ZkProofType::Nationality);
 
         for input in ["NLD", "Netherlands", "Dutch", "the netherlands"] {
-            let proof = prove(pk, input, "eu")
-                .unwrap_or_else(|e| panic!("prove({}) failed: {}", input, e));
+            let proof =
+                prove(pk, input, "eu").unwrap_or_else(|e| panic!("prove({}) failed: {}", input, e));
             assert!(verify(pvk, &proof).unwrap(), "{} should verify", input);
         }
     }
@@ -234,7 +234,11 @@ mod tests {
         let pk = get_pk(&ZkProofType::Nationality);
 
         for input in ["US", "USA", "American"] {
-            assert!(prove(pk, input, "eu").is_err(), "{} must not prove EU", input);
+            assert!(
+                prove(pk, input, "eu").is_err(),
+                "{} must not prove EU",
+                input
+            );
         }
     }
 

@@ -36,14 +36,12 @@ impl AttributeType {
             AttributeType::Integer => value.is_i64() || value.is_u64(),
             AttributeType::Number => value.is_number(),
             AttributeType::Boolean => value.is_boolean(),
-            AttributeType::Date => {
-                value.as_str().map_or(false, |s| {
-                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
-                })
-            }
-            AttributeType::StringEnum(allowed) => {
-                value.as_str().map_or(false, |s| allowed.iter().any(|a| a == s))
-            }
+            AttributeType::Date => value
+                .as_str()
+                .is_some_and(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()),
+            AttributeType::StringEnum(allowed) => value
+                .as_str()
+                .is_some_and(|s| allowed.iter().any(|a| a == s)),
             AttributeType::Array => value.is_array(),
             AttributeType::Object => value.is_object(),
             AttributeType::Any => true,

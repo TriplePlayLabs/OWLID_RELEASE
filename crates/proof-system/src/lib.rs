@@ -1,3 +1,7 @@
+// Intentional `+`-connector prose in doc comments trips clippy's markdown
+// list heuristic; the lint is cosmetic (rustdoc rendering only).
+#![allow(clippy::doc_lazy_continuation)]
+
 pub mod attestation;
 pub mod error;
 pub mod predicate_attestation;

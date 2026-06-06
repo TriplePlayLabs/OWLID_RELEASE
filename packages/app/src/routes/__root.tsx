@@ -9,6 +9,7 @@ import { ModalsPortal } from '@owlid/ui/modal'
 import { Toaster } from 'sonner'
 import { AppShell } from '~/components/AppShell'
 import { HydrationGate } from '~/components/LoadingScreen'
+import { devtoolsEnabled } from '~/lib/dev'
 
 import appCss from '../styles.css?url'
 
@@ -162,18 +163,22 @@ function RootDocument({ children }: { children: React.ReactNode }) {
             <Toaster />
             <HydrationGate>{children}</HydrationGate>
             <ModalsPortal />
-            <ReactQueryDevtools initialIsOpen={false} />
-            <TanStackDevtools
-              config={{
-                position: 'bottom-right',
-              }}
-              plugins={[
-                {
-                  name: 'Tanstack Router',
-                  render: <TanStackRouterDevtoolsPanel />,
-                },
-              ]}
-            />
+            {devtoolsEnabled() && (
+              <>
+                <ReactQueryDevtools initialIsOpen={false} />
+                <TanStackDevtools
+                  config={{
+                    position: 'bottom-right',
+                  }}
+                  plugins={[
+                    {
+                      name: 'Tanstack Router',
+                      render: <TanStackRouterDevtoolsPanel />,
+                    },
+                  ]}
+                />
+              </>
+            )}
           </TooltipProvider>
           <Scripts />
         </QueryClientProvider>

@@ -274,7 +274,28 @@ export interface PredicateTransport {
    *  The whole system uses two notification transports end-to-end:
    *  WS for two-way channels, SSE for server→client pushes. No
    *  polling. */
-  statusEvents(txId: string, signal?: AbortSignal): AsyncIterable<PredicateStatusEvent>
+  statusEvents(jobId: string, signal?: AbortSignal): AsyncIterable<PredicateStatusEvent>
+}
+
+/** Retry a GET-ish fetch on transient `TypeError: Failed to fetch`
+ *  with exponential backoff. The verification-service routes used by
+ *  the holder are GET-only and idempotent (snapshot, isAttested), so
+ *  a retry never double-acts on the chain. */
+async function retryFetch<T>(fn: () => Promise<T>, attempts = 3, baseMs = 250): Promise<T> {
+  let lastErr: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (e) {
+      lastErr = e
+      const transient =
+        e instanceof TypeError && typeof e.message === 'string' && e.message.includes('fetch')
+      if (!transient) throw e
+      if (i === attempts - 1) break
+      await new Promise((r) => setTimeout(r, baseMs * 2 ** i))
+    }
+  }
+  throw lastErr
 }
 
 /**
@@ -313,7 +334,12 @@ export function createPredicateTransport(): PredicateTransport {
       return r.attested
     },
     async snapshot(kind) {
-      const s = await api.getPredicateSnapshot({ kind })
+      // Snapshot is GET-only, idempotent, and the only network step
+      // before WASM proving. A transient `TypeError: Failed to fetch`
+      // (mid-Cloud-Run cold start, brief WS reconnect, etc.) used to
+      // abort the whole presentation. Retry up to 3 attempts with
+      // exponential backoff (250 → 500 → 1000 ms).
+      const s = await retryFetch(() => api.getPredicateSnapshot({ kind }))
       return {
         address: s.address,
         zswapChainState: s.zswapChainState,
@@ -324,8 +350,8 @@ export function createPredicateTransport(): PredicateTransport {
     async relay(kind, provenTxHex) {
       return api.relayPredicateProof({ kind, relayProofRequest: { provenTx: provenTxHex } })
     },
-    statusEvents(txId, signal) {
-      return streamPredicateStatus(txId, { signal })
+    statusEvents(jobId, signal) {
+      return streamPredicateStatus(jobId, { signal })
     },
   }
 }
@@ -371,13 +397,14 @@ export type AttestProgress =
    *    - `balancing`   wallet is constructing inputs/outputs/fees
    *    - `submitting`  balanced tx posted to the Polkadot node, awaiting txId
    *    - `pending`     chain has the txId but hasn't yet finalized
-   *  (`txId` is the job-id placeholder until the chain returns the real
-   *  tx id; the sidecar resolves it transparently on poll.) */
+   *  (`jobId` is the sidecar's local handle returned by /relay; the
+   *  chain tx-id only becomes available after `submitTx` returns and
+   *  is surfaced separately on the `attested` event.) */
   | {
       stage: 'confirming'
       predicate: string
       kind: PredicateKind
-      txId: string
+      jobId: string
       elapsedMs: number
       phase: 'queued' | 'balancing' | 'submitting' | 'pending'
     }
@@ -685,17 +712,23 @@ export async function ensureCredentialPredicatesAttested(
             ? [rootBytes]
             : [rootBytes, BigInt(threshold)]
     emit({ stage: 'snapshot', predicate: sp.predicate, kind: spec.kind })
-    const snapshot = await transport.snapshot(spec.kind)
     const resolvedProving = resolveProvingConfig(provingConfig)
-    emit({
-      stage: 'prove',
-      predicate: sp.predicate,
-      kind: spec.kind,
-      circuitId: spec.circuitId,
-      mode: resolvedProving.mode,
-    })
     let provenTx: Uint8Array
     try {
+      // Snapshot fetch lives INSIDE the try so a kind whose contract is
+      // undeployed/unconfigured (sidecar 400 "no configured address") or
+      // a transient snapshot failure degrades to a per-predicate skip —
+      // the verifier rejects only if it actually required this predicate.
+      // Previously this ran outside the try and a single bad kind (e.g.
+      // `email`) aborted the entire presentation.
+      const snapshot = await transport.snapshot(spec.kind)
+      emit({
+        stage: 'prove',
+        predicate: sp.predicate,
+        kind: spec.kind,
+        circuitId: spec.circuitId,
+        mode: resolvedProving.mode,
+      })
       provenTx = await proveAttestationUnsubmitted({
         compiledContract: assets.compiledContract(spec.kind, witness),
         zkConfigProvider: assets.zkConfigProvider,
@@ -706,17 +739,17 @@ export async function ensureCredentialPredicatesAttested(
         proofProvider: resolvedProving,
       })
     } catch (e) {
-      // Catches: stale stamped attestations the witness can't satisfy
-      // even after the pre-flight (e.g. nationality set drift), zkir
-      // failures, snapshot corruption. The whole presentation
-      // continues — the verifier rejects only if this predicate was
-      // required by the DCQL.
+      // Catches: snapshot fetch failures (undeployed/unconfigured kind,
+      // transient network), stale stamped attestations the witness can't
+      // satisfy even after the pre-flight (e.g. nationality set drift),
+      // zkir failures. The whole presentation continues — the verifier
+      // rejects only if this predicate was required by the DCQL.
       const msg = e instanceof Error ? e.message : String(e)
       emit({
         stage: 'skip-unsatisfiable',
         predicate: sp.predicate,
         threshold,
-        reason: `prove failed: ${msg}`,
+        reason: `attestation prep failed: ${msg}`,
       })
       continue
     }
@@ -727,9 +760,9 @@ export async function ensureCredentialPredicatesAttested(
     // emit one `confirming` event per push, completing on the
     // terminal status. No polling at any layer.
     const submit = await transport.relay(spec.kind, bytesToHex(provenTx))
-    const txId = submit.txId
-    if (!txId) {
-      throw new Error(`relay for '${sp.predicate}' returned no txId`)
+    const jobId = submit.jobId
+    if (!jobId) {
+      throw new Error(`relay for '${sp.predicate}' returned no jobId`)
     }
     const submitTs = Date.now()
     const IN_FLIGHT = new Set(['queued', 'balancing', 'submitting'])
@@ -749,13 +782,13 @@ export async function ensureCredentialPredicatesAttested(
     let terminal: string | null = null
     let terminalError: string | undefined
     try {
-      for await (const ev of transport.statusEvents(txId, abort.signal)) {
+      for await (const ev of transport.statusEvents(jobId, abort.signal)) {
         if (IN_FLIGHT.has(ev.status)) {
           emit({
             stage: 'confirming',
             predicate: sp.predicate,
             kind: spec.kind,
-            txId,
+            jobId,
             elapsedMs: Date.now() - submitTs,
             phase: ev.status as 'queued' | 'balancing' | 'submitting' | 'pending',
           })
@@ -769,7 +802,7 @@ export async function ensureCredentialPredicatesAttested(
             stage: 'confirming',
             predicate: sp.predicate,
             kind: spec.kind,
-            txId,
+            jobId,
             elapsedMs: Date.now() - submitTs,
             phase: 'pending',
           })
@@ -785,16 +818,16 @@ export async function ensureCredentialPredicatesAttested(
       signal?.removeEventListener('abort', onCallerAbort)
     }
     if (signal?.aborted) {
-      throw new Error(`presentation aborted by caller (txId=${txId})`)
+      throw new Error(`presentation aborted by caller (jobId=${jobId})`)
     }
     if (terminal === null) {
       throw new Error(
-        `on-chain attestation for '${sp.predicate}' timed out after ${ABORT_BUDGET_MS}ms (txId=${txId})`,
+        `on-chain attestation for '${sp.predicate}' timed out after ${ABORT_BUDGET_MS}ms (jobId=${jobId})`,
       )
     }
     if (terminal !== SUCCESS) {
       throw new Error(
-        `on-chain attestation for '${sp.predicate}' failed: status=${terminal}, txId=${txId}` +
+        `on-chain attestation for '${sp.predicate}' failed: status=${terminal}, jobId=${jobId}` +
           (terminalError ? ` (${terminalError})` : ''),
       )
     }

@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { Menu, RotateCcw, History, Settings } from 'lucide-react'
+import { Menu, RotateCcw, History, HelpCircle, Settings, Lock, Unlock } from 'lucide-react'
 import Owl from '~/components/Owl'
 import {
   DropdownMenu,
@@ -11,13 +11,16 @@ import {
 
 interface AppHeaderProps {
   showMenu: boolean
+  isLocked: boolean
   onReset: () => void
+  onLock: () => void
+  onUnlock: () => void
 }
 
 // Sticky app chrome shown on every `_identity/*` route. Anchors the page
 // at the top, exposes the menu when an identity exists, and gives the
 // user a stable "home" affordance via the brand.
-export function AppHeader({ showMenu, onReset }: AppHeaderProps) {
+export function AppHeader({ showMenu, isLocked, onReset, onLock, onUnlock }: AppHeaderProps) {
   return (
     <header className="sticky top-0 z-40 w-full border-b border-white/5 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="mx-auto flex h-14 max-w-3xl items-center justify-between gap-3 px-4">
@@ -51,6 +54,25 @@ export function AppHeader({ showMenu, onReset }: AppHeaderProps) {
                     Settings
                   </Link>
                 </DropdownMenuItem>
+                <DropdownMenuItem asChild className="cursor-pointer">
+                  <Link to="/faq" className="flex items-center">
+                    <HelpCircle className="w-4 h-4 mr-2" />
+                    Help &amp; FAQ
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="bg-white/10" />
+                <DropdownMenuItem
+                  onClick={isLocked ? onUnlock : onLock}
+                  className="cursor-pointer"
+                  data-testid={isLocked ? 'menu-unlock-wallet' : 'menu-lock-wallet'}
+                >
+                  {isLocked ? (
+                    <Unlock className="w-4 h-4 mr-2" />
+                  ) : (
+                    <Lock className="w-4 h-4 mr-2" />
+                  )}
+                  {isLocked ? 'Unlock wallet' : 'Lock wallet'}
+                </DropdownMenuItem>
                 <DropdownMenuSeparator className="bg-white/10" />
                 <DropdownMenuItem
                   onClick={onReset}
@@ -69,6 +91,17 @@ export function AppHeader({ showMenu, onReset }: AppHeaderProps) {
             </span>
           </Link>
         </div>
+        {showMenu && (
+          <button
+            type="button"
+            aria-label={isLocked ? 'Unlock wallet' : 'Lock wallet'}
+            onClick={isLocked ? onUnlock : onLock}
+            className="p-2 rounded-md hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+            data-testid={isLocked ? 'button-unlock-wallet' : 'button-lock-wallet'}
+          >
+            {isLocked ? <Lock className="w-5 h-5" /> : <Unlock className="w-5 h-5" />}
+          </button>
+        )}
       </div>
     </header>
   )

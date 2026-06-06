@@ -29,7 +29,7 @@ export function LoginPage() {
           <div className="mx-auto flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
             <Bird className="size-6" />
           </div>
-          <CardTitle>OwlID Admin</CardTitle>
+          <CardTitle>Owl ID Admin</CardTitle>
           <CardDescription>Sign in to manage the verification service</CardDescription>
         </CardHeader>
         <CardContent>

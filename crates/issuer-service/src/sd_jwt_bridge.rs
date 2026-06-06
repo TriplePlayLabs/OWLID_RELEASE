@@ -12,8 +12,8 @@
 
 use crate::error::{IdpError, Result};
 use owl_crypto::{KeyPair, PublicKey};
-use owl_proof_system::sd_jwt::{IssueParams, SdJwtVc, StatusRef};
 use owl_proof_system::PredicateAttestation;
+use owl_proof_system::sd_jwt::{IssueParams, SdJwtVc, StatusRef};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -123,7 +123,7 @@ pub fn claims_to_sd_jwt_vc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use owl_proof_system::sd_jwt::{verify, KbParams, SdJwtVc as Sd, VerifyParams};
+    use owl_proof_system::sd_jwt::{KbParams, SdJwtVc as Sd, VerifyParams, verify};
     use serde_json::json;
 
     /// Standard issue → present → verify E2E, in-process (no HTTP): the real
@@ -195,8 +195,7 @@ mod tests {
             threshold: Some(18),
             ..Default::default()
         }];
-        let s = claims_to_sd_jwt_vc(&attrs, &issuer, &atts, "https://issuer.example", 42)
-            .unwrap();
+        let s = claims_to_sd_jwt_vc(&attrs, &issuer, &atts, "https://issuer.example", 42).unwrap();
 
         let v = verify(&s, &issuer.public_key(), &VerifyParams::default()).unwrap();
         assert_eq!(v.vct, VCT);
