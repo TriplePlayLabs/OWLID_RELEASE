@@ -75,3 +75,7 @@ packages/*/.tanstack/
 
 # Local plugin state (midnight-expert hook bookkeeping)
 .midnight-expert/
+
+# Claude Code local/transient state
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
