@@ -132,10 +132,31 @@ export {
   sealHolderKey,
   sealHolderKeys,
   openHolderKey,
+  openHolderKeys,
   sealRecoveryBundle,
   openRecoveryBundle,
   openRecoveryBundles,
 } from './webauthn.js'
+
+// =============================================================================
+// Offline, passkey-independent recovery (recovery + multi-device)
+// =============================================================================
+// Low-level file crypto (build your own flow):
+export {
+  type RecoveryFile,
+  type RecoveryFileEntry,
+  generateRecoveryCode,
+  normalizeRecoveryCode,
+  encryptRecoveryFile,
+  decryptRecoveryFile,
+} from './recovery-file.js'
+// Ready-made wallet backup/restore over the local credential store:
+export {
+  type ExportedRecoveryFile,
+  type PasskeyCeremony,
+  createRecoveryFile,
+  restoreRecoveryFile,
+} from './recovery-wallet.js'
 
 // =============================================================================
 // Storage — multi-credential wallet

@@ -9,7 +9,9 @@ import "./lib/security/Pausable" prefix Pausable_;
 
 export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
 
-witness ageValue(): Uint<16>;
+witness dobValue(): Uint<32>;
+witness claimSalt(): Bytes<32>;
+witness claimPath(): MerkleTreePath<8, Bytes<32>>;
 
 export ledger attestations: Set<Bytes<32>>;
 export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
@@ -32,22 +34,41 @@ circuit record(key: Bytes<32>): [] {
 }
 
 export circuit attestAgeRange(
-  rootHash: Bytes<32>,
+  owlRoot: Bytes<32>,
   minAge: Uint<16>,
-  maxAge: Uint<16>
+  maxAge: Uint<16>,
+  asOfYmd: Uint<32>
 ): [] {
   Pausable_assertNotPaused();
-  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
+  assert(owlRoot != pad(32, "") as Bytes<32>, "zero owlRoot");
   assert(minAge <= maxAge, "min must be <= max");
-  const age = ageValue();
-  assert(age >= minAge, "age below minimum");
-  assert(age <= maxAge, "age above maximum");
+  assert(maxAge <= 150, "maxAge out of range");
+
+  const dob  = dobValue();
+  const salt = claimSalt();
+  const path = claimPath();
+  // Bind the date of birth to the issuer-signed owl_root (F-1).
+  const leaf = persistentHash<Vector<3, Bytes<32>>>(
+    [pad(32, "birthdate"), dob as Field as Bytes<32>, salt]
+  );
+  assert(path.leaf == leaf, "claim commitment != birthdate witness");
+  assert(owlRoot == disclose(merkleTreePathRoot<8, Bytes<32>>(path).field) as Bytes<32>,
+    "owl_root mismatch");
+
+  // age >= minAge  ⟺  dob <= asOf − minAge·10000
+  // age <= maxAge  ⟺  dob >= asOf − maxAge·10000
+  const cutoffMin = asOfYmd - (minAge as Uint<32>) * 10000;
+  const cutoffMax = asOfYmd - (maxAge as Uint<32>) * 10000;
+  assert(dob <= cutoffMin, "age below minimum");
+  assert(dob >= cutoffMax, "age above maximum");
+
   const minBytes = disclose(minAge) as Field as Bytes<32>;
   const maxBytes = disclose(maxAge) as Field as Bytes<32>;
-  const param = persistentHash<Vector<2, Bytes<32>>>([minBytes, maxBytes]);
+  const asOfBytes = disclose(asOfYmd) as Field as Bytes<32>;
+  const param = persistentHash<Vector<3, Bytes<32>>>([minBytes, maxBytes, asOfBytes]);
   record(keyOf(
     pad(32, "owlid:attest:agerng:"),
-    disclose(rootHash),
+    disclose(owlRoot),
     param
   ));
 }

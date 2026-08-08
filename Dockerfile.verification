@@ -16,13 +16,6 @@ RUN apt-get update && apt-get install -y \
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-# Generate Groth16 proving + verifying keys (deterministic dev seeds).
-# Required because owl-zk-circuits' default features embed the .bin files
-# via include_bytes! at compile time. `--no-default-features` avoids the
-# circular dependency where the lib wants to embed files we're about to
-# write. Mirrors `just generate-zk-keys`.
-RUN cargo run -p owl-zk-circuits --bin keygen --no-default-features --release
-
 # Build the verification service in release mode
 RUN cargo build --release -p owl-verification-service
 

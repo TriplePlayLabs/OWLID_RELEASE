@@ -151,9 +151,9 @@ fn jws_verify_with(token: &str, pk: &PublicKey) -> Result<(Value, Value), ProofS
     Ok((header, payload))
 }
 
-fn make_disclosure(name: &str, value: &Value) -> String {
+fn encode_disclosure(salt: &str, name: &str, value: &Value) -> String {
     let arr = Value::Array(vec![
-        Value::String(generate_salt()),
+        Value::String(salt.to_string()),
         Value::String(name.to_string()),
         value.clone(),
     ]);
@@ -200,6 +200,8 @@ pub struct Verified {
     pub cnf_jwk: Value,
     pub status: Option<StatusRef>,
     pub key_bound: bool,
+    /// Issuer-signed `owl_root` (hex) — the predicate-binding commitment.
+    pub owl_root: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -217,14 +219,24 @@ impl SdJwtVc {
         claims: &BTreeMap<String, Value>,
         p: &IssueParams,
     ) -> Result<Self, ProofSystemError> {
-        let disclosures: Vec<(String, String)> = claims
+        // Build each disclosure from an explicit salt so the same salt feeds
+        // both the SD-JWT digest and the `owl_root` claim commitment.
+        let entries: Vec<(String, String, Value)> = claims
             .iter()
-            .map(|(k, v)| (k.clone(), make_disclosure(k, v)))
+            .map(|(k, v)| (k.clone(), generate_salt(), v.clone()))
+            .collect();
+        let disclosures: Vec<(String, String)> = entries
+            .iter()
+            .map(|(name, salt, value)| (name.clone(), encode_disclosure(salt, name, value)))
             .collect();
 
         // _sd order MUST NOT depend on claim order (RFC 9901 §4.2.4.1).
         let mut sd: Vec<String> = disclosures.iter().map(|(_, d)| digest(d)).collect();
         sd.sort();
+
+        // owl_root binds predicate witnesses to this issuer-signed credential.
+        // Hex, like `root_hash`/cred id.
+        let owl_root = crate::attestation::owl_root_for_claims(&entries);
 
         let mut payload = json!({
             "iss": p.iss,
@@ -232,6 +244,7 @@ impl SdJwtVc {
             "cnf": { "jwk": public_key_jwk(p.holder)? },
             "_sd": sd,
             "_sd_alg": SD_ALG,
+            "owl_root": hex::encode(owl_root),
         });
         let obj = payload.as_object_mut().expect("payload is object");
         if let Some(iat) = p.iat {
@@ -355,6 +368,23 @@ pub fn credential_id_hex(cid: &str) -> Result<String, ProofSystemError> {
     Ok(hex::encode(bytes))
 }
 
+/// Read the issuer-signed `owl_root` (hex) from the SD-JWT WITHOUT re-verifying.
+/// The caller has already verified the presentation; this just extracts the
+/// predicate-binding anchor for the attestation-key lookup. `None` for a
+/// credential issued before owl_root.
+pub fn owl_root_hex(sd_jwt: &str) -> Option<String> {
+    let jwt = sd_jwt.split('~').next()?;
+    let parts: Vec<&str> = jwt.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let payload: Value = serde_json::from_slice(&unb64(parts[1]).ok()?).ok()?;
+    payload
+        .get("owl_root")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 /// Read `iss` from the issuer JWT WITHOUT verifying the signature. A verifier
 /// must read `iss` to resolve which issuer key / trust anchor to verify with;
 /// the signature is then checked by [`verify`] using that key.
@@ -473,6 +503,11 @@ pub fn verify(
         return Err(err("Key Binding required but absent"));
     }
 
+    let owl_root = payload
+        .get("owl_root")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
     Ok(Verified {
         iss,
         vct,
@@ -480,6 +515,7 @@ pub fn verify(
         cnf_jwk,
         status,
         key_bound,
+        owl_root,
     })
 }
 
@@ -487,6 +523,34 @@ pub fn verify(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn issue_embeds_owl_root_for_predicate_claims() {
+        let issuer = KeyPair::generate();
+        let holder = KeyPair::generate();
+        let mut claims = BTreeMap::new();
+        claims.insert("kycLevel".into(), json!(3));
+        claims.insert("dateOfBirth".into(), json!("2006-06-24"));
+        claims.insert("given_name".into(), json!("Ada")); // non-predicate, not bound
+        let vc = SdJwtVc::issue(
+            &claims,
+            &IssueParams {
+                issuer: &issuer,
+                iss: "did:web:issuer.owlid.example".into(),
+                vct: "https://owlid.example/credentials/identity".into(),
+                holder: &holder.public_key(),
+                iat: None,
+                exp: None,
+                status: None,
+            },
+        )
+        .unwrap();
+        let v = verify(&vc.serialize(), &issuer.public_key(), &VerifyParams::default()).unwrap();
+        let root = v.owl_root.expect("owl_root present");
+        assert_eq!(hex::decode(&root).unwrap().len(), 32, "owl_root is 32 bytes");
+        // bound to predicate claims, not the all-zero tree
+        assert_ne!(root, hex::encode([0u8; 32]));
+    }
 
     fn sample() -> (KeyPair, KeyPair, SdJwtVc) {
         let issuer = KeyPair::generate();

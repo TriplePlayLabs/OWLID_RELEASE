@@ -12,6 +12,7 @@ import { Separator } from '@owlid/ui/components/ui/separator'
 import { Switch } from '@owlid/ui/components/ui/switch'
 import { storage } from '@owlid/sdk'
 import { BackLink } from '~/components/BackLink'
+import { RecoveryFileCard } from '~/components/RecoveryFileCard'
 import {
   DEFAULT_SETTINGS,
   effectiveBackendLabel,
@@ -74,6 +75,8 @@ function SettingsPage() {
       <ProvingSection settings={settings.data} onSave={save.mutate} />
       <Separator />
       <RecoverySection settings={settings.data} onSave={save.mutate} />
+      <Separator />
+      <RecoveryFileCard />
       <Separator />
       <StorageSection />
       <Separator />

@@ -1,5 +1,6 @@
 substitutions:
   _IMAGE_TAG: latest
+  _GIT_SHA: unknown
   _REGION: europe-west1
   _REPO: owlid
 steps:
@@ -8,11 +9,19 @@ steps:
       - build
       - -f
       - Dockerfile.docs
+      - --build-arg
+      - GIT_SHA=${_GIT_SHA}
       - -t
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/docs:${_IMAGE_TAG}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/docs:${_GIT_SHA}
       - .
+# Both tags are pushed. Deploy the ${_GIT_SHA} tag rather than :latest —
+# re-deploying an unchanged tag string is a no-op on Cloud Run, which is how a
+# stale revision keeps serving after a "successful" release.
 images:
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/docs:${_IMAGE_TAG}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/docs:${_GIT_SHA}
 options:
   machineType: E2_HIGHCPU_8
   logging: CLOUD_LOGGING_ONLY

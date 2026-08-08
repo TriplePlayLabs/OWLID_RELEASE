@@ -213,6 +213,25 @@ const PENDING_REAPER_INTERVAL_MS = Number(process.env.WALLET_PENDING_REAPER_INTE
  *  refill-wait before — that was the misfeature, not the retry itself). */
 const DUST_RETRY_WAIT_MS = Number(process.env.WALLET_DUST_RETRY_WAIT_MS ?? 3_000)
 
+/** Grace applied to `reapStalePending` ON a dust shortfall (NOT the 35-min
+ *  periodic grace). A balance shortfall while the chain dust is plentiful is
+ *  itself proof the local pending set is hostage-holding dust the chain has
+ *  already released — a tx silently dropped from the mempool never reaches
+ *  FAILURE finalization (so the live-evict subscription misses it) and would
+ *  otherwise stay pending the full periodic grace. Real failures finalize in
+ *  ms (live-evict) and preview finality is seconds, so anything pending past
+ *  this is overwhelmingly dropped. Short enough that an actively-tested wallet
+ *  recovers within one retry instead of waiting out the periodic reaper. */
+const DUST_SHORTFALL_REAP_GRACE_MS = Number(
+  process.env.WALLET_DUST_SHORTFALL_REAP_GRACE_MS ?? 90_000,
+)
+
+/** How many times the balance is retried on a dust shortfall (each retry reaps
+ *  hostage pending with the short grace, then waits for the dust observable to
+ *  settle). The default 1 was too few for an actively-tested wallet that has
+ *  accumulated several dropped-tx pending holds. */
+const DUST_RETRY_ATTEMPTS = Number(process.env.WALLET_DUST_RETRY_ATTEMPTS ?? 3)
+
 export async function startWalletSupervisor(
   createWallet: () => Promise<HeadlessWallet>,
 ): Promise<WalletSupervisor> {
@@ -241,7 +260,21 @@ export async function startWalletSupervisor(
   const serialize = <T>(fn: () => Promise<T>): Promise<T> => {
     writeQueueDepth.current++
     const next = writeChain.then(fn, fn)
-    writeChain = next.finally(() => writeQueueDepth.current--)
+    // `writeChain` only sequences the NEXT job, so it must NEVER reject:
+    // a terminal `submitTx` failure with no follow-up job behind it would
+    // otherwise leave this derived promise rejected-and-unhandled (an
+    // `unhandledRejection` that can take the sidecar down under low
+    // traffic). The caller owns `next` and its rejection; the chain link
+    // swallows so it always settles. Sequencing is preserved — `fn` still
+    // runs only after the previous job completes (success or failure).
+    writeChain = next.then(
+      () => {
+        writeQueueDepth.current--
+      },
+      () => {
+        writeQueueDepth.current--
+      },
+    )
     return next as Promise<T>
   }
 
@@ -336,7 +369,8 @@ export async function startWalletSupervisor(
    * after our grace window is harmless: `revertTransaction` is
    * idempotent and the chain UTXO ledger is the source of truth.
    */
-  const reapStalePending = async (): Promise<void> => {
+  const reapStalePending = async (graceMsOverride?: number): Promise<void> => {
+    const grace = graceMsOverride ?? PENDING_REAPER_GRACE_MS
     try {
       const svc = (
         wallet.facade as unknown as {
@@ -359,7 +393,7 @@ export async function startWalletSupervisor(
         const createdMs = creationTimeToMs(item.creationTime)
         if (createdMs === null) continue
         const ageMs = nowMs - createdMs
-        if (ageMs < PENDING_REAPER_GRACE_MS) {
+        if (ageMs < grace) {
           kept++
           continue
         }
@@ -379,7 +413,7 @@ export async function startWalletSupervisor(
         pending: items.length,
         reaped,
         kept,
-        graceMs: PENDING_REAPER_GRACE_MS,
+        graceMs: grace,
       })
     } catch (e) {
       log.warn('wallet.reap.error', {
@@ -636,6 +670,8 @@ export async function startWalletSupervisor(
     reapStalePending,
     serialize,
     dustRetryWaitMs: DUST_RETRY_WAIT_MS,
+    dustShortfallReapGraceMs: DUST_SHORTFALL_REAP_GRACE_MS,
+    dustRetryAttempts: DUST_RETRY_ATTEMPTS,
     onEvent: (event, fields) => {
       if (event === 'submit.broadcast.failed' || event === 'submit.dust-short.retry') {
         log.warn(`wallet.${event}`, fields)

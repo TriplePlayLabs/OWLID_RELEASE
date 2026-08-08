@@ -43,9 +43,6 @@ packages/native-sdk/*.wasi-browser.js
 packages/native-sdk/wasi-worker*.mjs
 packages/native-sdk/npm/
 
-# Groth16 keys — regenerated inside backend Dockerfiles via keygen.
-crates/zk-circuits/artifacts/
-
 # Secrets / env
 .env
 .env.local

@@ -40,10 +40,13 @@ export type PredicateRequest =
   | { kind: 'nationalityIn'; countries: string[] }
   /** Issuer-attested email-verified flag is true. */
   | { kind: 'emailVerified' }
-  /** Sybil-resistant unique personhood. `epoch` + `appId` are 32-byte
-   *  hex strings the verifier owns; the same human produces the same
-   *  nullifier under the same (epoch, appId) but cannot be linked
-   *  across other scopes. */
+  /** Sybil-resistant unique personhood. `epoch` is the verifier's 32-byte
+   *  hex campaign-period scope; `appId` is the 32-byte hex campaign/app id
+   *  (e.g. a specific conference). The same human yields the same nullifier
+   *  within one `(epoch, appId)` so they can register only once. `appId`
+   *  is bound under the verifier's authenticated `client_id` downstream
+   *  (F-2), so a different verifier choosing the same `appId` string lands
+   *  in a different namespace and cannot correlate attendees. */
   | { kind: 'uniquePerson'; epoch: string; appId: string }
 
 /** Fluent factory — saves callers from writing the discriminant by

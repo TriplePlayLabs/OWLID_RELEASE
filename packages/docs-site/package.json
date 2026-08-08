@@ -8,7 +8,8 @@
     "dev": "rspress dev --port 4001",
     "build": "rspress build",
     "preview": "rspress preview",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit && bun run check:docs",
+    "check:docs": "bun run scripts/check-docs.ts"
   },
   "dependencies": {
     "@rspress/core": "^2.0.10",

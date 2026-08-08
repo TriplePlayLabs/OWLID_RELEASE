@@ -13,7 +13,15 @@ import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-pri
 import { createInProcessProofProvider } from './inprocess-proof.js'
 import { Transaction } from '@midnight-ntwrk/ledger-v8'
 import type { StateValue, ContractState } from '@midnight-ntwrk/compact-runtime'
-import { persistentHash, Bytes32Descriptor } from '@midnight-ntwrk/compact-runtime'
+import { sha256 } from '@noble/hashes/sha2'
+
+/** `pad(32, "owlid:issuer:key:")` — the issuer-key-hash domain tag, right-zero
+ *  padded to 32 bytes (matches the Compact `pad(32, ...)` in issuer_registry). */
+const ISSUER_KEY_TAG = (() => {
+  const out = new Uint8Array(32)
+  out.set(new TextEncoder().encode('owlid:issuer:key:'))
+  return out
+})()
 import { join } from 'path'
 
 import {
@@ -783,9 +791,14 @@ export class MidnightClient {
   // Issuer Registry
   // =========================================================================
 
-  /** Hash a public key the same way the contract does: persistentHash<Bytes<32>>(publicKey) */
+  /** Hash a public key the same way the contract does (domain-tagged):
+   *  `persistentHash<Vector<2,Bytes<32>>>([pad32("owlid:issuer:key:"), publicKey])`
+   *  = `SHA-256(pad32(tag) ‖ publicKey)`. */
   private issuerKeyHash(publicKey: Uint8Array): Uint8Array {
-    return persistentHash(Bytes32Descriptor, publicKey)
+    const buf = new Uint8Array(64)
+    buf.set(ISSUER_KEY_TAG, 0)
+    buf.set(publicKey.subarray(0, 32), 32)
+    return sha256(buf)
   }
 
   isIssuerTrustedFromLedger(publicKey: Uint8Array): boolean {

@@ -1,14 +1,12 @@
-//! Predicate registry — the canonical bridge between credential predicates
-//! and the underlying ZK circuits.
+//! Predicate registry — the canonical catalogue of credential predicates.
 //!
-//! Every predicate the system can prove is enumerated here with a stable
-//! string id (e.g. `"age:gte"`, `"nationality:eu"`). The registry
-//! tells `generate_predicate_proof` which circuit and parameters to use, and
-//! lets the verifier recompute the canonical public input for `verify_zk_proof_pinned`
-//! — closing the gap where a holder could ship an arbitrary set and have the
-//! verifier rubber-stamp it.
+//! Every predicate the system can prove is enumerated here with a stable string
+//! id (e.g. `"age:gte"`, `"nationality:in"`). The issuer uses it to decide which
+//! `predicate_attestations` to stamp on a credential; the verifier service
+//! serves it over `/predicates` so a verifier can pick what to request. Actual
+//! proving is the Midnight/Compact `attest*` circuits (see `attestation.rs`);
+//! this module carries no circuit or proving-key coupling.
 
-use owl_zk_circuits::ZkProofType;
 use serde::{Deserialize, Serialize};
 
 /// Predicate comparison operator.
@@ -26,7 +24,7 @@ pub enum PredicateOp {
 pub enum PredicateParams {
     /// Numeric threshold for range circuits (KYC).
     Threshold(u64),
-    /// Name of a dataset registered in `owl_zk_circuits::data` for set-membership.
+    /// Name of a dataset registered in `crate::datasets` for set-membership.
     SetName(&'static str),
     /// No params pinned at registry time — the verifier supplies the
     /// value(s) at request time (e.g. the age threshold / range bounds).
@@ -37,7 +35,6 @@ pub enum PredicateParams {
 #[derive(Debug, Clone, Copy)]
 pub struct Predicate {
     pub id: &'static str,
-    pub circuit: ZkProofType,
     pub attribute: &'static str,
     pub op: PredicateOp,
     pub params: PredicateParams,
@@ -53,7 +50,6 @@ static REGISTRY: &[Predicate] = &[
     Predicate {
         id: "age:gte",
         route: "age_over",
-        circuit: ZkProofType::AgeRange,
         attribute: "dateOfBirth",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Dynamic,
@@ -62,7 +58,6 @@ static REGISTRY: &[Predicate] = &[
     Predicate {
         id: "age:range",
         route: "age_range",
-        circuit: ZkProofType::AgeRange,
         attribute: "dateOfBirth",
         op: PredicateOp::InRange,
         params: PredicateParams::Dynamic,
@@ -77,7 +72,6 @@ static REGISTRY: &[Predicate] = &[
         // verifier picks.
         id: "nationality:in",
         route: "nationality_in",
-        circuit: ZkProofType::Nationality,
         attribute: "nationality",
         op: PredicateOp::InSet,
         params: PredicateParams::Dynamic,
@@ -86,7 +80,6 @@ static REGISTRY: &[Predicate] = &[
     Predicate {
         id: "kyc:>=basic",
         route: "verification_level",
-        circuit: ZkProofType::KycStatus,
         attribute: "verificationLevel",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Threshold(1),
@@ -95,7 +88,6 @@ static REGISTRY: &[Predicate] = &[
     Predicate {
         id: "kyc:>=substantial",
         route: "verification_level",
-        circuit: ZkProofType::KycStatus,
         attribute: "verificationLevel",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Threshold(2),
@@ -104,7 +96,6 @@ static REGISTRY: &[Predicate] = &[
     Predicate {
         id: "kyc:>=high",
         route: "verification_level",
-        circuit: ZkProofType::KycStatus,
         attribute: "verificationLevel",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Threshold(3),
@@ -118,7 +109,6 @@ static REGISTRY: &[Predicate] = &[
         // and so can be proven against any set the verifier picks.
         id: "residency:in",
         route: "resident_in",
-        circuit: ZkProofType::KycStatus,
         attribute: "residentCountry",
         op: PredicateOp::InSet,
         params: PredicateParams::Dynamic,
@@ -127,13 +117,8 @@ static REGISTRY: &[Predicate] = &[
     Predicate {
         id: "email:verified",
         route: "email_verified",
-        // Email-verified does not have an off-chain Groth16 circuit;
-        // we reuse the KycStatus enum slot because the registry
-        // requires a discriminant. Actual attestation is via the
-        // Midnight `attestEmailVerified` Compact circuit. The
-        // verifier consults the SSE-mirrored attestation set, no
-        // Groth16 verify on the hot path.
-        circuit: ZkProofType::KycStatus,
+        // Attested via the Midnight `attestEmailVerified` Compact circuit;
+        // the verifier consults the SSE-mirrored attestation set.
         attribute: "emailVerified",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Threshold(1),
@@ -146,7 +131,6 @@ static REGISTRY: &[Predicate] = &[
         // attestation via `attestUniquePersonhood`. The witness
         // (`personhood_secret`) is the holder's, scope is
         // `(epoch, app_id)` set by the verifier at request time.
-        circuit: ZkProofType::KycStatus,
         attribute: "personhoodSecret",
         op: PredicateOp::GreaterOrEqual,
         params: PredicateParams::Threshold(1),
@@ -170,25 +154,6 @@ pub fn for_attributes(attrs: &[&str]) -> Vec<&'static Predicate> {
         .collect()
 }
 
-/// Hex-encoded canonical public input the underlying circuit emits for this
-/// predicate. Matches `ZkProof.public_inputs[0]`.
-pub fn canonical_public_input_hex(pred: &Predicate) -> Option<String> {
-    match (pred.circuit, pred.params) {
-        (ZkProofType::AgeRange, PredicateParams::Threshold(t))
-        | (ZkProofType::KycStatus, PredicateParams::Threshold(t)) => {
-            Some(owl_zk_circuits::data::canonical_threshold_input_hex(t))
-        }
-        (ZkProofType::Nationality, PredicateParams::SetName(name)) => {
-            owl_zk_circuits::data::canonical_set_root_hex(name)
-        }
-        // `Dynamic` predicates have no registry-pinned value — the
-        // verifier supplies it at request time, so there is no single
-        // canonical public input.
-        (_, PredicateParams::Dynamic) => None,
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,11 +170,5 @@ mod tests {
         assert!(preds.iter().any(|p| p.id == "age:gte"));
         assert!(preds.iter().any(|p| p.id == "nationality:in"));
         assert!(preds.iter().all(|p| p.attribute != "verificationLevel"));
-    }
-
-    #[test]
-    fn dynamic_predicate_has_no_canonical_input() {
-        let pred = lookup("age:gte").unwrap();
-        assert!(canonical_public_input_hex(pred).is_none());
     }
 }

@@ -122,6 +122,26 @@ jobs:
       - name: Typecheck packages
         run: bun run ci:typecheck
 
+  docs:
+    name: Docs ↔ code drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      # Type-checks every ```ts fence against packages/sdk/src and asserts the
+      # docs' links, predicate claim paths, HTTP routes, and SDK reference
+      # pages still match the code. No build or running service needed.
+      - name: Check docs against code
+        run: bun run check:docs
+
   test-js:
     name: Test JS
     runs-on: ubuntu-latest

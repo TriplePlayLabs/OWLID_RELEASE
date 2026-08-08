@@ -533,6 +533,39 @@ export async function openHolderKey(
 }
 
 /**
+ * Decrypt several wrapped holder keys under a single PRF assertion. Unlike
+ * {@link openRecoveryBundles} this is all-or-nothing: every blob must open (with
+ * one picker fallback) or it throws, because an offline recovery export that
+ * silently drops a credential would lose it. Order matches `blobs`.
+ */
+export async function openHolderKeys(
+  credentialId: string | null,
+  blobs: string[],
+): Promise<{ seedHexes: string[]; credentialId: string }> {
+  const decryptAll = async (id: string | null) => {
+    const { key, credentialId: selectedCredentialId } = await prfAesKey(id, HOLDER_KEY_PRF_SALT)
+    const seedHexes: string[] = []
+    for (const blob of blobs) {
+      const [ivB64, ctB64] = blob.split('.')
+      if (!ivB64 || !ctB64) throw new Error('Malformed wrapped holder key')
+      const pt = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: new Uint8Array(base64urlToBuffer(ivB64)) },
+        key,
+        base64urlToBuffer(ctB64),
+      )
+      seedHexes.push(bytesToHex(new Uint8Array(pt)))
+    }
+    return { seedHexes, credentialId: selectedCredentialId }
+  }
+  try {
+    return await decryptAll(credentialId)
+  } catch (e) {
+    if (!credentialId) throw e
+    return await decryptAll(null)
+  }
+}
+
+/**
  * Seal several holder seeds under a single PRF assertion. One user-verification
  * prompt covers every seed, so restoring N credentials at once does not fan out
  * into N biometric prompts. Order of the returned blobs matches `seedHexes`.

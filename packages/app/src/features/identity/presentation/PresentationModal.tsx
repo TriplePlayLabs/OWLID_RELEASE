@@ -141,6 +141,11 @@ function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
             <div className="py-4 max-h-[60vh] overflow-y-auto">
               <ProvingSteps progress={attestProgress} sending={state === 'sending'} />
             </div>
+            <DialogFooter>
+              <Button variant="outline" className="w-full" onClick={handleClose}>
+                Cancel
+              </Button>
+            </DialogFooter>
           </>
         ) : state === 'complete' ? (
           <>
@@ -203,9 +208,11 @@ function PresentationModal(props: ModalRenderProps<Record<string, never>>) {
                 <div className="py-2 max-h-[40vh] overflow-y-auto">
                   <ProvingSteps progress={attestProgress} errored errorMessage={friendly.body} />
                 </div>
-                <details className="text-[11px] text-muted-foreground/70 -mt-1">
+                <details className="min-w-0 max-w-full text-[11px] text-muted-foreground/70 -mt-1">
                   <summary className="cursor-pointer select-none">Technical details</summary>
-                  <p className="mt-1 font-mono break-words leading-snug">{friendly.raw}</p>
+                  <p className="mt-1 font-mono break-all whitespace-pre-wrap leading-snug">
+                    {friendly.raw}
+                  </p>
                 </details>
                 <DialogFooter className="gap-2 sm:gap-2">
                   <Button variant="outline" className="flex-1" onClick={handleClose}>

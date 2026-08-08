@@ -10,20 +10,6 @@ base64.workspace = true
 # Internal dependencies
 owl-crypto       = { path = "../crypto" }
 owl-proof-system = { path = "../proof-system" }
-# zk-circuits — exposes the canonical predicate registry (`owl_proof_system::predicates`)
-# and set-membership datasets (`owl_zk_circuits::data`) over GET /predicates
-# and GET /circuit-data so verifier-side apps don't need to round-trip the
-# issuer service for reference data.
-# Verifier-only build: skip the prover-key deserialization machinery.
-# - `verifier`: prepared verifying keys for /verify
-# - `serve-prover-keys`: raw PK bytes served at /zk-keys/<circuit>.pk.bin
-#   so wallets (whose WASM build has no embedded PKs) can fetch them
-#   from the same trusted origin they verify against. Costs ~660KB of
-#   binary footprint, no runtime CPU.
-owl-zk-circuits = { path = "../zk-circuits", default-features = false, features = [
-  "verifier",
-  "serve-prover-keys",
-] }
 
 # Hashing
 sha2.workspace = true

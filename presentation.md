@@ -185,7 +185,6 @@ layout: two-cols-header
 | `proof-system` | SD-JWT VC · Status List · DID |
 | `verification-service` | port 8000 — verify API |
 | `issuer-service` | port 8001 — issuance API |
-| `zk-circuits` | legacy Groth16 (retiring) |
 
 **Databases** — one Postgres per service
 `verification` :5432 · `issuer` :5433
@@ -732,7 +731,7 @@ layout: two-cols-header
 - **Target** — Google Cloud: Cloud Run + Cloud SQL, built by Cloud Build
 - **IaC** — Terraform under `deploy/gcp/terraform/`
 - **Contract addresses** are configuration, not secrets
-- **Monitoring** — Prometheus + Grafana
+- **Monitoring** — Cloud Monitoring: dashboard, uptime checks, alert policies
 
 </div>
 

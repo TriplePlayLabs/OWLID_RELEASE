@@ -119,8 +119,6 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
         registry::list_predicates,
         registry::list_circuit_data,
         registry::get_circuit_dataset,
-        registry::list_proving_keys,
-        registry::get_proving_key,
         registry::list_predicate_assets,
         registry::get_predicate_asset,
         midnight_admin::get_midnight_status,
@@ -425,19 +423,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Pre-deserialize the embedded Groth16 verifying keys so the first
-    // /verify request doesn't pay the one-shot cost (~tens of ms per
-    // circuit). Keys live behind LazyLocks in `owl_zk_circuits`; this
-    // forces them.
-    {
-        let t0 = std::time::Instant::now();
-        owl_zk_circuits::prewarm_verifying_keys();
-        tracing::info!(
-            "Pre-warmed Groth16 verifying keys in {:.2}ms",
-            t0.elapsed().as_secs_f64() * 1000.0
-        );
-    }
-
     // Background cleanup tasks
     {
         let challenges = Arc::clone(&state.challenges);
@@ -548,6 +533,12 @@ async fn main() -> anyhow::Result<()> {
     // ops / observability surfaces a customer verifier never calls.
     let service_read_routes = Router::new()
         .route("/metrics", get(api::get_metrics))
+        // `/prometheus` exposes per-route request counts, error counts and
+        // latencies — an operational profile of the deployment, and the same
+        // class of data as `/metrics`, which has always required `admin`. A
+        // scraper authenticates with an admin key (Prometheus: `bearer_token`
+        // / `authorization` in the scrape config).
+        .route("/prometheus", get(observability::prometheus_metrics))
         .layer(axum_middleware::from_fn_with_state(
             Arc::clone(&api_key_repo),
             require_permission("admin"),
@@ -609,14 +600,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/predicates", get(registry::list_predicates))
         .route("/circuit-data", get(registry::list_circuit_data))
         .route("/circuit-data/{name}", get(registry::get_circuit_dataset))
-        // Groth16 proving keys served to wallets that ship a WASM build
-        // without embedded PKs. `/zk-keys` lists circuit names; the path
-        // segment must be `<circuit>.pk.bin`.
-        .route("/zk-keys", get(registry::list_proving_keys))
-        .route("/zk-keys/{filename}", get(registry::get_proving_key))
-        // Per-kind predicate Compact artifacts (zkir/prover/verifier)
-        // for every deployed kind, same role as /zk-keys for the
-        // holder's WASM build.
+        // Per-kind predicate Compact artifacts (zkir/prover/verifier) for
+        // every deployed kind — the holder's WASM build leaves the multi-MB
+        // keys out and prefetches them.
         .route("/predicate-zk", get(registry::list_predicate_assets))
         .route("/predicate-zk/{filename}", get(registry::get_predicate_asset))
         .route("/admin/login", post(admin_auth::login))
@@ -637,7 +623,6 @@ async fn main() -> anyhow::Result<()> {
             "/openid4vp/request/{session_id}",
             get(openid4vp::get_authorization_request),
         )
-        .route("/prometheus", get(observability::prometheus_metrics))
         .merge(authenticated_routes)
         .with_state(state)
         // Midnight Compact ZK artifacts for browser FetchZkConfigProvider (stateless)

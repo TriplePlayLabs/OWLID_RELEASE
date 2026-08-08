@@ -25,9 +25,12 @@ import {
   IssueCredentialRequestToJSON,
   IssueCredentialResponseFromJSON,
   IssueCredentialResponseToJSON,
+  RecoveryBackupRequestFromJSON,
   RecoveryBackupRequestToJSON,
   RecoveryBackupResponseFromJSON,
+  RecoveryBackupResponseToJSON,
   RecoveryBackupsResponseFromJSON,
+  RecoveryBackupsResponseToJSON,
 } from '../models/index.js'
 
 export interface IssueCredentialOperationRequest {
@@ -35,11 +38,11 @@ export interface IssueCredentialOperationRequest {
   issueCredentialRequest: IssueCredentialRequest
 }
 
-export interface ListRecoveryBackupsOperationRequest {
+export interface ListRecoveryBackupsRequest {
   id: string
 }
 
-export interface StoreRecoveryBackupOperationRequest {
+export interface StoreRecoveryBackupRequest {
   id: string
   recoveryBackupRequest: RecoveryBackupRequest
 }
@@ -73,13 +76,42 @@ export interface CredentialsApiInterface {
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<IssueCredentialResponse>
 
+  /**
+   *
+   * @param {string} id Verified session ID
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof CredentialsApiInterface
+   */
+  listRecoveryBackupsRaw(
+    requestParameters: ListRecoveryBackupsRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<RecoveryBackupsResponse>>
+
+  /**
+   */
   listRecoveryBackups(
-    requestParameters: ListRecoveryBackupsOperationRequest,
+    requestParameters: ListRecoveryBackupsRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<RecoveryBackupsResponse>
 
+  /**
+   *
+   * @param {string} id Verified session ID
+   * @param {RecoveryBackupRequest} recoveryBackupRequest
+   * @param {*} [options] Override http request option.
+   * @throws {RequiredError}
+   * @memberof CredentialsApiInterface
+   */
+  storeRecoveryBackupRaw(
+    requestParameters: StoreRecoveryBackupRequest,
+    initOverrides?: RequestInit | runtime.InitOverrideFunction,
+  ): Promise<runtime.ApiResponse<RecoveryBackupResponse>>
+
+  /**
+   */
   storeRecoveryBackup(
-    requestParameters: StoreRecoveryBackupOperationRequest,
+    requestParameters: StoreRecoveryBackupRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<RecoveryBackupResponse>
 }
@@ -145,8 +177,10 @@ export class CredentialsApi extends runtime.BaseAPI implements CredentialsApiInt
     return await response.value()
   }
 
+  /**
+   */
   async listRecoveryBackupsRaw(
-    requestParameters: ListRecoveryBackupsOperationRequest,
+    requestParameters: ListRecoveryBackupsRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<runtime.ApiResponse<RecoveryBackupsResponse>> {
     if (requestParameters['id'] == null) {
@@ -156,6 +190,10 @@ export class CredentialsApi extends runtime.BaseAPI implements CredentialsApiInt
       )
     }
 
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
     const response = await this.request(
       {
         path: `/sessions/{id}/recovery-backups`.replace(
@@ -163,8 +201,8 @@ export class CredentialsApi extends runtime.BaseAPI implements CredentialsApiInt
           encodeURIComponent(String(requestParameters['id'])),
         ),
         method: 'GET',
-        headers: {},
-        query: {},
+        headers: headerParameters,
+        query: queryParameters,
       },
       initOverrides,
     )
@@ -174,16 +212,20 @@ export class CredentialsApi extends runtime.BaseAPI implements CredentialsApiInt
     )
   }
 
+  /**
+   */
   async listRecoveryBackups(
-    requestParameters: ListRecoveryBackupsOperationRequest,
+    requestParameters: ListRecoveryBackupsRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<RecoveryBackupsResponse> {
     const response = await this.listRecoveryBackupsRaw(requestParameters, initOverrides)
     return await response.value()
   }
 
+  /**
+   */
   async storeRecoveryBackupRaw(
-    requestParameters: StoreRecoveryBackupOperationRequest,
+    requestParameters: StoreRecoveryBackupRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<runtime.ApiResponse<RecoveryBackupResponse>> {
     if (requestParameters['id'] == null) {
@@ -192,12 +234,19 @@ export class CredentialsApi extends runtime.BaseAPI implements CredentialsApiInt
         'Required parameter "id" was null or undefined when calling storeRecoveryBackup().',
       )
     }
+
     if (requestParameters['recoveryBackupRequest'] == null) {
       throw new runtime.RequiredError(
         'recoveryBackupRequest',
         'Required parameter "recoveryBackupRequest" was null or undefined when calling storeRecoveryBackup().',
       )
     }
+
+    const queryParameters: any = {}
+
+    const headerParameters: runtime.HTTPHeaders = {}
+
+    headerParameters['Content-Type'] = 'application/json'
 
     const response = await this.request(
       {
@@ -206,8 +255,8 @@ export class CredentialsApi extends runtime.BaseAPI implements CredentialsApiInt
           encodeURIComponent(String(requestParameters['id'])),
         ),
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        query: {},
+        headers: headerParameters,
+        query: queryParameters,
         body: RecoveryBackupRequestToJSON(requestParameters['recoveryBackupRequest']),
       },
       initOverrides,
@@ -218,8 +267,10 @@ export class CredentialsApi extends runtime.BaseAPI implements CredentialsApiInt
     )
   }
 
+  /**
+   */
   async storeRecoveryBackup(
-    requestParameters: StoreRecoveryBackupOperationRequest,
+    requestParameters: StoreRecoveryBackupRequest,
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<RecoveryBackupResponse> {
     const response = await this.storeRecoveryBackupRaw(requestParameters, initOverrides)

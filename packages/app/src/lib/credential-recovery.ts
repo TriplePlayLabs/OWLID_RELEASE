@@ -1,4 +1,10 @@
-import { storage, type WalletCredential } from '@owlid/sdk'
+import {
+  createRecoveryFile,
+  type ExportedRecoveryFile,
+  restoreRecoveryFile,
+  storage,
+  type WalletCredential,
+} from '@owlid/sdk'
 import type { CredentialsApi } from '@owlid/issuer-client'
 import {
   decryptRecoveryPayloads,
@@ -6,6 +12,9 @@ import {
   wrapWalletHolderKeys,
 } from '~/lib/passkeys'
 import { loadSettings } from '~/lib/settings'
+import { withPasskeyCeremony } from '~/lib/wallet-session'
+
+export type { ExportedRecoveryFile }
 
 const RECOVERY_VERSION = 'owlid-recovery-bundle-v1'
 const RECOVERY_KEY_LABEL = 'passkey-prf-recovery-v1'
@@ -102,4 +111,26 @@ export async function restoreCredentialsFromVerifiedSession({
     }
   }
   return restored
+}
+
+// ============================================================================
+// Offline recovery file — passkey-independent backup the holder keeps.
+//
+// The core backup/restore lives in @owlid/sdk (`createRecoveryFile` /
+// `restoreRecoveryFile`) so integrators can reuse it. These wrappers only inject
+// the app's passkey ceremony (concurrent-prompt guard + UI). See
+// docs/RECOVERY.md.
+// ============================================================================
+
+/** Build an offline recovery file for every credential in this wallet. */
+export function exportWalletRecoveryFile(): Promise<ExportedRecoveryFile> {
+  return createRecoveryFile(withPasskeyCeremony)
+}
+
+/** Restore credentials from an offline recovery file + recovery code. */
+export function importWalletRecoveryFile(
+  fileText: string,
+  code: string,
+): Promise<WalletCredential[]> {
+  return restoreRecoveryFile(fileText, code, withPasskeyCeremony)
 }

@@ -1,6 +1,6 @@
 project_id        = "owlid-491411"
 region            = "europe-west1"
-billing_account   = "014A28-B098BA-C0B96E"
+billing_account   = "000000-000000-000000"
 budget_amount_eur = 300
 domain            = "owlid.app"
 dns_zone_name     = "owlid-app"

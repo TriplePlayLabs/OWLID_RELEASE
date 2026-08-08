@@ -66,7 +66,10 @@ packages/midnight-sidecar/managed/
 deploy/gcp/.env.gcp
 deploy/gcp/terraform/.terraform/
 deploy/gcp/terraform/.terraform.lock.hcl
-deploy/gcp/terraform/terraform.tfvars
+# terraform.tfvars IS tracked: it holds no credentials (every secret is a
+# Secret Manager reference in run.tf) and it carries the deployed contract
+# addresses, which are public on-chain data and otherwise recoverable only
+# by reading them back out of Cloud Run.
 deploy/gcp/terraform/*.tfstate
 deploy/gcp/terraform/*.tfstate.*
 deploy/gcp/terraform/.terraform.tfstate.lock.info

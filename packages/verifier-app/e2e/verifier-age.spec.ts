@@ -1,40 +1,45 @@
 import { test, expect } from '@playwright/test'
 
 /**
- * GH #11 — "Age within range isn't a proper number field, it should just
- * say 30 not 030".
+ * GH #11 — verifier-supplied values must go on the wire as real numbers.
  *
- * Full user flow against the running dev server: the verifier scans a
- * holder QR (fake camera), the WebSocket handshake lands it on the
- * predicate picker, then the operator types an age range. We assert the
- * field never keeps a leading zero AND that the request put on the wire
- * carries real numbers (not "030").
- *
- * Everything the backend would serve is network-mocked; the holder side
- * of the WebSocket is faked in-page.
+ * The redesigned verifier is configure-first: the operator picks checks on
+ * the home screen, scans the holder QR (fake camera), and the app auto-sends
+ * the pre-built request once the server signals `session_ready` (which
+ * carries the per-session nonce). This spec drives that full flow and asserts
+ * the request frame carries a numeric age threshold (no "030"-style strings)
+ * and the selected email check.
  */
 
 const REGISTRY = [
   {
+    id: 'age:gte',
+    attribute: 'age',
+    label: 'Over a minimum age',
+    op: 'GreaterOrEqual',
+    route: 'age_over',
+    value: '18',
+  },
+  {
     id: 'age:range',
     attribute: 'age',
-    label: 'Age is within a range',
+    label: 'Age in a set range',
     op: 'Range',
     route: 'age_range',
     value: '',
   },
   {
-    id: 'age:gte',
-    attribute: 'age',
-    label: 'Is over a minimum age',
-    op: 'GreaterOrEqual',
-    route: 'age_over',
-    value: '18',
+    id: 'email:verified',
+    attribute: 'email',
+    label: 'Email is verified',
+    op: 'Equal',
+    route: 'email_verified',
+    value: 'true',
   },
 ]
 
 // Fakes the holder side of the presentation WebSocket: opens immediately
-// so the app advances idle->connecting->selecting, and records everything
+// so the app advances scanning->connecting->waiting, and records everything
 // the verifier sends so the test can inspect the request payload. Non
 // presentation sockets (Vite HMR) fall through to the real implementation.
 function installFakeWebSocket() {
@@ -55,6 +60,13 @@ function installFakeWebSocket() {
     setTimeout(() => {
       this.readyState = 1
       ;(this.onopen as ((ev: unknown) => void) | null)?.({})
+      // The server emits `session_ready` (carrying the per-session nonce)
+      // once both peers are connected; the verifier sends its request only
+      // AFTER this — never on raw socket open, which bound the holder's
+      // KB-JWT to a stale nonce from a previous session.
+      ;(this.onmessage as ((ev: { data: string }) => void) | null)?.({
+        data: JSON.stringify({ type: 'session_ready', payload: { nonce: 'a'.repeat(32) } }),
+      })
     }, 30)
   }
   FakeWS.prototype.send = function (data: string) {
@@ -77,57 +89,40 @@ test.beforeEach(async ({ page, context }) => {
   await context.grantPermissions(['camera'])
   await page.addInitScript(installFakeWebSocket)
 
-  // Backend mocks — health keeps the "Scan QR" button enabled, predicates
-  // populate the picker. Same-origin (see config), so no CORS dance.
+  // Backend mocks — health keeps the app online, predicates back the
+  // configure-first catalog. page.route intercepts before the network,
+  // so the verification host's origin doesn't matter.
   await page.route('**/health', (route) => route.fulfill({ json: { status: 'ok' } }))
   await page.route('**/predicates', (route) => route.fulfill({ json: REGISTRY }))
 })
 
-async function reachPredicatePicker(page: import('@playwright/test').Page) {
+test('configure-first flow sends numeric age threshold + selected email check (#11)', async ({
+  page,
+}) => {
   await page.goto('/')
-  const scan = page.getByRole('button', { name: /scan qr/i })
-  await expect(scan).toBeEnabled() // waits for the mocked health check
-  await scan.click()
+
+  // Home: "Age 18 or older" is preselected (bar preset). Add the email check.
+  await page.getByRole('button', { name: /verified email address/i }).click()
+
+  // Continue stays disabled until the verifier sets its display name.
+  await page.getByPlaceholder(/blue owl/i).fill('Test Verifier')
+
+  await page.getByRole('button', { name: /continue to scan/i }).click()
+
   // Fake camera feeds the engagement QR -> zxing decodes it -> WS opens ->
-  // predicate picker. The decode takes a couple of seconds; toBeVisible polls.
-  await expect(page.getByText('What do you need to check?')).toBeVisible()
-}
+  // the pre-built request is auto-sent and the app waits for the holder.
+  // The decode takes a couple of seconds; toBeVisible polls.
+  await expect(page.getByText(/waiting for approval/i)).toBeVisible()
 
-test('age range field shows "30" not "030", and sends numeric min/max (#11)', async ({ page }) => {
-  await reachPredicatePicker(page)
-
-  await page.getByText('Age is within a range').click()
-  const min = page.locator('#age-min')
-  const max = page.locator('#age-max')
-
-  await min.fill('')
-  await min.pressSequentially('030')
-  await expect(min).toHaveValue('30')
-
-  await max.fill('')
-  await max.pressSequentially('45')
-  await expect(max).toHaveValue('45')
-
-  await page.getByRole('button', { name: /send request/i }).click()
-
-  // The request the verifier put on the wire must carry numbers, not "030".
+  // The request the verifier put on the wire must carry a numeric
+  // threshold (not a "030"-style string) and the email predicate.
   const sent = await page.evaluate(
     () => (window as unknown as { __WS_SENT__: string[] }).__WS_SENT__,
   )
   const request = sent.map((s) => JSON.parse(s)).find((m) => m.type === 'request')
   expect(request, 'verifier sent a request frame').toBeTruthy()
   const blob = JSON.stringify(request)
-  expect(blob).toContain('"min":30')
-  expect(blob).toContain('"max":45')
-  expect(blob).not.toContain('030')
-})
-
-test('age threshold field shows "21" not "021" (#11)', async ({ page }) => {
-  await reachPredicatePicker(page)
-
-  await page.getByText('Is over a minimum age').click()
-  const threshold = page.locator('#age-threshold')
-  await threshold.fill('')
-  await threshold.pressSequentially('021')
-  await expect(threshold).toHaveValue('21')
+  expect(blob).toContain('"threshold":18')
+  expect(blob).toContain('email_verified')
+  expect(blob).not.toMatch(/"threshold":"/)
 })

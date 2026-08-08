@@ -5,6 +5,7 @@ import { Input } from '@owlid/ui/components/ui/input'
 import { Card, CardContent } from '@owlid/ui/components/ui/card'
 import { toast } from 'sonner'
 import { checkRevocation, type CheckRevocationResponse } from '../api'
+import { friendlyApiError } from '../error-messages'
 import { QrScanner } from './QrScanner'
 
 /** Verifier-facing revocation lookup. Paste OR scan any credential id —
@@ -30,7 +31,7 @@ export function RevocationLookup() {
       const r = await checkRevocation(trimmed)
       setResult(r)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Lookup failed')
+      setError(await friendlyApiError(e, 'Lookup failed — check the credential id and try again.'))
     } finally {
       setBusy(false)
     }

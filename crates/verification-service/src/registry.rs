@@ -1,9 +1,7 @@
-//! Public registry endpoints — predicates and set-membership datasets.
-//!
-//! The verifier already pins every ZK proof against this registry server-side
-//! (see `owl_proof_system::zk::verify_zk_proof_pinned`); exposing it over HTTP
-//! lets verifier-side apps build their selector UI from the same source of
-//! truth without round-tripping the issuer service.
+//! Public registry endpoints — predicates, set-membership datasets, and the
+//! per-kind predicate Compact artifacts (`/predicate-zk`). Exposing the
+//! catalogue over HTTP lets verifier-side apps build their selector UI from
+//! the same source of truth without round-tripping the issuer service.
 
 use axum::{
     Json,
@@ -128,7 +126,7 @@ fn to_sd_jwt_claim(attr: &str) -> &str {
     responses((status = 200, description = "Registered circuit datasets", body = Vec<CircuitDatasetInfo>))
 )]
 pub async fn list_circuit_data() -> Json<Vec<CircuitDatasetInfo>> {
-    let entries = owl_zk_circuits::data::list_datasets()
+    let entries = owl_proof_system::datasets::list_datasets()
         .iter()
         .map(|d| CircuitDatasetInfo {
             name: d.name.to_string(),
@@ -152,7 +150,7 @@ pub async fn list_circuit_data() -> Json<Vec<CircuitDatasetInfo>> {
 pub async fn get_circuit_dataset(
     Path(name): Path<String>,
 ) -> Result<Json<CircuitDataset>, (StatusCode, Json<serde_json::Value>)> {
-    match owl_zk_circuits::data::lookup(&name) {
+    match owl_proof_system::datasets::lookup(&name) {
         Some(d) => Ok(Json(CircuitDataset {
             name: d.name.to_string(),
             version: d.version,
@@ -165,66 +163,10 @@ pub async fn get_circuit_dataset(
     }
 }
 
-/// Names of every Groth16 circuit served by `/zk-keys/{circuit}.pk.bin`.
-/// Wallets call this once to drive their prefetch list and avoid hard-coding
-/// circuit identifiers that change with the artifact set.
-#[utoipa::path(
-    get,
-    path = "/zk-keys",
-    tag = "registry",
-    responses((status = 200, description = "Available proving-key circuit names", body = Vec<String>))
-)]
-pub async fn list_proving_keys() -> Json<Vec<String>> {
-    Json(
-        owl_zk_circuits::prover_key_bytes::ALL
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-    )
-}
-
-/// Serve the raw Groth16 proving key for a given circuit. Public — the keys
-/// are public cryptographic material; integrity is what matters, not secrecy.
-///
-/// Path is `/zk-keys/{circuit}.pk.bin`. Cached aggressively (immutable):
-/// when the circuit changes, the key changes and a new artifact is shipped
-/// behind a new build hash; clients pick that up on next deploy.
-#[utoipa::path(
-    get,
-    path = "/zk-keys/{filename}",
-    tag = "registry",
-    params(("filename" = String, Path, description = "<circuit>.pk.bin")),
-    responses(
-        (status = 200, description = "Proving-key bytes (ark-serialize compressed)"),
-        (status = 404, description = "Unknown circuit"),
-    )
-)]
-pub async fn get_proving_key(Path(filename): Path<String>) -> Response {
-    // Strict shape check first — no path separators, must end .pk.bin.
-    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let Some(circuit) = filename.strip_suffix(".pk.bin") else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    let Some(bytes) = owl_zk_circuits::prover_key_bytes::lookup(circuit) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "application/octet-stream"),
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-        ],
-        bytes,
-    )
-        .into_response()
-}
-
 /// Filenames of every per-kind predicate Compact artifact served by
-/// `/predicate-zk/{filename}`. Same role as `/zk-keys` for Groth16: the
-/// holder's WASM build leaves the multi-MB keys out and prefetches this
-/// list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One
+/// `/predicate-zk/{filename}`: the holder's WASM build leaves the multi-MB
+/// keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir,
+/// prover, verifier}`. One
 /// Compact contract per predicate kind (devnet block-weight cap) — the
 /// circuit names cover every deployed kind in one bucket.
 #[utoipa::path(
@@ -240,6 +182,20 @@ pub async fn list_predicate_assets() -> Json<Vec<String>> {
             .map(|s| s.to_string())
             .collect(),
     )
+}
+
+/// Map a (possibly content-versioned) asset request to its canonical filename.
+/// The SDK requests `<circuit>.<hash>.<ext>` so a recompiled circuit gets a
+/// fresh, cache-busting URL; circuit names carry no dots, so a 3-part name is
+/// versioned — strip the middle hash. A bare 2-part name (older SDK) passes
+/// through. The served bytes are identical; only the URL changes.
+fn canonical_asset_name(filename: &str) -> std::borrow::Cow<'_, str> {
+    let parts: Vec<&str> = filename.split('.').collect();
+    if parts.len() == 3 {
+        std::borrow::Cow::Owned(format!("{}.{}", parts[0], parts[2]))
+    } else {
+        std::borrow::Cow::Borrowed(filename)
+    }
 }
 
 /// Serve a raw per-kind predicate Compact artifact (zkir / prover /
@@ -260,7 +216,8 @@ pub async fn get_predicate_asset(Path(filename): Path<String>) -> Response {
     if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let Some(bytes) = crate::predicate_assets::lookup(&filename) else {
+    let canonical = canonical_asset_name(&filename);
+    let Some(bytes) = crate::predicate_assets::lookup(&canonical) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     // Stream in 1 MiB chunks. The set-membership prover artefacts are
@@ -283,4 +240,30 @@ pub async fn get_predicate_asset(Path(filename): Path<String>) -> Response {
         .header(header::CONTENT_LENGTH, total)
         .body(body)
         .expect("static headers always produce a valid response")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_asset_name;
+
+    #[test]
+    fn strips_the_content_version_segment() {
+        // `<circuit>.<hash>.<ext>` -> `<circuit>.<ext>`
+        assert_eq!(
+            canonical_asset_name("attestEmailVerified.920f547b7335fce4.bzkir"),
+            "attestEmailVerified.bzkir"
+        );
+        assert_eq!(
+            canonical_asset_name("attestAgeGte.deadbeef.prover"),
+            "attestAgeGte.prover"
+        );
+    }
+
+    #[test]
+    fn passes_bare_names_through() {
+        assert_eq!(
+            canonical_asset_name("attestEmailVerified.bzkir"),
+            "attestEmailVerified.bzkir"
+        );
+    }
 }

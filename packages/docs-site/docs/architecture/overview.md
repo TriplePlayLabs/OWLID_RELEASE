@@ -91,14 +91,22 @@ presentation cannot be replayed.
 ## Trust anchored on Midnight
 
 Midnight is Owl ID's **required trust core** — there is no version of Owl ID that
-runs without it. Three on-chain Compact contracts hold the trust state, and the
-standards-shaped formats verifiers consume are projections of that state:
+runs without it. Owl ID deploys ten Compact contracts. Three of them are
+registries holding the trust state, and the standards-shaped formats verifiers
+consume are projections of that state:
 
 | On-chain registry   | Holds                                | Projected to verifiers as           |
 | ------------------- | ------------------------------------ | ----------------------------------- |
 | Issuer registry     | Trusted issuer key set + status.     | `did:web` issuer identity.          |
 | Revocation registry | Per-credential revocation status.    | IETF Token Status List + live feed. |
 | Identity registry   | `sha-256(did.json)` document anchor. | did:webs tamper-evidence.           |
+
+The other seven are the predicate contracts described above — `predicate_age`,
+`predicate_age_range`, `predicate_kyc`, `predicate_nationality`,
+`predicate_residency`, `predicate_email`, and `predicate_personhood`. Each
+verifies one circuit and appends an attestation key to its own on-chain set.
+They hold no trust state and no PII; a verifier only ever asks them "is this
+attestation key present?".
 
 A verification never depends on the issuer being online or on a central
 directory. The platform mirrors the on-chain registries and resolves every

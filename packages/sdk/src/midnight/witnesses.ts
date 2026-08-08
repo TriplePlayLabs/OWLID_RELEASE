@@ -72,11 +72,17 @@ function witnessesFor(kind: PredicateKind, w: PredicateWitness): Record<string, 
     case 'age':
     case 'age_range':
       return {
-        ageValue: (ctx: AnyCtx) => [ctx.privateState, require_(w.ageValue, kind, 'ageValue')],
+        dobValue: (ctx: AnyCtx) => [ctx.privateState, require_(w.dobValue, kind, 'dobValue')],
+        claimSalt: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimSalt, kind, 'claimSalt')],
+        claimPath: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimPath, kind, 'claimPath')],
       }
     case 'kyc':
       return {
         kycLevel: (ctx: AnyCtx) => [ctx.privateState, require_(w.kycLevel, kind, 'kycLevel')],
+        // F-1 binding: the issuer-committed claim salt + Merkle path proving the
+        // kycLevel is the value committed under owl_root.
+        claimSalt: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimSalt, kind, 'claimSalt')],
+        claimPath: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimPath, kind, 'claimPath')],
       }
     case 'residency': {
       const country = require_(w.residentCountry, kind, 'residentCountry')
@@ -91,6 +97,8 @@ function witnessesFor(kind: PredicateKind, w: PredicateWitness): Record<string, 
         residentCountry: (ctx: AnyCtx) => [ctx.privateState, padCountry(country)],
         verifierIdHash: (ctx: AnyCtx) => [ctx.privateState, vId],
         allowedCountryPath: (ctx: AnyCtx) => [ctx.privateState, path],
+        claimSalt: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimSalt, kind, 'claimSalt')],
+        claimPath: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimPath, kind, 'claimPath')],
       }
     }
     case 'email':
@@ -99,6 +107,8 @@ function witnessesFor(kind: PredicateKind, w: PredicateWitness): Record<string, 
           ctx.privateState,
           require_(w.emailVerifiedFlag, kind, 'emailVerifiedFlag'),
         ],
+        claimSalt: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimSalt, kind, 'claimSalt')],
+        claimPath: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimPath, kind, 'claimPath')],
       }
     case 'nationality': {
       const country = require_(w.nationalityCode, 'nationality', 'nationalityCode')
@@ -113,6 +123,8 @@ function witnessesFor(kind: PredicateKind, w: PredicateWitness): Record<string, 
         nationalityCode: (ctx: AnyCtx) => [ctx.privateState, padCountry(country)],
         verifierIdHash: (ctx: AnyCtx) => [ctx.privateState, vId],
         allowedCountryPath: (ctx: AnyCtx) => [ctx.privateState, path],
+        claimSalt: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimSalt, kind, 'claimSalt')],
+        claimPath: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimPath, kind, 'claimPath')],
       }
     }
     case 'personhood': {
@@ -122,6 +134,8 @@ function witnessesFor(kind: PredicateKind, w: PredicateWitness): Record<string, 
       }
       return {
         personhoodSecret: (ctx: AnyCtx) => [ctx.privateState, secret],
+        claimSalt: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimSalt, kind, 'claimSalt')],
+        claimPath: (ctx: AnyCtx) => [ctx.privateState, require_(w.claimPath, kind, 'claimPath')],
       }
     }
   }

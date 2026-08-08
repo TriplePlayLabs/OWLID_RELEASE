@@ -14,19 +14,22 @@ import { presentSdJwtVc } from './present.js'
 import { SdJwtVc } from './sd-jwt.js'
 import { toAlpha2 } from './countries.js'
 import { readOwlPredicate, type OwlPredicate } from './owl-dcql.js'
-import {
-  attestationCovers,
-  routeClaim,
-  createPredicateAssets,
-  createPredicateTransport,
-  ensureCredentialPredicatesAttested,
-  type AttestProgress,
-  type EnsureResult,
-  type OwlAttestationRef,
-  type PredicateAssets,
-  type PredicateTransport,
-  type ProvingProviderConfig,
+import { attestationCovers, routeClaim, type OwlAttestationRef } from './midnight/routing.js'
+import type {
+  AttestProgress,
+  EnsureResult,
+  PredicateAssets,
+  PredicateTransport,
+  ProvingProviderConfig,
 } from './midnight/index.js'
+
+/** The Midnight proving machinery transitively pulls the ~10 MB
+ *  ledger/onchain-runtime WASM. Importing it dynamically keeps that
+ *  payload out of the holder/verifier startup bundles — it loads the
+ *  first time a presentation actually needs to attest. */
+function loadMidnight() {
+  return import('./midnight/index.js')
+}
 
 /** Caller-supplied PRF unwrap. Called once per chosen credential per
  *  presentation; the resulting hex seed is held in memory only for the
@@ -115,8 +118,8 @@ export interface OwlWalletOptions {
 }
 
 export class OwlWallet {
-  private readonly predicateAssets: PredicateAssets
-  private readonly predicateTransport: PredicateTransport
+  private predicateAssets?: PredicateAssets
+  private predicateTransport?: PredicateTransport
   private readonly provingConfig?: ProvingProviderConfig
 
   constructor(
@@ -125,10 +128,11 @@ export class OwlWallet {
     private readonly passkeyResolver: () => Promise<string | null>,
     opts: OwlWalletOptions = {},
   ) {
-    // Lazily construct the defaults so unit tests that never call
-    // present() don't trigger the @owlid/verifier-client init.
-    this.predicateAssets = opts.predicateAssets ?? createPredicateAssets()
-    this.predicateTransport = opts.predicateTransport ?? createPredicateTransport()
+    // Defaults are constructed lazily in present() so unit tests that
+    // never present don't trigger the @owlid/verifier-client init, and
+    // so the Midnight WASM chunk stays off the startup path.
+    this.predicateAssets = opts.predicateAssets
+    this.predicateTransport = opts.predicateTransport
     this.provingConfig = opts.provingConfig
   }
 
@@ -150,6 +154,10 @@ export class OwlWallet {
 
     const passkeyId = await this.passkeyResolver()
 
+    const midnight = await loadMidnight()
+    this.predicateAssets ??= midnight.createPredicateAssets()
+    this.predicateTransport ??= midnight.createPredicateTransport()
+
     const chosen = chooseAcrossSets(summary, req.dcql, req.overrides)
 
     // OID4VP 1.0 §8.1 mandates the vp_token value is always an
@@ -170,7 +178,7 @@ export class OwlWallet {
       const credentialJson = walletCredentialToProofJson(pick.credential)
       const dcqlQuery = req.dcql.credentials.find((c) => c.id === pick.dcqlId)
       const required = dcqlQuery ? requiredAttestationsFor(dcqlQuery, req.verifierId) : undefined
-      const ensureResults = await ensureCredentialPredicatesAttested(
+      const ensureResults = await midnight.ensureCredentialPredicatesAttested(
         credentialJson,
         this.predicateAssets,
         this.predicateTransport,
@@ -180,6 +188,22 @@ export class OwlWallet {
         req.signal,
       )
       attested.push(...ensureResults)
+
+      // Gate before KB-signing: every predicate the verifier REQUIRES for
+      // this credential must have landed on Midnight. The orchestrator drops
+      // a predicate it cannot attest (prove failure, undeployed contract,
+      // witness can't satisfy) as a skip and returns no EnsureResult for it —
+      // so a required predicate missing here means the holder cannot meet the
+      // request. Fail loudly instead of KB-signing and sending a presentation
+      // the verifier will reject while the holder was told "Shared".
+      const missing = unattestedRequiredPredicates(required, ensureResults)
+      if (missing.length > 0) {
+        throw new Error(
+          `Couldn't prove ${missing.join(', ')} on Midnight for this credential — ` +
+            `the attestation could not be generated. Try again; if it keeps failing, ` +
+            `request a fresh credential.`,
+        )
+      }
 
       const wrapped = await this.storage.getCredentialKeyWrapped(pick.credential.credentialId)
       if (!wrapped) {
@@ -255,6 +279,20 @@ export class OwlWallet {
   }
 }
 
+/** Required predicates (by name) the orchestrator did NOT attest — i.e. that
+ *  have no successful `EnsureResult`. The orchestrator skips a predicate it
+ *  cannot prove/submit and returns no result for it, so a non-empty list means
+ *  the holder cannot satisfy the verifier's on-chain requirements and present()
+ *  must fail instead of sending a doomed presentation. */
+export function unattestedRequiredPredicates(
+  required: ReadonlyArray<{ predicate: string }> | undefined,
+  results: ReadonlyArray<{ predicate: string }>,
+): string[] {
+  if (!required || required.length === 0) return []
+  const landed = new Set(results.map((r) => r.predicate))
+  return required.map((r) => r.predicate).filter((p) => !landed.has(p))
+}
+
 /** Translate the DCQL credential query's OwlID `owl_predicate`
  *  extension to the set of `(predicate, params)` tuples the
  *  orchestrator must ensure are attested on Midnight. Queries
@@ -291,7 +329,9 @@ function requiredAttestationsFor(
     case 'email_verified':
       return [{ predicate: 'email_verified' }]
     case 'unique_personhood':
-      return [{ predicate: 'unique_personhood', epoch: ext.epoch, appId: ext.appId }]
+      // F-2: the campaign appId stays meaningful, but the orchestrator binds
+      // it under the verifier identity, so carry verifierId alongside it.
+      return [{ predicate: 'unique_personhood', epoch: ext.epoch, appId: ext.appId, verifierId }]
   }
 }
 
@@ -327,10 +367,11 @@ export interface PrewarmOptions {
  * write. Reuses the same prove→relay pipeline as `present()`.
  */
 export async function prewarmCredentialAttestations(opts: PrewarmOptions): Promise<EnsureResult[]> {
-  return ensureCredentialPredicatesAttested(
+  const midnight = await loadMidnight()
+  return midnight.ensureCredentialPredicatesAttested(
     walletCredentialToProofJson(opts.credential),
-    opts.predicateAssets ?? createPredicateAssets(),
-    opts.predicateTransport ?? createPredicateTransport(),
+    opts.predicateAssets ?? midnight.createPredicateAssets(),
+    opts.predicateTransport ?? midnight.createPredicateTransport(),
     opts.onProgress,
     opts.predicates ?? PREWARMABLE_PREDICATES,
     opts.provingConfig,
@@ -376,6 +417,8 @@ function walletCredentialToProofJson(cred: WalletCredential): string {
   if (residentAlpha2) attributes.residentCountry = residentAlpha2
   return JSON.stringify({
     root_hash: parsed.credentialIdHex(),
+    owl_root: parsed.owlRootHex(),
+    claim_disclosures: parsed.disclosuresRaw(),
     attributes,
     predicate_attestations: refs,
   })

@@ -100,8 +100,8 @@ export interface PresentationRequestOptions {
    *  two verifiers asking for the same allowed-set produce distinct
    *  keys. Must match what the verifier passes to `verifyDcql` (and what
    *  the holder app sends to the sidecar for nationality / residency
-   *  attestations). */
-  verifierId: string
+   *  attestations). Defaults to `OwlVerifier.verifierId()`. */
+  verifierId?: string
   /** OpenID4VP 1.0 §6 DCQL query — the only credential request shape. */
   dcql: DcqlRequest
   /** Callback to render the QR payload for the holder. */

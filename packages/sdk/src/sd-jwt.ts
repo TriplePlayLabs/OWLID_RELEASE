@@ -270,6 +270,39 @@ export class SdJwtVc {
     return Array.isArray(arr) ? arr[2] : null
   }
 
+  /** Issuer-signed `owl_root` (hex) — the predicate-binding commitment, or
+   *  `null` for a credential issued before owl_root. */
+  owlRootHex(): string | null {
+    const parts = this.jwt.split('.')
+    if (parts.length !== 3) return null
+    const payload = JSON.parse(utf8String(b64urlDecode(parts[1]))) as { owl_root?: unknown }
+    return typeof payload.owl_root === 'string' ? payload.owl_root : null
+  }
+
+  /** `{ claimName: disclosureSalt }` for every disclosed claim — the salts the
+   *  issuer fed into both the SD-JWT digest and the owl_root commitments. */
+  disclosureSaltsByName(): Record<string, string> {
+    const out: Record<string, string> = {}
+    for (const [name, b64] of this.disclosures) {
+      const arr = JSON.parse(utf8String(b64urlDecode(b64)))
+      if (Array.isArray(arr) && typeof arr[0] === 'string') out[name] = arr[0]
+    }
+    return out
+  }
+
+  /** Raw `{ salt, name, value }` for every disclosure, exactly as the issuer
+   *  encoded them — the inputs to the `owl_root` commitment the wallet rebuilds. */
+  disclosuresRaw(): Array<{ name: string; value: unknown; salt: string }> {
+    const out: Array<{ name: string; value: unknown; salt: string }> = []
+    for (const [name, b64] of this.disclosures) {
+      const arr = JSON.parse(utf8String(b64urlDecode(b64)))
+      if (Array.isArray(arr) && typeof arr[0] === 'string') {
+        out.push({ salt: arr[0], name, value: arr[2] })
+      }
+    }
+    return out
+  }
+
   /** Read `iss` without verifying the signature. */
   peekIssuer(): string {
     const parts = this.jwt.split('.')

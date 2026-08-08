@@ -23,6 +23,7 @@
     "build:docs": "bun run --filter @owlid/docs-site build",
     "test": "bun run --filter '*' test",
     "test:sdk": "bun run --filter @owlid/sdk test",
+    "check:docs": "bun run --filter @owlid/docs-site check:docs",
     "check": "bun run --filter '*' check",
     "lint": "oxlint --config oxlint.json .",
     "lint:fix": "oxlint --config oxlint.json --fix .",

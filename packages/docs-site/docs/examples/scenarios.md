@@ -5,9 +5,28 @@ Concrete products you can build with Owl ID. Each shows the user-facing flow plu
 Two building blocks recur:
 
 - **Disclosures** — plain SD-JWT VC claims (`given_name`, `nationalities`, …). The holder reveals only the ones your DCQL query asks for.
-- **Predicates** — facts proven by the holder's wallet in zero knowledge on the device, then attested on Midnight (`age_over_18`, `verification_level`, `nationality_eu`, `resident`, `email_verified`, `unique_person`). The underlying value never leaves the wallet; you request the predicate and `verify` / `requestPresentation` enforce it. See [How Owl ID works](/architecture/overview).
+- **Predicates** — facts proven by the holder's wallet in zero knowledge on the device, then attested on Midnight. The underlying value never leaves the wallet; you request the predicate and the platform enforces it. See [How Owl ID works](/architecture/overview).
 
-`requestPresentation` returns a `VerifyDcqlResponse` — `valid` plus a `perCredential` map keyed by your DCQL `credentials[].id`.
+Predicates have three names worth keeping straight — the `Predicates.*` factory you call, the DCQL claim path it compiles to, and the Compact contract that proves it:
+
+| `Predicates.*` factory                      | DCQL claim path                     | Compact contract        |
+| ------------------------------------------- | ----------------------------------- | ----------------------- |
+| `Predicates.ageOver(n)`                     | `age_over` + `values: [n]`          | `predicate_age`         |
+| `Predicates.ageRange(min, max)`             | `age_range` + `values: [{min,max}]` | `predicate_age_range`   |
+| `Predicates.kycLevel(level)`                | `verification_level`                | `predicate_kyc`         |
+| `Predicates.nationalityIn(countries)`       | `nationality_in`                    | `predicate_nationality` |
+| `Predicates.residencyIn(countries)`         | `resident_in`                       | `predicate_residency`   |
+| `Predicates.emailVerified()`                | `email_verified`                    | `predicate_email`       |
+| `Predicates.uniquePerson({ epoch, appId })` | `unique_person`                     | `predicate_personhood`  |
+
+`nationality_eu` is accepted as a legacy synonym for `nationality_in` over the EU-27 set.
+
+Anything **not** in that table falls back to plain selective disclosure. In particular `age_over_18` / `age_over_21` / `age_over_65` / `resident` are issuer-stamped booleans, not on-device proofs — reach for `Predicates.ageOver(…)` / `Predicates.residencyIn(…)` when you want the zero-knowledge version.
+
+Two entry points drive the QR flow, both returning a `VerifyDcqlResponse` — `valid` plus a `perCredential` map keyed by your DCQL `credentials[].id`:
+
+- `requestPredicates({ predicates })` — predicates only. Preferred.
+- `requestPresentation({ dcql })` — raw DCQL, for mixing predicates with plain disclosures.
 
 ---
 
@@ -16,15 +35,13 @@ Two building blocks recur:
 Goal: confirm a customer is 18+ before serving alcohol. No name, no birthday — just the green check.
 
 ```ts
-import { OwlVerifier } from '@owlid/sdk'
+import { OwlVerifier, Predicates } from '@owlid/sdk'
 
 const verifier = new OwlVerifier({ apiKey: process.env.OWLID_API_KEY! })
 
-const result = await verifier.requestPresentation({
+const result = await verifier.requestPredicates({
   verifierName: 'Acme Bar',
-  dcql: {
-    credentials: [{ id: 'cred0', format: 'dc+sd-jwt', claims: [{ path: ['age_over_18'] }] }],
-  },
+  predicates: [Predicates.ageOver(18)],
   onQr: (qrPayload) => terminal.showQr(qrPayload),
   timeoutMs: 60_000,
 })
@@ -33,7 +50,7 @@ if (result.valid) bar.allowEntry()
 else bar.deny(result.error)
 ```
 
-`age_over_18` is a predicate: the wallet derives the holder's age from their credential, proves `age ≥ 18` in zero knowledge on the device, and Midnight records an attestation. The bar sees `valid: true` and the issuer's `did:web` identifier — **never** the name, exact age, birthdate, address, or document number.
+`Predicates.ageOver(18)` compiles to the DCQL claim `{ path: ['age_over'], values: [18] }`. The wallet derives the holder's age from their credential, proves `age ≥ 18` in zero knowledge on the device, and Midnight records an attestation. The bar sees `valid: true` and the issuer's `did:web` identifier — **never** the name, exact age, birthdate, address, or document number.
 
 **Privacy properties**
 
@@ -48,30 +65,22 @@ else bar.deny(result.error)
 
 Goal: a forum, waitlist, or community wants **one account per real human** — no bots, no mass fake signups — without learning anyone's identity.
 
-This is the `unique_person` predicate. The verifier picks a 32-byte **scope**: an `epoch` (the campaign) and an `app_id` (your app). The wallet proves the holder controls a unique personhood secret and derives a per-scope nullifier; Midnight rejects a second claim under the same scope. One human can attest once — and stays uncorrelated across other apps and campaigns.
+This is the `unique_person` predicate. The verifier picks a 32-byte **scope**: an `epoch` (the campaign) and an `appId` (your app), each 32-byte hex. The wallet proves the holder controls a unique personhood secret and derives a per-scope nullifier; Midnight rejects a second claim under the same scope. One human can attest once — and stays uncorrelated across other apps and campaigns.
 
 ```ts
-import { OwlVerifier } from '@owlid/sdk'
+import { OwlVerifier, Predicates } from '@owlid/sdk'
 
 const verifier = new OwlVerifier({ apiKey: process.env.OWLID_API_KEY! })
 
-// `epoch` + `app_id` are 32-byte hex (64 hex chars) you control.
-// `epoch` = the campaign scope, `app_id` = your application.
+// `epoch` + `appId` are 32-byte hex (64 hex chars) you control.
+// `epoch` = the campaign scope, `appId` = your application.
 // Keep both stable to enforce "one signup per human, ever".
 const EPOCH = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90'
 const APP_ID = 'ac4ed00000000000000000000000000000000000000000000000000000000001'
 
-const result = await verifier.requestPresentation({
+const result = await verifier.requestPredicates({
   verifierName: 'Acme Community',
-  dcql: {
-    credentials: [
-      {
-        id: 'cred0',
-        format: 'dc+sd-jwt',
-        claims: [{ path: ['unique_person'], values: [{ epoch: EPOCH, app_id: APP_ID }] }],
-      },
-    ],
-  },
+  predicates: [Predicates.uniquePerson({ epoch: EPOCH, appId: APP_ID })],
   onQr: (payload) => signup.showQr(payload),
 })
 
@@ -79,9 +88,9 @@ if (result.valid) signup.createAccount()
 else signup.deny('Already registered, or not a verified human.')
 ```
 
-The signup form learns nothing else — no email, no document, no profile data — and gets bot-resistance and one-account-per-human for free. A user who already signed up cannot do it twice: their nullifier for this `(epoch, app_id)` is already on-chain.
+The signup form learns nothing else — no email, no document, no profile data — and gets bot-resistance and one-account-per-human for free. A user who already signed up cannot do it twice: their nullifier for this `(epoch, appId)` is already on-chain.
 
-> **Pick the scope deliberately.** Reuse the same `epoch` everywhere you want "one claim total" (one signup ever). Rotate the `epoch` per season/round when you want "one claim per round". Different `app_id`s never correlate to the same human.
+> **Pick the scope deliberately.** Reuse the same `epoch` everywhere you want "one claim total" (one signup ever). Rotate the `epoch` per season/round when you want "one claim per round". Different `appId`s never correlate to the same human.
 
 ---
 
@@ -109,7 +118,7 @@ const credential = await issuer.issue(session.id, {
 // hand `credential.sdJwtVc` to the buyer's wallet to store
 ```
 
-**At the door** — the scanner asks for the event + tier disclosures **and** a unique-person proof scoped to this event:
+**At the door** — the scanner asks for the event + tier disclosures **and** a unique-person proof scoped to this event. Mixing disclosures with a predicate means dropping to the raw DCQL form (note `app_id` is snake_case on the wire, where the factory takes `appId`):
 
 ```ts
 import { OwlVerifier } from '@owlid/sdk'
@@ -118,7 +127,7 @@ const verifier = new OwlVerifier({ apiKey: process.env.OWLID_DOOR_KEY! })
 
 // 32-byte hex scope (64 hex chars) — one entry per human for this event.
 const EPOCH = 'e7e0700000000000000000000000000000000000000000000000000000202601'
-const APP_ID = 'd00r500000000000000000000000000000000000000000000000000000a0b12'
+const APP_ID = 'd00d5000000000000000000000000000000000000000000000000000000a0b12'
 
 const result = await verifier.requestPresentation({
   verifierName: 'OwlCon 2026 Entrance',
@@ -158,7 +167,7 @@ if (result.valid && subjects?.event_id === 'OWLCON-2026' && subjects?.tier === '
 
 ## 4. KYC-gated onboarding
 
-Goal: a remote-work or fintech platform requires every user to have completed at least KYC tier 2 with any approved provider.
+Goal: a remote-work or fintech platform requires every user to have completed at least KYC tier 2 with any approved provider. Names come back as disclosures alongside the predicate, so this is the raw DCQL form again.
 
 ```ts
 const result = await verifier.requestPresentation({
@@ -197,18 +206,48 @@ if (result.valid) {
 Goal: a service operates only in the EU and needs to confirm sellers are EU nationals — without learning the exact country.
 
 ```ts
-const result = await verifier.requestPresentation({
+const EU = [
+  'AT',
+  'BE',
+  'BG',
+  'CY',
+  'CZ',
+  'DE',
+  'DK',
+  'EE',
+  'ES',
+  'FI',
+  'FR',
+  'GR',
+  'HR',
+  'HU',
+  'IE',
+  'IT',
+  'LT',
+  'LU',
+  'LV',
+  'MT',
+  'NL',
+  'PL',
+  'PT',
+  'RO',
+  'SE',
+  'SI',
+  'SK',
+]
+
+const result = await verifier.requestPredicates({
   verifierName: 'EU Marketplace',
-  dcql: {
-    credentials: [{ id: 'cred0', format: 'dc+sd-jwt', claims: [{ path: ['nationality_eu'] }] }],
-  },
+  predicates: [Predicates.nationalityIn(EU)],
   onQr: (payload) => listing.renderQr(payload),
 })
 
 if (result.valid) listing.publish()
 ```
 
-`nationality_eu` is a set-membership predicate: the wallet proves the holder's nationality is in the approved EU set in zero knowledge. The verifier learns only the boolean — not which country. (To collect the specific country instead, request the `nationalities` disclosure.)
+`nationalityIn` is a set-membership predicate: the wallet proves the holder's nationality is in the set you supplied, in zero knowledge. The verifier learns only the boolean — not which country. (To collect the specific country instead, request the `nationalities` disclosure.) The set is per-verifier salted, so only a hash reaches the chain.
+
+The DCQL claim path `nationality_eu` is a legacy synonym that expands to this same EU-27 set server-side; new integrations should pass the set explicitly.
 
 ---
 
@@ -217,7 +256,7 @@ if (result.valid) listing.publish()
 Goal: an airdrop, a public-goods grant, or a one-person-one-vote ballot must reach each real human exactly once. No sybil farms, no wallet-splitting.
 
 ```ts
-import { OwlVerifier } from '@owlid/sdk'
+import { OwlVerifier, Predicates } from '@owlid/sdk'
 
 const verifier = new OwlVerifier({ apiKey: process.env.OWLID_API_KEY! })
 
@@ -225,24 +264,16 @@ const verifier = new OwlVerifier({ apiKey: process.env.OWLID_API_KEY! })
 const EPOCH = '00c7a0000000000000000000000000000000000000000000000000000000ee00'
 const APP_ID = '00d0a0000000000000000000000000000000000000000000000000000000bb00'
 
-const result = await verifier.requestPresentation({
+const result = await verifier.requestPredicates({
   verifierName: 'OwlDAO Grant Round 7',
-  dcql: {
-    credentials: [
-      {
-        id: 'cred0',
-        format: 'dc+sd-jwt',
-        claims: [{ path: ['unique_person'], values: [{ epoch: EPOCH, app_id: APP_ID }] }],
-      },
-    ],
-  },
+  predicates: [Predicates.uniquePerson({ epoch: EPOCH, appId: APP_ID })],
   onQr: (payload) => claim.showQr(payload),
 })
 
 if (result.valid) await disburse(claim.recipientAddress)
 ```
 
-Each human's nullifier for `owldao-grant-round-7` lands on-chain on first claim, so a second attempt — even from a different wallet or device — fails. The DAO learns "a unique human claimed", never _who_. Rotate the `epoch` to `round-8` next time and every human can claim again.
+Each human's nullifier for this `(epoch, appId)` lands on-chain on first claim, so a second attempt — even from a different wallet or device — fails. The DAO learns "a unique human claimed", never _who_. Rotate the `epoch` next round and every human can claim again.
 
 ---
 
@@ -251,29 +282,41 @@ Each human's nullifier for `owldao-grant-round-7` lands on-chain on first claim,
 Goal: smaller checks that pair a predicate with a disclosure.
 
 ```ts
-// Newsletter — confirm a provider-verified email without an email round-trip.
-dcql: {
-  credentials: [
-    {
-      id: 'cred0',
-      format: 'dc+sd-jwt',
-      claims: [{ path: ['email_verified'] }, { path: ['email'] }],
-    },
-  ]
-}
-
 // Mature content — 21+ without name or birthday.
-dcql: {
-  credentials: [{ id: 'cred0', format: 'dc+sd-jwt', claims: [{ path: ['age_over_21'] }] }]
-}
+await verifier.requestPredicates({
+  verifierName: 'Acme Media',
+  predicates: [Predicates.ageOver(21)],
+  onQr,
+})
 
 // Resident-only service — verified residency, no address.
-dcql: {
-  credentials: [{ id: 'cred0', format: 'dc+sd-jwt', claims: [{ path: ['resident'] }] }]
-}
+await verifier.requestPredicates({
+  verifierName: 'Acme Municipal',
+  predicates: [Predicates.residencyIn(['NL'])],
+  onQr,
+})
 ```
 
-`email_verified`, `age_over_21`, `resident` are predicates (proven on-device); `email` is a plain disclosure the holder reveals alongside the proof.
+Pairing a predicate with a plain disclosure needs the raw DCQL form, because `requestPredicates` takes predicates only:
+
+```ts
+// Newsletter — a provider-verified email flag plus the address itself.
+await verifier.requestPresentation({
+  verifierName: 'Acme Newsletter',
+  dcql: {
+    credentials: [
+      {
+        id: 'cred0',
+        format: 'dc+sd-jwt',
+        claims: [{ path: ['email_verified'] }, { path: ['email'] }],
+      },
+    ],
+  },
+  onQr,
+})
+```
+
+`email_verified` is a predicate (proven on-device); `email` is a plain disclosure the holder reveals alongside the proof.
 
 ---
 
@@ -322,7 +365,7 @@ Owl ID is designed so the platform mostly stores hashes already — there is ver
 - **Render the QR full-screen** so phones don't have to crop the camera frame.
 - **Use a short challenge TTL** (60 s) for unattended kiosks, longer (5 min) for online flows.
 - **Cache verification results** keyed by `credential_id` hash; expire on TTL or a revocation push event.
-- **Choose `unique_person` scopes deliberately** — a stable `epoch` for "once ever", a rotating `epoch` for "once per round". Different `app_id`s never correlate.
+- **Choose `unique_person` scopes deliberately** — a stable `epoch` for "once ever", a rotating `epoch` for "once per round". Different `appId`s never correlate.
 - **Expect a one-time delay** the first time a holder proves a predicate on a new device (a few seconds of on-device proving); it is reused after that.
 - **Map `result.error` to friendly messages** — the platform returns codes like `Credential revoked`, `KB-JWT audience mismatch`, `Untrusted issuer`, `predicate not attested`.
 - **For unlinkability across verifiers**, ask the issuer for a Batch (`OwlIssuer.issueBatch`) and present a fresh one-time-use credential each time.

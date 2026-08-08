@@ -26,8 +26,7 @@ time. Each kind ships independently and gets its own
 Only the small ABI modules are vendored. The multi-MB ZK artifacts
 (`*.bzkir` / `*.prover` / `*.verifier`) are **not** bundled — the holder
 fetches them lazily from the verification-service `/predicate-zk` endpoint
-through the layered cache in `../predicate-assets.ts` (mirroring
-`../proving-keys.ts` for the Groth16 keys).
+through the layered cache in `../predicate-assets.ts`.
 
 Each module imports only `@midnight-ntwrk/compact-runtime` (already an SDK
 dependency at the matching `0.16.0` version it `checkRuntimeVersion`s).

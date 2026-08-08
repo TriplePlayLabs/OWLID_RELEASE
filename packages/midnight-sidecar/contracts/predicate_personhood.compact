@@ -10,11 +10,15 @@ import "./lib/security/Pausable" prefix Pausable_;
 export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
 
 witness personhoodSecret(): Bytes<32>;
+// F-1 binding: the issuer commitment of the secret + its path under owl_root.
+witness claimSalt(): Bytes<32>;
+witness claimPath(): MerkleTreePath<8, Bytes<32>>;
 
 export ledger attestations: Set<Bytes<32>>;
 export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
 export ledger attestCount: Counter;
-// Anti-replay nullifier set keyed on persistentHash([secret, epoch, app_id]).
+// Anti-replay nullifier set keyed on
+// persistentHash(["owlid:nullifier:uniq:", secret, epoch, app_id]).
 export ledger nullifiers: Set<Bytes<32>>;
 
 constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>) {
@@ -34,20 +38,34 @@ circuit record(key: Bytes<32>): [] {
 }
 
 export circuit attestUniquePersonhood(
-  rootHash: Bytes<32>,
+  owlRoot: Bytes<32>,
   epoch: Bytes<32>,
   appId: Bytes<32>
 ): [] {
   Pausable_assertNotPaused();
-  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
+  assert(owlRoot != pad(32, "") as Bytes<32>, "zero owlRoot");
   const secret = personhoodSecret();
-  const nullifier = persistentHash<Vector<3, Bytes<32>>>([secret, disclose(epoch), disclose(appId)]);
+  // F-1: bind the secret to the issuer-signed owl_root, so a holder cannot
+  // invent fresh secrets to mint multiple personhood nullifiers (sybil).
+  const cSalt = claimSalt();
+  const cPath = claimPath();
+  const leaf = persistentHash<Vector<3, Bytes<32>>>(
+    [pad(32, "personhoodSecret"), secret, cSalt]
+  );
+  assert(cPath.leaf == leaf, "claim commitment != personhoodSecret witness");
+  assert(owlRoot == disclose(merkleTreePathRoot<8, Bytes<32>>(cPath).field) as Bytes<32>,
+    "owl_root mismatch");
+
+  // Domain-tagged so the nullifier space can never collide with another
+  // persistentHash site (F-2 / DOMAIN_SEPARATION.md §2).
+  const nullifier = persistentHash<Vector<4, Bytes<32>>>(
+    [pad(32, "owlid:nullifier:uniq:"), secret, disclose(epoch), disclose(appId)]);
   assert(!nullifiers.member(disclose(nullifier)), "personhood replay");
   nullifiers.insert(disclose(nullifier));
   const param = persistentHash<Vector<2, Bytes<32>>>([disclose(epoch), disclose(appId)]);
   record(keyOf(
     pad(32, "owlid:attest:uniq:"),
-    disclose(rootHash),
+    disclose(owlRoot),
     param
   ));
 }

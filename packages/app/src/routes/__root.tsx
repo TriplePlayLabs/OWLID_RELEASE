@@ -90,8 +90,9 @@ export const Route = createRootRoute({
         charSet: 'utf-8',
       },
       {
+        // No maximum-scale: blocking pinch-zoom is a WCAG 1.4.4 failure.
         name: 'viewport',
-        content: 'width=device-width, initial-scale=1.0, maximum-scale=1',
+        content: 'width=device-width, initial-scale=1.0',
       },
       {
         title: 'Owl ID - Secure Identity',
@@ -160,7 +161,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       <body className="bg-background text-foreground antialiased">
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <Toaster />
+            {/* Explicit duration + close button so a toast can never linger
+                indefinitely (sonner pauses its auto-dismiss timer while the
+                window is unfocused or hovered). */}
+            <Toaster closeButton toastOptions={{ duration: 6000 }} />
             <HydrationGate>{children}</HydrationGate>
             <ModalsPortal />
             {devtoolsEnabled() && (

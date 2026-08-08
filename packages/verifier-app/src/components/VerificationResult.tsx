@@ -1,6 +1,7 @@
 import { CircleCheck, CircleX, RotateCcw, BadgeCheck, Fingerprint } from 'lucide-react'
 import type { VerifyResult } from '../api'
 import { friendlyCheckLabel } from '../dcql-labels'
+import { friendlyVerifyError } from '../error-messages'
 import { Badge } from '@owlid/ui/components/ui/badge'
 import { Button } from '@owlid/ui/components/ui/button'
 import { Card, CardContent } from '@owlid/ui/components/ui/card'
@@ -55,7 +56,7 @@ export function VerificationResult({ result, onReset, campaign }: VerificationRe
               <p className="text-sm text-muted-foreground">
                 {result.valid
                   ? 'Every check passed, and no personal data was shared.'
-                  : result.error || 'We couldn’t verify this proof.'}
+                  : friendlyVerifyError(result.error) || 'We couldn’t verify this proof.'}
               </p>
             </div>
           </div>

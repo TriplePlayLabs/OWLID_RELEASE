@@ -25,6 +25,13 @@ impl AttestationCache {
         self.keys.write().await.insert(key);
     }
 
+    /// Drop every cached key. Used when the authoritative on-chain
+    /// snapshot is about to be replayed, so a chain reset / contract
+    /// redeploy can't leave dead-chain keys reporting `attested`.
+    pub async fn clear(&self) {
+        self.keys.write().await.clear();
+    }
+
     /// Hot-path membership. Fail-closed: if the lock is contended we
     /// report "not attested" so a presentation is rejected rather than
     /// wrongly accepted.
@@ -90,5 +97,48 @@ impl AttestationRepository {
 
     pub fn is_attested(&self, attest_key: &str) -> bool {
         self.cache.is_attested(attest_key)
+    }
+
+    /// Replace the persisted mirror with the chain's current attestation
+    /// set: truncate the table + clear the cache. Called when a fresh
+    /// sidecar SSE stream connects (it replays an authoritative on-chain
+    /// snapshot right after), so a chain reset / contract redeploy does
+    /// not leave stale dead-chain keys reporting `attested = true`. Safe
+    /// because a momentary miss falls through to the authoritative
+    /// on-chain read-through in `/predicates/attested` and `/verify`.
+    pub async fn reset(&self) -> Result<()> {
+        sqlx::query("TRUNCATE attested_predicates")
+            .execute(&self.pool)
+            .await?;
+        self.cache.clear().await;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The in-memory half of `AttestationRepository::reset()` (the DB half
+    // is a `TRUNCATE`). A chain reset / contract redeploy must not leave
+    // stale dead-chain keys reporting `attested = true`.
+    #[tokio::test]
+    async fn clear_drops_all_cached_keys() {
+        let cache = AttestationCache::new();
+        cache.add("aa".repeat(32)).await;
+        cache.add("bb".repeat(32)).await;
+        assert!(cache.is_attested(&"aa".repeat(32)));
+        assert!(cache.is_attested(&"bb".repeat(32)));
+
+        cache.clear().await;
+
+        assert!(!cache.is_attested(&"aa".repeat(32)));
+        assert!(!cache.is_attested(&"bb".repeat(32)));
+    }
+
+    #[test]
+    fn is_attested_is_false_for_an_absent_key() {
+        let cache = AttestationCache::new();
+        assert!(!cache.is_attested("never-added"));
     }
 }

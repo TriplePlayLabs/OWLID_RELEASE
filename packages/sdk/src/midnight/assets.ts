@@ -13,9 +13,8 @@
  * (`/predicate-zk/<circuit>.{bzkir,prover,verifier}`).
  *
  * The heavy `.bzkir`/`.prover`/`.verifier` artifacts are fetched lazily
- * through the same layered cache the Groth16 keys use (in-memory →
- * IndexedDB → immutable HTTP). Only the small compactc-generated ABI
- * modules are bundled (`./contracts/<kind>`).
+ * through a layered cache (in-memory → IndexedDB → immutable HTTP). Only
+ * the small compactc-generated ABI modules are bundled (`./contracts/<kind>`).
  */
 
 import {
@@ -30,6 +29,7 @@ import { getRegistryApi } from '@owlid/verifier-client'
 
 import type { PredicateKind, PredicateWitness } from './kinds.js'
 import { buildCompiledContract } from './witnesses.js'
+import { ASSET_HASHES } from './asset-manifest.js'
 
 export type { PredicateKind, PredicateWitness } from './kinds.js'
 export { PREDICATE_KINDS } from './kinds.js'
@@ -106,13 +106,21 @@ class FetchZkConfigProvider extends ZKConfigProvider<string> {
   }
 
   private artifact(circuitId: string, kind: 'bzkir' | 'prover' | 'verifier'): Promise<Uint8Array> {
-    const filename = `${circuitId}.${kind}`
-    const mem = this.mem.get(filename)
+    // Content-versioned request name: `<circuit>.<hash>.<ext>` when the baked
+    // manifest has a hash, else the bare `<circuit>.<ext>`. A recompiled circuit
+    // changes the hash → new URL + IndexedDB key → the `immutable`-cached stale
+    // bzkir is bypassed instead of pinning forever under a constant filename
+    // (the "Transcripts not fully consumed" failure). The verification-service
+    // strips the `.<hash>` segment before lookup, so the bytes are unchanged.
+    const base = `${circuitId}.${kind}`
+    const hash = ASSET_HASHES[base]
+    const name = hash ? `${circuitId}.${hash}.${kind}` : base
+    const mem = this.mem.get(name)
     if (mem) return Promise.resolve(mem)
-    const existing = this.inflight.get(filename)
+    const existing = this.inflight.get(name)
     if (existing) return existing
-    const p = this.load(filename).finally(() => this.inflight.delete(filename))
-    this.inflight.set(filename, p)
+    const p = this.load(name).finally(() => this.inflight.delete(name))
+    this.inflight.set(name, p)
     return p
   }
 
@@ -137,17 +145,16 @@ class FetchZkConfigProvider extends ZKConfigProvider<string> {
   private async fetch(filename: string): Promise<Uint8Array> {
     // The generated client owns the endpoint, base URL, and credentials
     // (the SDK is the only dev surface — no raw fetch, no sidecar). The
-    // artifact route has no JSON body schema (raw octet-stream, same as
-    // `/zk-keys`), so the typed method resolves `void`; read the bytes
-    // off the underlying response via the `…Raw` variant.
+    // artifact route has no JSON body schema (raw octet-stream), so the
+    // typed method resolves `void`; read the bytes off the underlying
+    // response via the `…Raw` variant.
     const res = await getRegistryApi().getPredicateAssetRaw({ filename })
     return new Uint8Array(await res.raw.arrayBuffer())
   }
 }
 
 // ---------------------------------------------------------------------------
-// IndexedDB helpers (own DB so the predicate artifact keyspace never
-// collides with the Groth16 `owlid-zk-keys` store)
+// IndexedDB helpers (own DB for the predicate artifact keyspace)
 // ---------------------------------------------------------------------------
 
 function openDb(): Promise<IDBDatabase> {

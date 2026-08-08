@@ -11,8 +11,6 @@
  * single drift produces silent membership misses. Cross-checked via
  * the Rust unit tests in `attestation.rs`.
  */
-import { buildAllowedSetTree, treeRootBytesLE } from './merkle.js'
-
 const enc = new TextEncoder()
 
 async function sha256(...chunks: Uint8Array[]): Promise<Uint8Array> {
@@ -100,6 +98,11 @@ export async function allowedCountrySetHash(
   clientId: string,
   countries: readonly string[],
 ): Promise<Uint8Array> {
+  // Dynamic import: merkle.js pulls @midnight-ntwrk/compact-runtime,
+  // whose onchain-runtime WASM (1.4 MB, top-level await) would otherwise
+  // land in every consumer's startup bundle via the OwlVerifier export.
+  // Only the country-set predicates ever need the tree hash.
+  const { buildAllowedSetTree, treeRootBytesLE } = await import('./merkle.js')
   const { tree } = buildAllowedSetTree(countries)
   const rootBytes = treeRootBytesLE(tree)
   const vId = await verifierIdHash(clientId)
@@ -132,14 +135,21 @@ export function emailVerifiedKey(rootHash: Uint8Array): Promise<Uint8Array> {
   return keyFromParts(TAG_EMAIL_VERIFIED, rootHash, new Uint8Array(32))
 }
 
-/** Key for `attestUniquePersonhood(rootHash, epoch, appId)`. Param =
- *  SHA-256(epoch || appId), both 32-byte hex inputs. */
+/** Key for `attestUniquePersonhood(rootHash, epoch, appId)`. The campaign
+ *  `appId` is bound under the verifier `clientId` (F-2) so a different
+ *  verifier choosing the same campaign cannot share the nullifier namespace:
+ *    effectiveAppId = SHA-256(SHA-256(clientId) || appId)
+ *    param          = SHA-256(epoch || effectiveAppId)
+ *  Mirrors Rust `attestation::{personhood_app_id, unique_personhood_key}`. */
 export async function uniquePersonhoodKey(
   rootHash: Uint8Array,
   epoch: string,
   appId: string,
+  clientId: string,
 ): Promise<Uint8Array> {
-  const param = await sha256(hexToBytes32(epoch), hexToBytes32(appId))
+  const vidHash = await sha256(new TextEncoder().encode(clientId))
+  const effectiveAppId = await sha256(vidHash, hexToBytes32(appId))
+  const param = await sha256(hexToBytes32(epoch), effectiveAppId)
   return keyFromParts(TAG_UNIQUE_PERSONHOOD, rootHash, param)
 }
 

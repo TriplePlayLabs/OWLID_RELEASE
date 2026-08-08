@@ -10,6 +10,8 @@ import "./lib/security/Pausable" prefix Pausable_;
 export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
 
 witness emailVerifiedFlag(): Uint<8>;
+witness claimSalt(): Bytes<32>;
+witness claimPath(): MerkleTreePath<8, Bytes<32>>;
 
 export ledger attestations: Set<Bytes<32>>;
 export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
@@ -31,14 +33,23 @@ circuit record(key: Bytes<32>): [] {
   }
 }
 
-export circuit attestEmailVerified(rootHash: Bytes<32>): [] {
+export circuit attestEmailVerified(owlRoot: Bytes<32>): [] {
   Pausable_assertNotPaused();
-  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
+  assert(owlRoot != pad(32, "") as Bytes<32>, "zero owlRoot");
   const flag = emailVerifiedFlag();
+  const salt = claimSalt();
+  const path = claimPath();
+  // Bind the flag to the issuer-signed credential (F-1).
+  const leaf = persistentHash<Vector<3, Bytes<32>>>(
+    [pad(32, "email_verified"), flag as Field as Bytes<32>, salt]
+  );
+  assert(path.leaf == leaf, "claim commitment != emailVerified witness");
+  const root = merkleTreePathRoot<8, Bytes<32>>(path);
+  assert(owlRoot == disclose(root.field) as Bytes<32>, "owl_root mismatch");
   assert(flag >= 1, "email not verified by provider");
   record(keyOf(
     pad(32, "owlid:attest:email:"),
-    disclose(rootHash),
+    disclose(owlRoot),
     pad(32, "")
   ));
 }

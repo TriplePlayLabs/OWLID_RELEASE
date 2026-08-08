@@ -4,6 +4,8 @@ import { Badge } from '@owlid/ui/components/ui/badge'
 import { Button } from '@owlid/ui/components/ui/button'
 import { Card, CardContent } from '@owlid/ui/components/ui/card'
 import { clearHistory, listHistory, type HistoryRecord } from '../history-store'
+import { friendlyVerifyError } from '../error-messages'
+import { formatTimestamp } from '../format'
 
 const PAGE_SIZE = 8
 
@@ -94,11 +96,9 @@ export function VerificationHistory() {
                   </div>
                 )}
                 {!entry.valid && entry.error && (
-                  <p className="text-xs text-red-400/80">{entry.error}</p>
+                  <p className="text-xs text-red-400/80">{friendlyVerifyError(entry.error)}</p>
                 )}
-                <p className="text-xs text-muted-foreground">
-                  {new Date(entry.timestamp).toLocaleString()}
-                </p>
+                <p className="text-xs text-muted-foreground">{formatTimestamp(entry.timestamp)}</p>
               </div>
             </li>
           ))}

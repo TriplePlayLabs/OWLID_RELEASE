@@ -56,20 +56,20 @@ import {
   SdJwtVc,
   storage,
   buildCardShape,
-  wrapHolderKey,
-  unwrapHolderKey,
+  sealHolderKey,
+  openHolderKey,
   presentSdJwtVc,
   registerCredential,
 } from '@owlid/sdk'
 
-// 1. Mint a passkey + a wallet-held holder key, PRF-wrap the 32-byte seed.
+// 1. Mint a passkey + a wallet-held holder key, PRF-seal the 32-byte seed.
 const passkey = await registerCredential({
   rpName: 'My Wallet',
   rpId: 'wallet.example.com', // your app's domain
   userName: 'alice',
 })
 const holder = KeyPair.generate()
-const wrapped = await wrapHolderKey(passkey.credentialId, holder.toHex())
+const { blob: wrapped } = await sealHolderKey(passkey.credentialId, holder.toHex())
 
 // 2. Store the issued credential together with the wrapped key.
 //    credentialId + issuer are derived from the SD-JWT VC itself.
@@ -88,8 +88,8 @@ await storage.addCredential(
   wrapped,
 )
 
-// 3. Build a presentation for a verifier (passkey UV gate inside unwrapHolderKey).
-const holderKeyHex = await unwrapHolderKey(passkey.credentialId, wrapped)
+// 3. Build a presentation for a verifier (passkey UV gate inside openHolderKey).
+const { seedHex: holderKeyHex } = await openHolderKey(passkey.credentialId, wrapped)
 const presentation = presentSdJwtVc(
   issued.sdJwtVc,
   holderKeyHex,
@@ -117,7 +117,7 @@ if (result.valid) {
 }
 ```
 
-For the QR / WebSocket flow in a single call, use `verifier.requestPresentation(...)` — see the [verifier guide](/integration/verifier).
+For the QR / WebSocket flow in a single call, use `verifier.requestPredicates(...)` — see the [verifier guide](/integration/verifier).
 
 ---
 
@@ -127,18 +127,33 @@ A **predicate** is a fact derived from a credential without revealing the underl
 
 Predicates are **proven by the holder's wallet, in zero knowledge, on the device**. The wallet derives a witness from the credential (birthdate, KYC level, …), generates a ZK proof locally, and submits it to Midnight, which verifies the proof and records an attestation. When the holder later presents, the verifier confirms that on-chain attestation. The underlying value never leaves the wallet, and the verifier never sees it.
 
-| Predicate request claim       | Proves                                  |
-| ----------------------------- | --------------------------------------- |
-| `age_over_18` / `_21` / `_65` | Holder is at least that age.            |
-| `nationality_eu`              | Holder's nationality is in the EU set.  |
-| `verification_level`          | Holder's KYC level meets the threshold. |
-| `resident`                    | Holder has verified residency.          |
-| `email_verified`              | Holder's email was verified by the IdP. |
-| `unique_person`               | One-human-one-claim (sybil resistance). |
+Request them with the typed `Predicates` factory — it compiles to the DCQL claim path the wallet and verifier both route on:
 
-The wallet runs the proof transparently — `OwlWallet.present` (and `verifier.requestPresentation`) attest any required predicate on first use, emitting `AttestProgress` events so your UI can show "Generating proof…". The attestation is one-time per credential and reused across every later presentation.
+```typescript
+import { OwlVerifier, Predicates } from '@owlid/sdk'
 
-Plain attributes (`given_name`, `nationalities`, …) are ordinary SD-JWT VC disclosures — the holder reveals only the ones the verifier's DCQL query asks for.
+const result = await verifier.requestPredicates({
+  verifierName: 'Acme Bar',
+  predicates: [Predicates.ageOver(18), Predicates.kycLevel('substantial')],
+  onQr: (payload) => showQr(payload),
+})
+```
+
+| Factory                                     | DCQL claim path        | Proves                                     |
+| ------------------------------------------- | ---------------------- | ------------------------------------------ |
+| `Predicates.ageOver(18)`                    | `age_over` + `values`  | Holder is at least that age.               |
+| `Predicates.ageRange(18, 25)`               | `age_range` + `values` | Holder's age is within inclusive bounds.   |
+| `Predicates.kycLevel('substantial')`        | `verification_level`   | Holder's KYC level meets the threshold.    |
+| `Predicates.nationalityIn(['NL', 'BE'])`    | `nationality_in`       | Nationality is in your supplied set.       |
+| `Predicates.residencyIn(['NL', 'BE'])`      | `resident_in`          | Residence country is in your supplied set. |
+| `Predicates.emailVerified()`                | `email_verified`       | Holder's email was verified by the IdP.    |
+| `Predicates.uniquePerson({ epoch, appId })` | `unique_person`        | One-human-one-claim (sybil resistance).    |
+
+`nationality_eu` is also accepted as a legacy synonym for `nationality_in` over the EU-27 set.
+
+The wallet runs the proof transparently — `OwlWallet.present` (and `verifier.requestPredicates`) attest any required predicate on first use, emitting `AttestProgress` events so your UI can show "Generating proof…". The attestation is one-time per credential and reused across every later presentation.
+
+Plain attributes (`given_name`, `nationalities`, …) are ordinary SD-JWT VC disclosures — the holder reveals only the ones the verifier's DCQL query asks for. Some issuer-stamped booleans look predicate-shaped but are plain disclosures: `age_over_18`, `age_over_21`, `age_over_65`, and `resident` are values the issuer asserted, not on-device proofs. Use `Predicates.ageOver(18)` / `Predicates.residencyIn([...])` when you want the zero-knowledge version.
 
 Discover the predicates the platform can prove at startup with `OwlVerifier.listPredicates()`.
 

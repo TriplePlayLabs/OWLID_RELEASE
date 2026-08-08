@@ -57,7 +57,7 @@ The per-credential presentation primitive: select disclosures and bind them to t
 ```ts
 const presentation = presentSdJwtVc(
   storedCredential.sdJwtVc, // the issued SD-JWT VC string
-  holderKeyHex, // seed hex from unwrapHolderKey()
+  holderKeyHex, // seed hex from openHolderKey()
   ['given_name', 'age_over_18'], // claims to disclose
   { aud: verifierOrigin, nonce: verifierNonce }, // bound into the KB-JWT
 )

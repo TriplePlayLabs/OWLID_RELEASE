@@ -503,7 +503,6 @@ fn evaluate_decision(decision: &DiditDecisionResponse) -> DiditOutcome {
         .and_then(|arr| arr.first())
         .or(decision.id_verification.as_ref());
     let id_status = id_first.and_then(|v| v.status.as_deref());
-    let has_id_data = id_first.is_some();
 
     // (2) Explicit id_verification reject → fail.
     if let Some(s) = id_status {
@@ -525,17 +524,19 @@ fn evaluate_decision(decision: &DiditDecisionResponse) -> DiditOutcome {
         ));
     }
 
-    // (4) Component approval path — both id AND face-match (if present)
-    // must be approved.
-    if id_status == Some("Approved") && (face_match_approved || !face_match_present) {
-        return DiditOutcome::Approved;
-    }
-
-    // (4) Fall back to overall session status. Face-match rejection has
-    // already short-circuited above, so an "Approved" session status is
-    // safe here only when both components actually approved.
+    // (4) Approval REQUIRES the overall session status to be "Approved".
+    // Didit sets that only once the holder finishes EVERY step of the
+    // workflow (document upload AND, when configured, face-match/liveness).
+    // A per-component `id_verification: Approved` is NOT sufficient: while
+    // the holder is still doing the face step the document check is already
+    // Approved and `face_matches` is not yet present — approving on the
+    // component alone surfaces "Save credential" before the holder finishes
+    // the popup (the Didit popup race). Component REJECTs are caught fast
+    // above; here we gate strictly on the session being complete.
     match decision.status.as_str() {
-        "Approved" if has_id_data && (face_match_approved || !face_match_present) => {
+        "Approved"
+            if id_status == Some("Approved") && (face_match_approved || !face_match_present) =>
+        {
             DiditOutcome::Approved
         }
         "Approved" => DiditOutcome::Pending(PendingDetails {
@@ -854,5 +855,33 @@ mod tests {
             "face_matches": [{ "status": "Quarantined" }],
         }));
         assert!(matches!(evaluate_decision(&d), DiditOutcome::Failed(_)));
+    }
+
+    /// Regression for the Didit popup race: the holder finished the
+    /// document step (id "Approved") but is STILL in the popup doing the
+    /// face/liveness step, so the overall session is not yet "Approved"
+    /// and no `face_matches` exist. The old code short-circuited on the id
+    /// component alone and returned Approved, surfacing "Save credential"
+    /// before the holder finished. Must stay Pending until the SESSION is
+    /// complete.
+    #[test]
+    fn id_approved_but_session_in_progress_is_pending() {
+        let d = decision(serde_json::json!({
+            "status": "In Progress",
+            "id_verifications": [{ "status": "Approved" }],
+        }));
+        assert!(matches!(evaluate_decision(&d), DiditOutcome::Pending(_)));
+    }
+
+    /// Same race, face step explicitly mid-capture: id done, face "In
+    /// Review", session not yet "Approved" → Pending (never Approved).
+    #[test]
+    fn id_approved_face_in_review_session_in_progress_is_pending() {
+        let d = decision(serde_json::json!({
+            "status": "In Progress",
+            "id_verifications": [{ "status": "Approved" }],
+            "face_matches": [{ "status": "In Review" }],
+        }));
+        assert!(matches!(evaluate_decision(&d), DiditOutcome::Pending(_)));
     }
 }

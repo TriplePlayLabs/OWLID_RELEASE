@@ -13,7 +13,11 @@ import "./lib/security/Pausable" prefix Pausable_;
 
 export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
 
-witness ageValue(): Uint<16>;
+// Holder's date of birth as YYYYMMDD (e.g. 20060624), the value the issuer
+// commits under owl_root. Age is derived in-circuit from a public `asOfYmd`.
+witness dobValue(): Uint<32>;
+witness claimSalt(): Bytes<32>;
+witness claimPath(): MerkleTreePath<8, Bytes<32>>;
 
 export ledger attestations: Set<Bytes<32>>;
 export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
@@ -35,16 +39,34 @@ circuit record(key: Bytes<32>): [] {
   }
 }
 
-export circuit attestAgeGte(rootHash: Bytes<32>, threshold: Uint<16>): [] {
+// `asOfYmd` is the freshness epoch (first day of a month, YYYYMM01) that the
+// verifier and holder both derive from the current date. It is bound into the
+// attestation key so the holder cannot pick a future date to inflate age; the
+// attestation is re-proven each month.
+export circuit attestAgeGte(owlRoot: Bytes<32>, threshold: Uint<16>, asOfYmd: Uint<32>): [] {
   Pausable_assertNotPaused();
-  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
-  const age = ageValue();
-  assert(age >= threshold, "age below threshold");
-  record(keyOf(
-    pad(32, "owlid:attest:age:"),
-    disclose(rootHash),
-    disclose(threshold) as Field as Bytes<32>
-  ));
+  assert(owlRoot != pad(32, "") as Bytes<32>, "zero owlRoot");
+  assert(threshold <= 150, "threshold out of range");
+
+  const dob  = dobValue();
+  const salt = claimSalt();
+  const path = claimPath();
+  // Bind the date of birth to the issuer-signed owl_root (F-1).
+  const leaf = persistentHash<Vector<3, Bytes<32>>>(
+    [pad(32, "birthdate"), dob as Field as Bytes<32>, salt]
+  );
+  assert(path.leaf == leaf, "claim commitment != birthdate witness");
+  assert(owlRoot == disclose(merkleTreePathRoot<8, Bytes<32>>(path).field) as Bytes<32>,
+    "owl_root mismatch");
+
+  // age >= threshold  ⟺  dobValue <= asOfYmd − threshold·10000
+  const cutoff = asOfYmd - (threshold as Uint<32>) * 10000;
+  assert(dob <= cutoff, "age below threshold");
+
+  const param = persistentHash<Vector<2, Bytes<32>>>(
+    [disclose(threshold) as Field as Bytes<32>, disclose(asOfYmd) as Field as Bytes<32>]
+  );
+  record(keyOf(pad(32, "owlid:attest:age:"), disclose(owlRoot), param));
 }
 
 export circuit isAttested(key: Bytes<32>): Boolean {

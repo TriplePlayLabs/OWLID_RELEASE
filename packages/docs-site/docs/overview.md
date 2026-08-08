@@ -1,61 +1,48 @@
-<div class="owl-hero">
-  <p class="owl-meta">DOCUMENTATION · V2.4</p>
-  <h1 class="owl-h1">Privacy-first <span class="owl-gold">digital identity</span></h1>
-  <p class="owl-hero-sub">Verifiable credentials, selective disclosure, and zero-knowledge predicates —<br/>built on Midnight. Drop Owl ID into your product in five minutes.</p>
-  <div class="owl-cta-row">
-    <a href="/quickstart" class="owl-btn owl-btn--primary">Get started →</a>
-    <a href="/apps" class="owl-btn owl-btn--outline">Try the wallet</a>
-  </div>
-</div>
+# Overview
+
+Owl ID is a hosted privacy-preserving digital identity platform. Holders prove facts about themselves to verifiers without revealing the underlying documents. The credential format is **SD-JWT VC** (`application/dc+sd-jwt`); the holder selectively discloses claims and signs a key-binding JWT bound to the verifier's nonce.
 
 ## What you get
 
-<div class="owl-cards">
-  <div class="owl-card">
-    <div class="owl-card__icon">
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-    </div>
-    <div class="owl-card__title">Selective disclosure</div>
-    <div class="owl-card__desc">Reveal only the attributes you pick. Hidden fields stay hashed under a salted Merkle root signed by the issuer.</div>
-  </div>
-  <div class="owl-card">
-    <div class="owl-card__icon">
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-    </div>
-    <div class="owl-card__title">Zero-knowledge predicates</div>
-    <div class="owl-card__desc">Prove "age ≥ 18", "nationality ∈ EU set", or "KYC tier ≥ 2" without revealing the underlying value. Groth16 over BLS12-381.</div>
-  </div>
-  <div class="owl-card">
-    <div class="owl-card__icon">
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
-    </div>
-    <div class="owl-card__title">WebAuthn passkeys</div>
-    <div class="owl-card__desc">ECDSA P-256 signing inside the secure enclave. Private keys never touch JavaScript or your servers.</div>
-  </div>
-  <div class="owl-card">
-    <div class="owl-card__icon">
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
-    </div>
-    <div class="owl-card__title">Live revocation registry</div>
-    <div class="owl-card__desc">Revoke, suspend, reactivate. Verifiers receive push events over WebSocket — invalidate cached results instantly.</div>
-  </div>
-  <div class="owl-card">
-    <div class="owl-card__icon">
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
-    </div>
-    <div class="owl-card__title">Plug-in IdP issuance</div>
-    <div class="owl-card__desc">DigiD, BankID, OIDC, SAML, and Didit KYC out of the box. Bring your own provider via the form, OIDC, or webhook flows.</div>
-  </div>
-  <div class="owl-card">
-    <div class="owl-card__icon">
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="12" r="3" fill="none"/></svg>
-    </div>
-    <div class="owl-card__title">On-chain trust anchor</div>
-    <div class="owl-card__desc">Issuer keys, revocations, and identity commitments published on Midnight. No central directory, no key escrow.</div>
-  </div>
-</div>
+- **Selective disclosure** — holders reveal only the claims they choose. Hidden claims stay as salted SHA-256 hashes inside the issuer-signed JWT's `_sd` array.
+- **On-device ZK predicates** — facts like `age ≥ 18`, `kyc ≥ substantial`, `nationality ∈ EU` are proven by the holder's wallet in zero knowledge on the device, in Compact. Midnight verifies the proof and records an attestation; the verifier checks the attestation. The underlying value (birthdate, KYC level, …) never leaves the wallet.
+- **WebAuthn passkey + wallet-held key** — the passkey is the unlock + user-verification gate and PRF-wraps the key at rest; the wallet holds an Ed25519 or P-256 confirmation key. The KB-JWT is a standard EdDSA / ES256 JWS. The passkey itself is never the JWS signer.
+- **Live revocation** — revoke, suspend, reactivate. IETF Token Status List (`statuslist+jwt`) + on-chain `revocation_registry`. Verifiers receive push events; cached results invalidate instantly.
+- **OpenID4VCI + OpenID4VP** — standards-conformant issuance (with Batch Credential for unlinkability) and presentation (`direct_post`).
+- **Plug-in IdP issuance** — DigiD, BankID, OIDC, SAML, Didit out of the box. Bring your own KYC.
+- **On-chain trust anchor** — issuer keys (`issuer_registry`), revocations (`revocation_registry`), did-document hashes (`identity_registry`) published on Midnight. No central directory, no key escrow.
 
-## Where to start
+## How it works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Issuer
+    actor Holder
+    actor Verifier
+    participant Owl as Owl ID platform
+
+    Issuer->>Holder: SD-JWT VC (JWT + salted disclosures + cnf)
+    Note right of Holder: stored locally — never shared as a whole
+    Verifier->>Holder: challenge + requested claims
+    Holder->>Holder: build presentation (selected disclosures + KB-JWT)
+    Holder->>Verifier: SD-JWT VC presentation
+    Verifier->>Owl: verify(presentation, challenge)
+    Owl-->>Verifier: { valid, disclosed subjects }
+```
+
+The verifier never sees hidden claims. The issuer never sees which claims the holder later discloses, or to whom. The holder controls which presentations are generated and when.
+
+## What each party sees
+
+| Party    | Sees                                                                | Never sees                                               |
+| -------- | ------------------------------------------------------------------- | -------------------------------------------------------- |
+| Issuer   | The holder's verified identity, once, at issuance.                  | Which claims the holder later discloses, or to whom.     |
+| Holder   | Their own full credential and every claim in it.                    | —                                                        |
+| Verifier | Exactly the claims disclosed + the predicate results requested.     | Hidden claims; predicate witnesses; other presentations. |
+| Platform | Hashed identifiers, trust/revocation mirrors, non-PII audit events. | Raw claim values (not retained past the session TTL).    |
+
+## Three integration paths
 
 | You're a…  | Read                                          |
 | ---------- | --------------------------------------------- |
@@ -63,6 +50,18 @@
 | Issuer     | [Issuer integration](/integration/issuer)     |
 | Holder app | [Holder integration](/integration/holder)     |
 
-You don't have to build everything. The platform ships a ready-made **[Owl ID Wallet](/apps#owl-id-wallet--for-holders)** for credential holders, an **[Owl ID Verifier](/apps#owl-id-verifier--for-relying-parties)** browser scanner for kiosk verification, and an **[Operator dashboard](/apps#operator-dashboard--for-you)** for account management.
+## Or use the apps as-is
 
-Next steps: [Quickstart](/quickstart) · [SDK reference](/sdk/verifier) · [How Owl ID works](/architecture/overview)
+You don't have to build everything. The platform ships:
+
+- **[Owl ID Wallet](/apps#owl-id-wallet--for-holders)** — point your users here to receive and present credentials.
+- **[Owl ID Verifier](/apps#owl-id-verifier--for-relying-parties)** — browser-based scanner for low-volume / kiosk verification, no code required.
+- **[Operator dashboard](/apps#operator-dashboard--for-you)** — control panel for your account.
+
+## What's next
+
+- [Quickstart](/quickstart) — paste-able snippets for each persona
+- [SDK reference](/sdk/verifier) — every class and method
+- [SD-JWT VC primitives](/sdk/primitives) — the low-level token API
+- [HTTP API](/api) — raw endpoints, for non-TypeScript integrations
+- [How Owl ID works](/architecture/overview) — design rationale, threat model, data flow

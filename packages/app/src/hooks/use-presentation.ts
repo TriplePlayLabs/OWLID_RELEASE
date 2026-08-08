@@ -159,6 +159,13 @@ function humanizeError(message: string): string {
 const MAX_PRESENT_ATTEMPTS = 3
 const PRESENT_RETRY_DELAY_MS = 800
 
+/** Hard ceiling on a single `approve()`'s proving wall-clock. The first
+ *  proof can legitimately take ~20–90s of in-browser WASM proving; past
+ *  this the proof server / Midnight chain is almost certainly stuck and
+ *  the holder should get a clear timeout + retry instead of an indefinite
+ *  spinner — the verifier's challenge expires anyway (GH QA #2). */
+const PROVING_TIMEOUT_MS = 180_000
+
 /** True when a presentation failure is a transient connectivity / chain
  *  problem (worth retrying) rather than a genuine predicate or signature
  *  failure (which must fail fast — retrying would never change the
@@ -263,6 +270,10 @@ export function usePresentation(): PresentationResult {
   // returns immediately instead of running to completion in the
   // background after the modal closes.
   const abortRef = useRef<AbortController | null>(null)
+  // Set true only by the proving wall-clock timer (not by a user
+  // cancel), so the `approve` catch can tell an abort-from-timeout
+  // (surface a timeout error) from an abort-from-cancel (swallow).
+  const timedOutRef = useRef(false)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const stateRef = useRef<PresentationState>('idle')
   // Tracks whether this hook instance is still mounted. Async work
@@ -579,6 +590,15 @@ export function usePresentation(): PresentationResult {
     setState('generating')
     setAttestProgress(null)
 
+    // Wall-clock cap on the whole proving run. On fire, mark the abort
+    // as a timeout and abort the in-flight attempt — `present()` rejects
+    // with AbortError, which the catch below maps to a friendly timeout.
+    timedOutRef.current = false
+    const provingTimeout = setTimeout(() => {
+      timedOutRef.current = true
+      abortRef.current?.abort()
+    }, PROVING_TIMEOUT_MS)
+
     try {
       const wallet = new OwlWallet(
         storage,
@@ -659,6 +679,11 @@ export function usePresentation(): PresentationResult {
       // a fresh hook mount with its own session.
       cleanup()
     } catch (e) {
+      // A user-initiated cancel/close aborts the same controller.
+      // `cancel()` has already reset state and signalled the verifier —
+      // don't override it with an error screen. A timeout also aborts,
+      // but sets `timedOutRef`, so that case falls through to surface.
+      if (isAbortError(e) && !timedOutRef.current) return
       const sendOverWs = (msg: WsMessage) => {
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
           try {
@@ -670,6 +695,13 @@ export function usePresentation(): PresentationResult {
       }
       console.error('[Presentation] Presentation failed:', e)
       sendOverWs({ type: 'proof_failed', payload: { code: 'proof_failed' } })
+      if (timedOutRef.current) {
+        setError(
+          'Proof generation timed out — the proof server or Midnight network is taking too long.',
+        )
+        setState('error')
+        return
+      }
       // Surface the real failure: the orchestrator/circuit/relay step
       // that threw, plus the underlying message. Generic "Presentation
       // failed." hides which substep needs the user's attention
@@ -680,6 +712,8 @@ export function usePresentation(): PresentationResult {
       const friendlyDetail = humanizeError(rawDetail)
       setError(stageLabel ? `${stageLabel}: ${friendlyDetail}` : friendlyDetail)
       setState('error')
+    } finally {
+      clearTimeout(provingTimeout)
     }
   }, [request, cleanup, overrides])
 

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -22,6 +22,11 @@ export const ENGAGEMENT_QR = `OWLP1:${ENGAGEMENT_WS_URL}`
 export const FAKE_VIDEO_PATH = join(here, 'fixtures', 'engagement-qr.y4m')
 
 export default async function globalSetup() {
+  // The QR content is static — reuse a previously generated video so local
+  // runs don't require ffmpeg. CI starts from a clean checkout and always
+  // regenerates.
+  if (existsSync(FAKE_VIDEO_PATH)) return
+
   const dir = join(here, 'fixtures')
   mkdirSync(dir, { recursive: true })
 

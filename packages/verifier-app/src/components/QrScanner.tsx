@@ -1,6 +1,9 @@
-import { useState } from 'react'
-import { Scanner } from '@yudiel/react-qr-scanner'
-import { AlertCircle } from 'lucide-react'
+import { useState, lazy, Suspense } from 'react'
+import { AlertCircle, Loader2 } from 'lucide-react'
+
+// The scanner ships a ~1 MB zxing WASM decoder — load it only when a
+// scan actually starts, not on app startup.
+const Scanner = lazy(() => import('@yudiel/react-qr-scanner').then((m) => ({ default: m.Scanner })))
 
 interface QrScannerProps {
   onScan: (data: string) => void
@@ -19,28 +22,36 @@ export function QrScanner({ onScan, onCancel: _onCancel, caption }: QrScannerPro
   return (
     <div className="space-y-4">
       <div className="rounded-xl overflow-hidden border border-white/10 bg-black">
-        <Scanner
-          onScan={(result) => {
-            if (result?.[0]?.rawValue) {
-              onScan(result[0].rawValue)
-            }
-          }}
-          onError={(err) => {
-            if (err instanceof Error) {
-              setError(err.message)
-            } else {
-              setError('Camera access denied or not available')
-            }
-          }}
-          styles={{
-            container: { width: '100%', aspectRatio: '1' },
-            video: { objectFit: 'cover' },
-          }}
-          components={{
-            torch: true,
-            finder: true,
-          }}
-        />
+        <Suspense
+          fallback={
+            <div className="w-full aspect-square flex items-center justify-center">
+              <Loader2 className="w-6 h-6 animate-spin text-zinc-500" />
+            </div>
+          }
+        >
+          <Scanner
+            onScan={(result) => {
+              if (result?.[0]?.rawValue) {
+                onScan(result[0].rawValue)
+              }
+            }}
+            onError={(err) => {
+              if (err instanceof Error) {
+                setError(err.message)
+              } else {
+                setError('Camera access denied or not available')
+              }
+            }}
+            styles={{
+              container: { width: '100%', aspectRatio: '1' },
+              video: { objectFit: 'cover' },
+            }}
+            components={{
+              torch: true,
+              finder: true,
+            }}
+          />
+        </Suspense>
       </div>
 
       {error && (

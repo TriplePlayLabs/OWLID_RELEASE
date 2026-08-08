@@ -29,13 +29,20 @@ constructor(initialOwner: Either<ZswapCoinPublicKey, ContractAddress>) {
   Ownable_initialize(initialOwner);
 }
 
+// Domain-tagged so a lone Bytes<32> hashed elsewhere can never collide into
+// the issuer key space (DOMAIN_SEPARATION.md §1 tag 16). Mirrored off-chain by
+// the sidecar's `issuerKeyHash`.
+circuit issuerKeyHash(publicKey: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "owlid:issuer:key:"), publicKey]);
+}
+
 export circuit registerIssuer(publicKey: Bytes<32>, name: Opaque<"string">): [] {
   Ownable_assertOnlyOwner();
   Pausable_assertNotPaused();
 
   assert(publicKey != pad(32, "") as Bytes<32>, "Invalid zero public key");
 
-  const keyHash = persistentHash<Bytes<32>>(publicKey);
+  const keyHash = issuerKeyHash(publicKey);
   const dKeyHash = disclose(keyHash);
 
   if (issuerStatuses.member(dKeyHash)) {
@@ -77,7 +84,7 @@ export circuit reactivateIssuer(keyHash: Bytes<32>): [] {
 }
 
 export circuit isTrusted(publicKey: Bytes<32>): Boolean {
-  const keyHash = persistentHash<Bytes<32>>(publicKey);
+  const keyHash = issuerKeyHash(publicKey);
   const dKeyHash = disclose(keyHash);
 
   if (!issuerStatuses.member(dKeyHash)) {

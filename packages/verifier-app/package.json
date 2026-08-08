@@ -13,14 +13,15 @@
   },
   "dependencies": {
     "@owlid/sdk": "workspace:*",
+    "@owlid/ui": "workspace:*",
     "@owlid/verifier-client": "workspace:*",
+    "@tanstack/react-router": "^1.170.13",
     "@yudiel/react-qr-scanner": "^2.5.1",
     "lucide-react": "^0.468.0",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
-    "sonner": "^1.7.4",
-    "@owlid/ui": "workspace:*"
+    "sonner": "^1.7.4"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",

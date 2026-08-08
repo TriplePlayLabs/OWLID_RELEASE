@@ -5,6 +5,8 @@
  * contract per kind under Midnight's per-extrinsic block-weight cap.
  */
 
+import type { MerkleTreePath } from '@midnight-ntwrk/compact-runtime'
+
 export type PredicateKind =
   | 'age'
   | 'kyc'
@@ -29,8 +31,9 @@ export const PREDICATE_KINDS: readonly PredicateKind[] = [
  *  unused. Derived from the credential by the orchestrator — never a
  *  caller parameter. */
 export interface PredicateWitness {
-  /** `age` and `age_range` kinds — age in whole years, fits Uint<16>. */
-  ageValue?: bigint
+  /** `age` and `age_range` kinds — date of birth as YYYYMMDD, fits Uint<32>.
+   *  The bound circuits derive age from this + a public freshness epoch. */
+  dobValue?: bigint
   /** `kyc` kind — verification level, fits Uint<8>. */
   kycLevel?: bigint
   /** `residency` kind — holder's residence country code (ISO 3166-1
@@ -56,4 +59,10 @@ export interface PredicateWitness {
    *  circuit it produces the public-arg `setHash` so two verifiers
    *  with the same allowed-set still yield distinct on-chain keys. */
   verifierIdHash?: Uint8Array
+  /** owl_root-bound predicates (`kyc`) — `sha256(disclosureSalt)` of the bound
+   *  claim, fed to the Compact `claimSalt()` witness. */
+  claimSalt?: Uint8Array
+  /** owl_root-bound predicates (`kyc`) — Merkle path of the claim's commitment
+   *  under the issuer-signed owl_root, for the Compact `claimPath()` witness. */
+  claimPath?: MerkleTreePath<Uint8Array>
 }

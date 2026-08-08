@@ -23,13 +23,12 @@ on-chain state, not a parallel system.
 
 ### Rust crates (`crates/`)
 
-| Crate                  | Type    | Responsibility                                                                                                                                                |
-| ---------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `crypto`               | library | Cryptographic primitives — Ed25519, P-256, AES-GCM, BLAKE3, SHA-2.                                                                                            |
-| `proof-system`         | library | SD-JWT VC (`sd_jwt.rs`), IETF Token Status List (`status_list.rs`), predicate attestation key recipes (`attestation.rs`), DID resolution.                     |
-| `zk-circuits`          | library | Legacy Arkworks/Groth16 circuits. Superseded by the Compact predicate path; retained until `/zk-keys` consumers are gone.                                     |
-| `verification-service` | service | **:8000** — SD-JWT VC presentation verification, DCQL, OpenID4VP, trusted-issuer + revocation mirror, predicate attestation relay/query, admin CRUD, metrics. |
-| `issuer-service`       | service | **:8001** — IdP-driven identity verification sessions, SD-JWT VC signing, OpenID4VCI, did:web document, Token Status List.                                    |
+| Crate                  | Type    | Responsibility                                                                                                                                                                                             |
+| ---------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crypto`               | library | Cryptographic primitives — Ed25519, P-256, AES-GCM, BLAKE3, SHA-2.                                                                                                                                         |
+| `proof-system`         | library | SD-JWT VC (`sd_jwt.rs`), IETF Token Status List (`status_list.rs`), predicate attestation key recipes (`attestation.rs`), predicate registry (`predicates.rs`) + datasets (`datasets.rs`), DID resolution. |
+| `verification-service` | service | **:8000** — SD-JWT VC presentation verification, DCQL, OpenID4VP, trusted-issuer + revocation mirror, predicate attestation relay/query, admin CRUD, metrics.                                              |
+| `issuer-service`       | service | **:8001** — IdP-driven identity verification sessions, SD-JWT VC signing, OpenID4VCI, did:web document, Token Status List.                                                                                 |
 
 ### TypeScript / JavaScript packages (`packages/`)
 
@@ -234,7 +233,6 @@ On-device proving needs per-circuit keys plus the universal SRS:
 | ------------------------------- | --------------------------------------------------------------- |
 | `GET /predicate-zk[/{file}]`    | Per-kind Compact artifacts `<circuit>.{bzkir,prover,verifier}`. |
 | `GET /midnight/params/{k}`      | Universal BLS SRS (power-of-two size class `k`).                |
-| `GET /zk-keys[/{file}]`         | Legacy Arkworks/Groth16 proving keys (being retired).           |
 
 The SDK fetches `/predicate-zk` artifacts through a layered cache
 (in-memory → IndexedDB → immutable HTTP). First proof on a device pays the
@@ -383,7 +381,8 @@ Cloud Build. Terraform IaC under `deploy/gcp/terraform/`; per-service Cloud
 Build configs under `deploy/gcp/cloudbuild/`. Images: `Dockerfile.{verification,
 issuer,sidecar,app,verifier,admin,docs}` plus `Dockerfile.native-sdk-builder`
 (a shared compile cache layer consumed by the frontend builds). Local
-monitoring stack: Prometheus + Grafana via `docker-compose.prod.yml`.
+monitoring stack: Prometheus + Grafana via `docker-compose.prod.yml`; the GCP
+deployment uses Cloud Monitoring (`deploy/gcp/terraform/monitoring.tf`).
 
 See `DEPLOYMENT.md` for the deploy procedure, `MIDNIGHT.md` for the Midnight
 stack and contract deployment, and `RUNBOOK.md` for operations.

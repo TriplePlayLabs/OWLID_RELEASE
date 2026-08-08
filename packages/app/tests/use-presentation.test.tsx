@@ -93,6 +93,10 @@ mock.module('@owlid/verifier-client', () => ({
 // Captures what a successful presentation persists to IndexedDB.
 const savedProofs: Array<{ predicateId: string; presentation: string }> = []
 
+// When true, `OwlWallet.present` hangs until its abort signal fires —
+// models in-browser WASM proving that the holder cancels mid-run (#2).
+let hangPresent = false
+
 mock.module('@owlid/sdk', () => ({
   proofStorage: {
     saveProofs: async (proofs: Array<{ predicateId: string; presentation: string }>) => {
@@ -180,6 +184,15 @@ mock.module('@owlid/sdk', () => ({
     async present({ signal }: { signal?: AbortSignal }) {
       // Resolve immediately unless the caller aborts.
       if (signal?.aborted) throw new Error('aborted by signal')
+      if (hangPresent) {
+        // Never resolve; reject only when the holder's cancel / the
+        // proving-timeout aborts the signal.
+        return await new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          )
+        })
+      }
       return {
         vpToken: { cred0: ['eyJ.eyJ.sig~D~'] },
         used: [{ dcqlId: 'cred0', credentialId: 'c', disclosures: [] }],
@@ -217,6 +230,7 @@ beforeEach(() => {
   openedSockets.length = 0
   pendingCreate = null
   savedProofs.length = 0
+  hangPresent = false
   createSession.mockClear()
 })
 
@@ -362,6 +376,56 @@ describe('usePresentation WebSocket lifecycle', () => {
     await waitFor(() => expect(savedProofs).toHaveLength(1))
     expect(savedProofs[0]!.predicateId).toBe('cred0')
     expect(savedProofs[0]!.presentation).toBe('eyJ.eyJ.sig~D~')
+  })
+
+  test('cancel during proving returns to idle without an error screen (#2)', async () => {
+    // The in-modal Cancel button (added for QA #2) aborts an in-flight
+    // proof. `cancel()` already resets state + tells the verifier, so
+    // the `approve` catch must NOT flip the modal to an error screen.
+    hangPresent = true
+    const { result } = renderHook(() => usePresentation())
+    await act(async () => {
+      void result.current.startPresentation()
+      await flush()
+      pendingCreate?.resolve({ sessionId: 'session-G' })
+      await flush()
+    })
+    await act(async () => {
+      openedSockets[0]!.triggerOpen()
+      await flush()
+    })
+    await act(async () => {
+      openedSockets[0]!.onmessage?.({
+        data: JSON.stringify({
+          type: 'request',
+          payload: {
+            sessionId: 'session-G',
+            verifierName: 'Acme Bar',
+            nonce: 'n0',
+            dcql: { credentials: [] },
+          },
+        }),
+      })
+      await flush()
+    })
+
+    let approveDone: Promise<void> | undefined
+    await act(async () => {
+      approveDone = result.current.approve()
+      await flush()
+    })
+    expect(result.current.state).toBe('generating')
+
+    await act(async () => {
+      result.current.cancel()
+      await flush()
+      await approveDone
+    })
+
+    expect(result.current.state).toBe('idle')
+    expect(result.current.error).toBeNull()
+    const sends = openedSockets[0]!.send.mock.calls.map((c) => JSON.parse(c[0] as string))
+    expect(sends.some((m) => m.type === 'proof_failed')).toBe(true)
   })
 
   test('startPresentation called twice replaces the previous socket', async () => {

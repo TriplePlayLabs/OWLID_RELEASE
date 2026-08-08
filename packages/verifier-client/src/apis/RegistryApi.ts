@@ -31,10 +31,6 @@ export interface GetPredicateAssetRequest {
   filename: string
 }
 
-export interface GetProvingKeyRequest {
-  filename: string
-}
-
 /**
  * RegistryApi - interface
  *
@@ -85,28 +81,6 @@ export interface RegistryApiInterface {
   ): Promise<void>
 
   /**
-   * Path is `/zk-keys/{circuit}.pk.bin`. Cached aggressively (immutable): when the circuit changes, the key changes and a new artifact is shipped behind a new build hash; clients pick that up on next deploy.
-   * @summary Serve the raw Groth16 proving key for a given circuit. Public — the keys are public cryptographic material; integrity is what matters, not secrecy.
-   * @param {string} filename &lt;circuit&gt;.pk.bin
-   * @param {*} [options] Override http request option.
-   * @throws {RequiredError}
-   * @memberof RegistryApiInterface
-   */
-  getProvingKeyRaw(
-    requestParameters: GetProvingKeyRequest,
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<runtime.ApiResponse<void>>
-
-  /**
-   * Path is `/zk-keys/{circuit}.pk.bin`. Cached aggressively (immutable): when the circuit changes, the key changes and a new artifact is shipped behind a new build hash; clients pick that up on next deploy.
-   * Serve the raw Groth16 proving key for a given circuit. Public — the keys are public cryptographic material; integrity is what matters, not secrecy.
-   */
-  getProvingKey(
-    requestParameters: GetProvingKeyRequest,
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<void>
-
-  /**
    *
    * @summary Summarise every registered set-membership dataset (name + version only).
    * @param {*} [options] Override http request option.
@@ -126,7 +100,7 @@ export interface RegistryApiInterface {
 
   /**
    *
-   * @summary Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`. Same role as `/zk-keys` for Groth16: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
+   * @summary Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
    * @param {*} [options] Override http request option.
    * @throws {RequiredError}
    * @memberof RegistryApiInterface
@@ -136,7 +110,7 @@ export interface RegistryApiInterface {
   ): Promise<runtime.ApiResponse<Array<string>>>
 
   /**
-   * Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`. Same role as `/zk-keys` for Groth16: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
+   * Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
    */
   listPredicateAssets(
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
@@ -159,24 +133,6 @@ export interface RegistryApiInterface {
   listPredicates(
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<Array<PredicateInfo>>
-
-  /**
-   *
-   * @summary Names of every Groth16 circuit served by `/zk-keys/{circuit}.pk.bin`. Wallets call this once to drive their prefetch list and avoid hard-coding circuit identifiers that change with the artifact set.
-   * @param {*} [options] Override http request option.
-   * @throws {RequiredError}
-   * @memberof RegistryApiInterface
-   */
-  listProvingKeysRaw(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<runtime.ApiResponse<Array<string>>>
-
-  /**
-   * Names of every Groth16 circuit served by `/zk-keys/{circuit}.pk.bin`. Wallets call this once to drive their prefetch list and avoid hard-coding circuit identifiers that change with the artifact set.
-   */
-  listProvingKeys(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<Array<string>>
 }
 
 /**
@@ -273,52 +229,6 @@ export class RegistryApi extends runtime.BaseAPI implements RegistryApiInterface
   }
 
   /**
-   * Path is `/zk-keys/{circuit}.pk.bin`. Cached aggressively (immutable): when the circuit changes, the key changes and a new artifact is shipped behind a new build hash; clients pick that up on next deploy.
-   * Serve the raw Groth16 proving key for a given circuit. Public — the keys are public cryptographic material; integrity is what matters, not secrecy.
-   */
-  async getProvingKeyRaw(
-    requestParameters: GetProvingKeyRequest,
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<runtime.ApiResponse<void>> {
-    if (requestParameters['filename'] == null) {
-      throw new runtime.RequiredError(
-        'filename',
-        'Required parameter "filename" was null or undefined when calling getProvingKey().',
-      )
-    }
-
-    const queryParameters: any = {}
-
-    const headerParameters: runtime.HTTPHeaders = {}
-
-    const response = await this.request(
-      {
-        path: `/zk-keys/{filename}`.replace(
-          `{${'filename'}}`,
-          encodeURIComponent(String(requestParameters['filename'])),
-        ),
-        method: 'GET',
-        headers: headerParameters,
-        query: queryParameters,
-      },
-      initOverrides,
-    )
-
-    return new runtime.VoidApiResponse(response)
-  }
-
-  /**
-   * Path is `/zk-keys/{circuit}.pk.bin`. Cached aggressively (immutable): when the circuit changes, the key changes and a new artifact is shipped behind a new build hash; clients pick that up on next deploy.
-   * Serve the raw Groth16 proving key for a given circuit. Public — the keys are public cryptographic material; integrity is what matters, not secrecy.
-   */
-  async getProvingKey(
-    requestParameters: GetProvingKeyRequest,
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<void> {
-    await this.getProvingKeyRaw(requestParameters, initOverrides)
-  }
-
-  /**
    * Summarise every registered set-membership dataset (name + version only).
    */
   async listCircuitDataRaw(
@@ -354,7 +264,7 @@ export class RegistryApi extends runtime.BaseAPI implements RegistryApiInterface
   }
 
   /**
-   * Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`. Same role as `/zk-keys` for Groth16: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
+   * Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
    */
   async listPredicateAssetsRaw(
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
@@ -377,7 +287,7 @@ export class RegistryApi extends runtime.BaseAPI implements RegistryApiInterface
   }
 
   /**
-   * Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`. Same role as `/zk-keys` for Groth16: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
+   * Filenames of every per-kind predicate Compact artifact served by `/predicate-zk/{filename}`: the holder\'s WASM build leaves the multi-MB keys out and prefetches this list. `<circuit>.<kind>`, `kind ∈ {bzkir, prover, verifier}`. One Compact contract per predicate kind (devnet block-weight cap) — the circuit names cover every deployed kind in one bucket.
    */
   async listPredicateAssets(
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
@@ -418,39 +328,6 @@ export class RegistryApi extends runtime.BaseAPI implements RegistryApiInterface
     initOverrides?: RequestInit | runtime.InitOverrideFunction,
   ): Promise<Array<PredicateInfo>> {
     const response = await this.listPredicatesRaw(initOverrides)
-    return await response.value()
-  }
-
-  /**
-   * Names of every Groth16 circuit served by `/zk-keys/{circuit}.pk.bin`. Wallets call this once to drive their prefetch list and avoid hard-coding circuit identifiers that change with the artifact set.
-   */
-  async listProvingKeysRaw(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<runtime.ApiResponse<Array<string>>> {
-    const queryParameters: any = {}
-
-    const headerParameters: runtime.HTTPHeaders = {}
-
-    const response = await this.request(
-      {
-        path: `/zk-keys`,
-        method: 'GET',
-        headers: headerParameters,
-        query: queryParameters,
-      },
-      initOverrides,
-    )
-
-    return new runtime.JSONApiResponse<any>(response)
-  }
-
-  /**
-   * Names of every Groth16 circuit served by `/zk-keys/{circuit}.pk.bin`. Wallets call this once to drive their prefetch list and avoid hard-coding circuit identifiers that change with the artifact set.
-   */
-  async listProvingKeys(
-    initOverrides?: RequestInit | runtime.InitOverrideFunction,
-  ): Promise<Array<string>> {
-    const response = await this.listProvingKeysRaw(initOverrides)
     return await response.value()
   }
 }

@@ -20,7 +20,6 @@ A holder proves facts about themselves (age, nationality, KYC level) to any veri
 | Verifier demo app (5001) | `packages/verifier-app`                   | stable    |
 | Admin dashboard (4000)   | `packages/admin`                          | stable    |
 | Compact contracts        | `packages/midnight-sidecar/contracts`     | testnet   |
-| Legacy ZK circuits       | `crates/zk-circuits`                      | legacy    |
 
 The "generated" packages (`@owlid/verifier-client`, `@owlid/issuer-client`, `@owlid/admin-client`) are produced by `just generate-api-client` from the live OpenAPI specs of the Rust services. Don't hand-edit the `apis/`, `models/`, or `runtime.ts` directories under those packages.
 
@@ -154,7 +153,6 @@ The browser SDK runs WebAuthn registration as the unlock/UV gate, generates a wa
 | [`docs/MIDNIGHT.md`](docs/MIDNIGHT.md)                   | Midnight stack, sidecar, state sync, witness-on-device proving     |
 | [`docs/COMPACT_CONTRACTS.md`](docs/COMPACT_CONTRACTS.md) | Per-contract reference for all 10 Compact contracts                |
 | [`docs/COMPACT.md`](docs/COMPACT.md)                     | Midnight Compact language reference                                |
-| [`docs/PREDICATES_AUDIT.md`](docs/PREDICATES_AUDIT.md)   | Predicate model audit                                              |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)               | Production compose, env vars, Midnight versions                    |
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md)                     | Operations: revoking, rotating keys, GDPR erasure, troubleshooting |
 | [`docs/E2E-SETUP.md`](docs/E2E-SETUP.md)                 | Full local stack with Midnight devnet                              |
@@ -183,12 +181,9 @@ just build           # full build
 just test            # rust + ts tests
 just check           # fmt + lint + test
 just generate-api-client  # regenerate verifier/issuer/admin clients from OpenAPI
-just generate-zk-keys     # regenerate Groth16 PK/VK artifacts (after circuit edits)
 ```
 
-**Predicate proving.** The live predicate path is the **7 Compact contracts** under `packages/midnight-sidecar/contracts/`. Predicates are proven on the holder's device with the in-process `zkir-v2` WASM prover and verified by the Midnight node in consensus — see [`docs/MIDNIGHT.md`](docs/MIDNIGHT.md) §5.
-
-`crates/zk-circuits` is the **legacy** Arkworks/Groth16 path, superseded by the Compact predicate path and retained only until the `/zk-keys` consumers are gone. `just generate-zk-keys` regenerates its committed PK/VK artifacts under `crates/zk-circuits/artifacts/`; an MPC ceremony for production keys is described in [`crates/zk-circuits/CEREMONY.md`](crates/zk-circuits/CEREMONY.md).
+**Predicate proving.** The predicate path is the **7 Compact contracts** under `packages/midnight-sidecar/contracts/`. Predicates are proven on the holder's device with the in-process `zkir-v2` WASM prover and verified by the Midnight node in consensus — see [`docs/MIDNIGHT.md`](docs/MIDNIGHT.md) §5. Each predicate binds its witness to the issuer-signed `owl_root`, so a fabricated value cannot be attested.
 
 Always use `bun`, never `npm`. Format Rust with `just fmt`, lint with `just lint`. Pre-commit hooks (`husky` + `lint-staged`) run oxlint + prettier + taplo on staged files.
 
@@ -198,8 +193,7 @@ Always use `bun`, never `npm`. Format Rust with `just fmt`, lint with `just lint
 .
 ├── crates/                       # Rust workspace
 │   ├── crypto/                   # Ed25519, P-256, BLAKE3, SHA-256, WebAuthn
-│   ├── proof-system/             # SD-JWT VC, Token Status List, attestation keys
-│   ├── zk-circuits/              # legacy Arkworks/Groth16 circuits (being retired)
+│   ├── proof-system/             # SD-JWT VC, Token Status List, attestation keys, predicate registry + datasets
 │   ├── verification-service/     # Verifier HTTP API + admin
 │   └── issuer-service/           # Issuance HTTP API (OpenID4VCI)
 ├── packages/

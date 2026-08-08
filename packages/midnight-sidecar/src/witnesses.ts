@@ -139,10 +139,16 @@ export interface PredicatePending {
    *  circuit folds them into the public-arg `setHash` so two verifiers
    *  asking the same allowed-set still produce distinct on-chain keys. */
   verifierIdHash?: Uint8Array
+  /** Date of birth as YYYYMMDD — the `dobValue()` witness (age/age_range). */
+  dobValue?: bigint
+  /** F-1 owl_root binding: per-claim salt + Merkle path under owl_root. */
+  claimSalt?: Uint8Array
+  claimPath?: MerkleTreePath<Uint8Array>
 }
 
 export interface PredicateRegistryWitnesses<PS> {
   ageValue(context: WitnessContext<PredicateLedger, PS>): [PS, bigint]
+  dobValue(context: WitnessContext<PredicateLedger, PS>): [PS, bigint]
   kycLevel(context: WitnessContext<PredicateLedger, PS>): [PS, bigint]
   residentCountry(context: WitnessContext<PredicateLedger, PS>): [PS, Uint8Array]
   nationalityCode(context: WitnessContext<PredicateLedger, PS>): [PS, Uint8Array]
@@ -150,6 +156,8 @@ export interface PredicateRegistryWitnesses<PS> {
   personhoodSecret(context: WitnessContext<PredicateLedger, PS>): [PS, Uint8Array]
   allowedCountryPath(context: WitnessContext<PredicateLedger, PS>): [PS, MerkleTreePath<Uint8Array>]
   verifierIdHash(context: WitnessContext<PredicateLedger, PS>): [PS, Uint8Array]
+  claimSalt(context: WitnessContext<PredicateLedger, PS>): [PS, Uint8Array]
+  claimPath(context: WitnessContext<PredicateLedger, PS>): [PS, MerkleTreePath<Uint8Array>]
 }
 
 export function createPredicateRegistryWitnesses<PS>(
@@ -159,6 +167,11 @@ export function createPredicateRegistryWitnesses<PS>(
     ageValue: (context) => {
       const v = getPending().age
       if (v === undefined) throw new Error('ageValue witness: no pending age')
+      return [context.privateState, v]
+    },
+    dobValue: (context) => {
+      const v = getPending().dobValue
+      if (v === undefined) throw new Error('dobValue witness: no pending dobValue')
       return [context.privateState, v]
     },
     kycLevel: (context) => {
@@ -208,6 +221,16 @@ export function createPredicateRegistryWitnesses<PS>(
       if (v.length !== 32) {
         throw new Error(`verifierIdHash witness: expected 32 bytes, got ${v.length}`)
       }
+      return [context.privateState, v]
+    },
+    claimSalt: (context) => {
+      const v = getPending().claimSalt
+      if (!v) throw new Error('claimSalt witness: no pending claimSalt')
+      return [context.privateState, v]
+    },
+    claimPath: (context) => {
+      const v = getPending().claimPath
+      if (!v) throw new Error('claimPath witness: no pending claimPath')
       return [context.privateState, v]
     },
   }

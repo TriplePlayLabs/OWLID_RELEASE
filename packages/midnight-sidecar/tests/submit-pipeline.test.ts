@@ -116,6 +116,71 @@ describe('createSubmitPipeline — dust retry', () => {
     expect(slept).toBe(1)
   })
 
+  test('retries up to dustRetryAttempts when the shortfall persists', async () => {
+    let balanceCalls = 0
+    let reaped = 0
+    const submit = createSubmitPipeline(
+      baseDeps({
+        dustRetryAttempts: 3,
+        // Shortfall on the first 2 balances (hostage pending not yet reaped),
+        // succeeds on the 3rd — an actively-tested wallet with several dropped
+        // txs needs more than one retry.
+        balanceTx: async () => {
+          balanceCalls += 1
+          if (balanceCalls < 3) throw new Error('Insufficient Funds: could not balance dust')
+          return { ok: true }
+        },
+        reapStalePending: async () => {
+          reaped += 1
+        },
+      }),
+    )
+
+    const out = await submit('x')
+    expect(out).toBe('txid')
+    expect(balanceCalls).toBe(3)
+    expect(reaped).toBe(2)
+  })
+
+  test('reaps with the short shortfall grace, not the periodic grace', async () => {
+    let graceSeen: number | undefined = -1
+    const submit = createSubmitPipeline(
+      baseDeps({
+        dustShortfallReapGraceMs: 90_000,
+        balanceTx: (() => {
+          let n = 0
+          return async () => {
+            n += 1
+            if (n === 1) throw new Error('Insufficient Funds: could not balance dust')
+            return { ok: true }
+          }
+        })(),
+        reapStalePending: async (g) => {
+          graceSeen = g
+        },
+      }),
+    )
+
+    await submit('x')
+    expect(graceSeen).toBe(90_000)
+  })
+
+  test('gives up after exhausting retries on a persistent shortfall', async () => {
+    let balanceCalls = 0
+    const submit = createSubmitPipeline(
+      baseDeps({
+        dustRetryAttempts: 2,
+        balanceTx: async () => {
+          balanceCalls += 1
+          throw new Error('Insufficient Funds: could not balance dust')
+        },
+      }),
+    )
+
+    await expect(submit('x')).rejects.toThrow(/could not balance dust/)
+    expect(balanceCalls).toBe(3) // initial + 2 retries
+  })
+
   test('does NOT retry a non-dust balance failure', async () => {
     let balanceCalls = 0
     let reserved = 0
@@ -162,5 +227,54 @@ describe('createSubmitPipeline — broadcast failure', () => {
     expect(reverted).toBe(1)
     // Two serialized sections: phase-1 balance+reserve, then the revert.
     expect(s.calls()).toBe(2)
+  })
+})
+
+// Models the wallet's real disjoint-selection mechanism: chooseCoin picks the
+// smallest AVAILABLE dust UTXO; reserve() moves it into pendingDust (removes it
+// from availableCoins); the pipeline runs balance+reserve inside the serializer.
+// Proves the "no orchestrator change needed" claim — concurrency comes from K
+// dust UTXOs + reservation, not custom coin selection.
+describe('createSubmitPipeline — disjoint dust UTXO selection', () => {
+  function lanePipeline(utxos: number[]) {
+    const available = new Set(utxos)
+    const picked: number[] = []
+    const { serialize } = makeSerialize()
+    const submit = createSubmitPipeline(
+      baseDeps({
+        serialize,
+        // chooseCoin: smallest available, or a dust shortfall when none free.
+        balanceTx: async () => {
+          if (available.size === 0) throw new Error('Insufficient Funds: could not balance dust')
+          return { utxo: Math.min(...available) }
+        },
+        // reserve == addPendingTransaction: drop the picked UTXO from available.
+        reserve: async (balanced) => {
+          const u = (balanced as { utxo: number }).utxo
+          if (!available.has(u)) throw new Error(`double-picked UTXO ${u}`)
+          available.delete(u)
+          picked.push(u)
+        },
+      }),
+    )
+    return { submit, picked }
+  }
+
+  test('8 concurrent submits draw 8 distinct dust UTXOs (no double-pick)', async () => {
+    const { submit, picked } = lanePipeline([1, 2, 3, 4, 5, 6, 7, 8])
+    const results = await Promise.all(Array.from({ length: 8 }, () => submit('x')))
+    expect(results).toEqual(Array(8).fill('txid'))
+    expect([...picked].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+  })
+
+  test('a single dust UTXO bottlenecks the 2nd concurrent submit (the pre-split state)', async () => {
+    const { submit } = lanePipeline([1])
+    const results = await Promise.allSettled([submit('a'), submit('b')])
+    const ok = results.filter((r) => r.status === 'fulfilled').length
+    const short = results.filter(
+      (r) => r.status === 'rejected' && /could not balance dust/.test(String(r.reason)),
+    ).length
+    expect(ok).toBe(1)
+    expect(short).toBe(1)
   })
 })

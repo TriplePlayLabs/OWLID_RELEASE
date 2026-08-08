@@ -20,21 +20,21 @@ pageType: doc
       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
     </div>
     <div class="owl-card__title">Selective disclosure</div>
-    <div class="owl-card__desc">Reveal only the attributes you pick. Hidden fields stay hashed under a salted Merkle root signed by the issuer.</div>
+    <div class="owl-card__desc">Reveal only the attributes you pick. Hidden claims stay as salted SHA-256 hashes in the issuer-signed SD-JWT VC.</div>
   </div>
   <div class="owl-card">
     <div class="owl-card__icon">
       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
     </div>
     <div class="owl-card__title">Zero-knowledge predicates</div>
-    <div class="owl-card__desc">Prove "age ≥ 18", "nationality ∈ EU set", or "KYC tier ≥ 2" without revealing the underlying value. Groth16 over BLS12-381.</div>
+    <div class="owl-card__desc">Prove "age ≥ 18", "nationality ∈ EU set", or "KYC tier ≥ 2" without revealing the underlying value. Proven on the holder's device, verified and attested on Midnight.</div>
   </div>
   <div class="owl-card">
     <div class="owl-card__icon">
       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
     </div>
     <div class="owl-card__title">WebAuthn passkeys</div>
-    <div class="owl-card__desc">ECDSA P-256 signing inside the secure enclave. Private keys never touch JavaScript or your servers.</div>
+    <div class="owl-card__desc">The passkey PRF unwraps a wallet-held Ed25519 or P-256 key that signs every presentation. Keys never leave the device or reach your servers.</div>
   </div>
   <div class="owl-card">
     <div class="owl-card__icon">

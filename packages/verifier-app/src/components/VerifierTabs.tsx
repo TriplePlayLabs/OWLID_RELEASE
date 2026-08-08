@@ -34,8 +34,10 @@ export function VerifierTabs({ active, onChange }: VerifierTabsProps) {
                       : 'text-muted-foreground hover:text-white hover:bg-white/5'
                   }`}
                   aria-current={isActive ? 'page' : undefined}
+                  aria-label={label}
+                  title={label}
                 >
-                  <Icon className="w-3.5 h-3.5" />
+                  <Icon className="w-3.5 h-3.5" aria-hidden="true" />
                   <span className="hidden sm:inline">{label}</span>
                 </button>
               </li>

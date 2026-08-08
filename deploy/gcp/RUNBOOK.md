@@ -12,9 +12,13 @@ Use this with:
 
 ## Table of contents
 
+0. [Deploy-safety gotchas (READ FIRST)](#0-deploy-safety-gotchas-read-first)
 1. [First-time setup](#1-first-time-setup)
 2. [Daily change → deploy loop](#2-daily-change--deploy-loop)
 3. [Scenarios](#3-scenarios)
+   - [3.0 Contract redeploy → preview testnet](#30-contract-redeploy--preview-testnet)
+   - [3.0a Upgrade a contract WITHOUT changing its address](#30a-upgrade-a-contract-without-changing-its-address)
+   - [3.0b Recover from a Midnight testnet reset](#30b-recover-from-a-midnight-testnet-reset)
    - [3.1 Rust service code change (verification / issuer)](#31-rust-service-code-change-verification--issuer)
    - [3.2 Frontend code change (app / admin / verifier)](#32-frontend-code-change-app--admin--verifier)
    - [3.3 Sidecar code change (midnight-sidecar)](#33-sidecar-code-change-midnight-sidecar)
@@ -27,6 +31,110 @@ Use this with:
 5. [Rollback](#5-rollback)
 6. [Common errors + fixes](#6-common-errors--fixes)
 7. [Cost + scaling knobs](#7-cost--scaling-knobs)
+
+---
+
+## 0. Deploy-safety gotchas (READ FIRST)
+
+The happy-path recipes below omit the failure modes that have actually broken
+prod. Internalize these before any `gcp-build` / `gcp-apply`.
+
+1. **Tag images with the git sha — `latest` is a silent no-op.** `build-all.sh`
+   reads `IMAGE_TAG` from `deploy/gcp/.env.gcp` (default `latest`); `run.tf` pins
+   `…/<svc>:<image_tag>`. Rebuilding `:latest` + `terraform apply` yields an
+   identical spec → **no new revision rolls**. Every release: set
+   `IMAGE_TAG=$(git rev-parse --short HEAD)` in `.env.gcp`, build, then
+   `terraform apply -var=image_tag=<sha>`. A CLI `IMAGE_TAG=x just gcp-build` is
+   clobbered (`_lib.sh` re-sources `.env.gcp`) — set it in the file.
+
+2. **`gcp-build` is async — wait before `gcp-apply`.** `build-all.sh` submits all
+   8 builds with `--async` then returns; they run ~10–15 min on Cloud Build (the
+   Rust backends are the slow pole). Applying before they finish makes Cloud Run
+   fail to pull the image. Gate the apply:
+
+   ```sh
+   gcloud builds list --project=owlid-491411 --region=europe-west1 \
+     --filter='substitutions._IMAGE_TAG=<sha> AND (status=WORKING OR status=QUEUED)' \
+     --format='value(id)'
+   # wait until empty; then confirm none are FAILURE:
+   gcloud builds list --project=owlid-491411 --region=europe-west1 \
+     --filter='substitutions._IMAGE_TAG=<sha> AND NOT status=SUCCESS' --format='value(id,status)'
+   ```
+
+3. **Roll the sidecar FIRST, then the issuer.** Cloud Run storage is ephemeral, so
+   a fresh sidecar revision re-syncs the Midnight preview wallet from scratch
+   (`/health` `connected:false` until done). **Budget 15–20 min, not minutes** —
+   a cold preview sync is slow and the preview RPC drops the subscription
+   (`disconnected … 1000 Normal Closure`) and recovers repeatedly; this is
+   normal, not a failure. Still roll the issuer only after `connected:true`: it
+   registers on-chain via verification→sidecar at startup, and until that
+   succeeds it serves `/health` as **503** with `issuerRegisteredOnChain:false`
+   and any credential it issues will not verify. (It no longer `exit(1)`s on
+   failure — it retries in the background so the chain-independent routes,
+   notably `/.well-known/did.json`, keep serving.) Apply the sidecar alone, wait
+   for `connected:true`, then apply the rest:
+
+   ```sh
+   cd deploy/gcp/terraform
+   terraform apply -var=image_tag=<sha> -target='google_cloud_run_v2_service.sidecar' -auto-approve
+   until curl -s https://sidecar-<hash>-ew.a.run.app/health | grep -q '"connected":true'; do sleep 10; done
+   terraform apply -var=image_tag=<sha> \
+     -target='google_cloud_run_v2_service.verification' \
+     -target='google_cloud_run_v2_service.issuer' \
+     -target='google_cloud_run_v2_service.proof_server' \
+     -target='google_cloud_run_v2_service.frontend["app"]' \
+     -target='google_cloud_run_v2_service.frontend["admin"]' \
+     -target='google_cloud_run_v2_service.frontend["verifier"]' \
+     -target='google_cloud_run_v2_service.frontend["docs"]' -auto-approve
+   ```
+
+   Old revisions keep serving until the new ones are Ready — no outage.
+
+4. **Canary the holder app SSR — a broken SSR bundle is marked Ready but 500s
+   every request.** `@owlid/app` is TanStack Start SSR; the runtime image ships
+   only `.output` (no `node_modules`). `@midnight-ntwrk/zkir-v2` is browser-only
+   WASM. If any SSR-reachable module statically imports `OwlWallet`/midnight (it
+   transitively pulls `prover.ts → zkir-v2`), Nitro externalises zkir into the
+   server bundle and prod 500s with `ERR_MODULE_NOT_FOUND` — yet Cloud Run marks
+   the revision Ready (the port listens). Prod-only; dev e2e never catches it.
+   Always verify after rolling the app:
+
+   ```sh
+   curl -s -o /dev/null -w '%{http_code}' https://app-<hash>-ew.a.run.app/   # must be 200
+   ```
+
+   For a risky app change, deploy `--no-traffic --tag=canary`, curl the tagged
+   URL, then shift traffic. Keep `OwlWallet`/midnight out of statically-SSR'd
+   trees; lazy-`await import('@midnight-ntwrk/zkir-v2')` in `prover.ts`.
+
+5. **Verify the SSR CSS hash — FOUC only reproduces in Docker/CloudBuild.**
+   TanStack Start runs separate client + SSR Vite passes; a `@import 'tailwindcss'`
+   shorthand makes the SSR pass hash `styles.css` BEFORE Tailwind processes it →
+   the server HTML links a `/assets/styles-<hash>.css` the client never emits →
+   404 → unstyled flash until hydration. Fixed by `@import 'tailwindcss' source('./')`
+   in each SSR app's `src/styles.css`. To verify a CSS-touching deploy: curl the
+   app, extract the `styles-*.css` href, curl it — must be 200 (a stale hash 404s).
+
+6. **`terraform apply` wants to replace the `proofs` domain mapping — `-target`
+   around it.** Pre-existing drift:
+   `google_cloud_run_domain_mapping.subdomain["proofs"]` wants a `cert_mode`
+   replacement. For code deploys, `-target` only the 8
+   `google_cloud_run_v2_service` resources (as in #3) so the apply never touches it.
+
+7. **A bare `terraform apply` reverts running images to `:latest` and drops
+   `min_instance_count`.** State carries `image_tag = latest` and no explicit
+   scaling, while the live services run digest/sha-pinned images deployed via
+   `gcloud run deploy`. `terraform plan` therefore shows all 8 services "will be
+   updated in-place" and an unguarded apply rolls them **backwards**. Always pass
+   `-var=image_tag=<sha>` and `-target` the specific resources (#3). Verify with
+   `terraform plan | grep 'will be updated'` before applying anything.
+
+8. **Monitoring lives in `monitoring.tf` and is applied separately.** Uptime
+   checks + alert policies are additive; apply them with `-target` on the
+   `google_monitoring_*` / `google_logging_metric` resources so the run cannot
+   pick up the drift in #7. Alerts depend on each service returning **non-2xx**
+   from `/health` when unusable — a health endpoint that answers 200 while
+   degraded silently defeats every policy.
 
 ---
 
@@ -84,111 +192,193 @@ just gcp-urls
 
 ## 2. Daily change → deploy loop
 
-The 80% case after first-time setup:
+The 80% case after first-time setup. **Read [§0](#0-deploy-safety-gotchas-read-first)
+first** — the four steps below are the shape, but `gcp-build` is async (wait for
+the builds), `latest` is a no-op (tag with the git sha), and a full `gcp-apply`
+rolls the issuer into the sidecar wallet-resync (roll staged instead).
 
 ```sh
 # 1. Make code changes locally. Run tests.
 cargo test --workspace
 bun run --filter '*' test
 
-# 2. Build affected images (re-uploads source, runs Cloud Build).
+# 2. Tag with the git sha, build, WAIT for Cloud Build to finish (§0 #1, #2).
+sed -i -E 's/^IMAGE_TAG=.*/IMAGE_TAG='"$(git rev-parse --short HEAD)"'/' deploy/gcp/.env.gcp
 just gcp-build
+# ...then poll `gcloud builds list` until all are SUCCESS (§0 #2).
 
-# 3. Apply Terraform — Cloud Run swaps to the new images.
-just gcp-apply
+# 3. Apply — staged, sidecar first (§0 #3). NOT a bare `just gcp-apply`.
 
-# 4. Verify (see section 4).
+# 4. Verify (§4) — incl. app SSR 200 + css 200 (§0 #4, #5).
 just gcp-urls
 ```
 
-**Image tagging:** by default everything is tagged `latest`. For traceable deploys:
-
-```sh
-TAG=$(git rev-parse --short HEAD)
-IMAGE_TAG=$TAG just gcp-build
-cd deploy/gcp/terraform && terraform apply -var=image_tag=$TAG
-```
-
-The Terraform variable `image_tag` is read from `terraform.tfvars` or `-var`. Set it once per release; Cloud Run updates with rolling traffic.
+The Terraform variable `image_tag` is read from `terraform.tfvars` or `-var`.
+Set it once per release; Cloud Run updates with rolling traffic.
 
 ---
 
 ## 3. Scenarios
 
-### 3.0 Groth16 proving-key rebuild
+### 3.0 Contract redeploy → preview testnet
 
-`@owlid/sdk` is pure TypeScript — there is no native binary or browser WASM in the public SDK any more. The Groth16 proving keys live with the **issuer-side** ZK compute (`crates/zk-circuits/`) and are rebuilt by `just generate-zk-keys` (`cargo run -p owl-zk-circuits --bin keygen --no-default-features --release`).
-
-The committed artifacts under `crates/zk-circuits/artifacts/*.bin` come from a deterministic dev seed. Production deploys must replace them with output from a Phase-2 MPC ceremony — see `crates/zk-circuits/CEREMONY.md`.
-
-These artifacts are **not in git** (`.gitignore` excludes `*.wasm`, `*.node`, etc.) so Cloud Build's source upload doesn't include them. Without a build step, frontends would ship empty stubs and crash on first WASM call.
-
-**Solution:** dedicated `native-sdk-builder` Docker image. Mirrors `just build-sdk` exactly:
-
-```
-1. bunx napi build --platform --release                    # Linux .node
-2. RUSTFLAGS='...' bunx napi build --target wasm32-wasip1-threads --release   # Browser WASM
-3. bunx napi artifacts -o . --npm-dir npm                 # move into npm/<arch>/
-4. wasm-opt ... -O2                                        # post-process for browser compat
-5. bun run build (in packages/config + packages/sdk)       # TS dist/
-```
-
-Frontend Dockerfiles consume the result via `--from=native-sdk` stage:
-
-```dockerfile
-ARG NATIVE_SDK_IMAGE=europe-west1-docker.pkg.dev/owlid-491411/owlid/native-sdk-builder:latest
-FROM ${NATIVE_SDK_IMAGE} AS native-sdk
-...
-COPY --from=native-sdk /native-sdk packages/native-sdk
-COPY --from=native-sdk /sdk        packages/sdk
-COPY --from=native-sdk /config     packages/config
-```
-
-#### When to rebuild native-sdk-builder
-
-| Change                                                                                  | Rebuild needed?                     |
-| --------------------------------------------------------------------------------------- | ----------------------------------- |
-| Rust source under `packages/native-sdk/src/`                                            | yes                                 |
-| `Cargo.toml` deps that affect native-sdk                                                | yes                                 |
-| `crates/proof-system`, `crates/zk-circuits`, `crates/crypto` (referenced by native-sdk) | yes                                 |
-| `packages/sdk` TS source                                                                | yes (TS SDK is built in this stage) |
-| `packages/config` TS source                                                             | yes                                 |
-| Anything else (frontend code, services, etc.)                                           | no — pull cached `:latest`          |
-
-#### Rebuild commands
-
-Full: `just gcp-build` runs phase 1 (native-sdk + backends parallel) → phase 2 (waits for native-sdk) → phase 3 (frontends parallel). About 10–15 min cold.
-
-Native-sdk only:
+When the Compact contracts change (new circuit, new predicate, a security fix
+that touches a circuit), redeploy all 10 to the Midnight **preview** testnet and
+rewire the new addresses. The addresses change on every redeploy.
 
 ```sh
-gcloud builds submit \
-  --project=owlid-491411 --region=europe-west1 \
-  --config=deploy/gcp/cloudbuild/native-sdk-builder.yaml \
-  --substitutions=_IMAGE_TAG=latest,_REGION=europe-west1,_REPO=owlid
+# 1. Deploy contracts to preview. NEEDS the preview wallet funded with NIGHT
+#    (see 3.0b for funding). The deploy aborts early and prints the faucet URL
+#    if the wallet is empty, rather than failing 10 times in a row.
+cp .env.local /tmp/env.local.bak                 # see the symlink gotcha below
+set -a; source .env.preview; set +a
+
+# ONE admin key for the whole contract lifecycle: contract owner AND contract
+# maintenance authority. MUST be set — without it each contract gets a random
+# authority stored only in the local private-state LevelDB, and losing that
+# directory makes the contracts permanently un-upgradable (see 3.0a).
+export MIDNIGHT_OWNER_SECRET_KEY=$(gcloud secrets versions access latest \
+  --secret=midnight-owner-secret-key --project=owlid-491411)
+
+cd packages/midnight-sidecar && bun run deploy    # ~15–30 min (remote sync + 10 deploys)
+cd ../..
 ```
 
-Then frontends (parallel):
+**The deploy is idempotent by default.** Any contract whose configured address is
+still live on chain is kept, not redeployed — so a re-run after a partial failure
+only deploys what is actually missing, and the rest keep their addresses (and
+their predicate attestation history).
+
+| Env var                       | Default | Effect                                                                          |
+| ----------------------------- | ------- | ------------------------------------------------------------------------------- |
+| `REDEPLOY_ALL=true`           | off     | Force a fresh address for every contract. Needed after a Compact source change. |
+| `CONTRACTS=predicate_age,...` | all     | Deploy only these rows from `DEPLOY_TABLE`.                                     |
+| `DEPLOY_DUST_LANES`           | `8`     | Split NIGHT into K UTXOs → K parallel dust lanes.                               |
+| `DEPLOY_MIN_DUST`             | `3e15`  | Wait for this much dust before submitting anything.                             |
+
+A partial deploy is reported loudly and exits non-zero, naming every tfvars key
+that still holds its PREVIOUS address. **Do not ship a partial deploy** — those
+stale addresses may point at contracts that no longer exist, which the sidecar
+surfaces as a chain-connect failure rather than anything mentioning "incomplete
+deploy". Re-run until every contract succeeds.
+
+`deploy.ts` writes the 10 new addresses to **two** places automatically:
+
+- `deploy/gcp/terraform/terraform.tfvars` (the GCP source of truth —
+  `var.midnight_*_address`, consumed by `run.tf`), and
+- repo-root `.env` — which is a **symlink to `.env.local`** (your _local devnet_
+  config). So the preview deploy overwrites your local devnet addresses + owner
+  key. Back up `.env.local` first (above) and restore it after.
 
 ```sh
-for svc in app admin verifier; do
-  gcloud builds submit \
-    --project=owlid-491411 --region=europe-west1 \
-    --config=deploy/gcp/cloudbuild/${svc}.yaml \
-    --substitutions=_IMAGE_TAG=latest,_REGION=europe-west1,_REPO=owlid \
-    --async
-done
+# 2. Nothing to push — step 1 supplied MIDNIGHT_OWNER_SECRET_KEY from Secret
+#    Manager, so the deployed contracts already carry that key as owner AND
+#    maintenance authority. The sidecar reads the same secret
+#    (`midnight-owner-secret-key`, version=latest), managed OUT OF BAND — it is
+#    NOT a terraform var.
+#
+#    ONLY if you deployed without the env var set (the deploy prints the
+#    generated key once, and it exists nowhere else) push it immediately:
+# printf %s <printed-key> \
+#   | gcloud secrets versions add midnight-owner-secret-key --project=owlid-491411 --data-file=-
+
+# 3. Restore local devnet config.
+cp /tmp/env.local.bak .env.local
 ```
 
-Pin to a SHA (recommended for prod) so frontends + backends + native-sdk move atomically:
+Then roll the services using the **§0 #3 staged roll** (sidecar first). On the
+issuer roll, the issuer-service re-registers the trusted issuers on the **new**
+`issuer_registry` at startup (same public keys → trust restored). Existing
+pre-`owl_root` credentials still verify for basic presentation but cannot satisfy
+predicate requests until re-issued (`owl_root` is signed in by new issuances only).
+
+### 3.0a Upgrade a contract WITHOUT changing its address
+
+A redeploy always mints a new address — `deployContract` derives it from the
+deploy transaction. To change a circuit while keeping the address (and every
+predicate attestation already recorded against it), use a **maintenance
+transaction** instead.
+
+Maintenance is authorised by the contract's **maintenance authority** signing
+key, fixed at deploy time from `MIDNIGHT_OWNER_SECRET_KEY` — the same single
+admin key that is also the contract owner:
+
+```ts
+import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts'
+
+const deployed = await findDeployedContract(providers, { contractAddress, compiledContract })
+
+// Swap one circuit's verifier key in place — the contract address is unchanged.
+await deployed.circuitMaintenanceTx.attestAgeGte.insertVerifierKey(newVk)
+await deployed.circuitMaintenanceTx.attestAgeGte.removeVerifierKey()
+
+// Rotate the authority itself (e.g. to move it to a new secret).
+await deployed.contractMaintenanceTx.replaceAuthority(newSigningKey)
+```
+
+**What maintenance can and cannot do.** It replaces _verifier keys_ and the
+_authority_. It does not migrate ledger state. So:
+
+- circuit logic changed, ledger layout identical → `insertVerifierKey`, address kept
+- ledger layout changed (new/renamed/retyped ledger field) → full redeploy (§3.0)
+
+**Losing the admin key is unrecoverable.** `midnight-owner-secret-key` in Secret
+Manager is the only durable copy. Without it a contract can never be upgraded in
+place again — only redeployed at a new address, which is a user-visible outage.
+Never deploy with `MIDNIGHT_OWNER_SECRET_KEY` unset: the deploy will mint a
+random key, print it once, and store the authority only in local LevelDB.
+
+The same key is the contract owner, so rotating it means both re-pushing the
+secret **and** running `replaceAuthority` on all 10 contracts.
+
+### 3.0b Recover from a Midnight testnet reset
+
+Public testnets get reset. A reset **wipes every deployed contract and zeroes the
+wallet balance**, so all 10 addresses in `terraform.tfvars` become dangling and
+the sidecar can no longer reach any contract. This has happened: preview was
+relaunched on the 1.0.x network and prod was down for four days.
+
+**Symptoms.** `sidecar/health` reports `connected: false`; every contract route
+500s in ~0 ms; the issuer crash-loops because its startup registration fails;
+`issuer.owlid.app` 500s on everything including `/.well-known/did.json`.
+
+**Confirm it is a reset** — a `null` result means the contract is gone:
 
 ```sh
-TAG=$(git rev-parse --short HEAD)
-IMAGE_TAG=$TAG just gcp-build
-cd deploy/gcp/terraform && terraform apply -var=image_tag=$TAG
+ADDR=$(grep '^midnight_issuer_registry_address' deploy/gcp/terraform/terraform.tfvars | cut -d'"' -f2)
+curl -s -X POST https://indexer.preview.midnight.network/api/v4/graphql \
+  -H 'content-type: application/json' \
+  -d "{\"query\":\"query{contractAction(address:\\\"$ADDR\\\"){__typename}}\"}"
+
+# And check what network the chain is actually on now:
+curl -s -X POST https://rpc.preview.midnight.network \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"system_version","params":[]}'
 ```
 
-Otherwise `latest` floats and a frontend rebuild after a native-sdk change can race against the old native-sdk-builder image cache.
+**Recovery.**
+
+```sh
+# 1. Re-fund the wallet. Its address is logged at deploy start, or:
+cd packages/midnight-sidecar && bun run src/diag-wallet.ts     # prints unshieldedAddr
+#    Faucet: https://faucet.preview.midnight.network  (browser, no API)
+
+# 2. Redeploy all 10 (§3.0). The preflight splits NIGHT into dust lanes and
+#    waits for a usable dust balance before submitting.
+REDEPLOY_ALL=true bun run deploy
+
+# 3. Push the new owner key (§3.0 step 2), then roll services (§0 #3).
+```
+
+If the chain's node version has moved a major release, also bump the Midnight
+SDK pins (`@midnight-ntwrk/midnight-js-*`, `ledger-v8`, `compact-js`) and
+recompile contracts with a matching `compact` toolchain before redeploying —
+compare against `midnightntwrk/midnight-local-dev`'s `package.json` +
+`standalone.yml`, which track the current network.
+
+**Alerting.** `OwlID: Midnight chain client cannot connect` fires on this within
+~5 min (see `deploy/gcp/terraform/monitoring.tf`). If it did not fire, the alert
+policy or the notification channel is broken — fix that first.
 
 ### 3.1 Rust service code change (verification / issuer)
 
@@ -203,10 +393,10 @@ gcloud builds submit \
   --config=deploy/gcp/cloudbuild/verification.yaml \
   --substitutions=_IMAGE_TAG=latest,_REGION=europe-west1,_REPO=owlid
 
-# 3. Roll Cloud Run
-just gcp-apply
-# (or just nudge that one service:)
+# 3. Roll Cloud Run. For an isolated single-service change, nudge just that one:
 gcloud run services update verification --region=europe-west1 --project=owlid-491411
+# For a full multi-service deploy, use the §0 #3 staged roll (sidecar first) —
+# a bare `just gcp-apply` rolls the issuer into the sidecar wallet-resync.
 ```
 
 The Rust cold build takes ~8–12 min on `E2_HIGHCPU_8`. Cloud Build does not cache layers across submits unless you wire kaniko + remote cache. For now, accept the cold-build cost or batch changes.

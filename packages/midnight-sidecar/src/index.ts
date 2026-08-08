@@ -7,7 +7,13 @@
 
 import { Hono } from 'hono'
 import { loadConfig } from './config.js'
-import { initClient, getClient, getWalletSupervisor, disconnectClient } from './client.js'
+import {
+  initClient,
+  getClient,
+  getWalletSupervisor,
+  disconnectClient,
+  getConnectError,
+} from './client.js'
 import { log } from './log.js'
 import { issuer } from './routes/issuer.js'
 import { revocation } from './routes/revocation.js'
@@ -68,7 +74,12 @@ app.route('/api/identities', identity)
 app.route('/api/predicates', predicates)
 app.route('/events', events)
 
-// Health check (no auth required)
+// Health check (no auth required).
+//
+// Returns 503 when the chain client is not usable. A degraded sidecar serves
+// 500s on every contract route, so answering 200 here hides a total outage
+// from Cloud Run, uptime checks, and load balancers alike — which is exactly
+// how a Midnight testnet reset went unnoticed for four days.
 app.get('/health', async (c) => {
   try {
     const client = getClient()
@@ -82,11 +93,14 @@ app.get('/health', async (c) => {
       },
     })
   } catch {
-    return c.json({
-      status: 'degraded',
-      connected: false,
-      error: 'MidnightClient not connected',
-    })
+    return c.json(
+      {
+        status: 'degraded',
+        connected: false,
+        error: getConnectError() ?? 'MidnightClient not connected',
+      },
+      503,
+    )
   }
 })
 
@@ -115,17 +129,47 @@ app.get('/health/wallet/dust', async (c) => {
   }
 })
 
+/** Retry ceiling for the reconnect loop. Chain outages and testnet resets can
+ *  last hours, so this keeps trying rather than giving up — but backs off so a
+ *  hard failure (contracts genuinely gone) isn't a hot loop. */
+const RECONNECT_MIN_MS = 15_000
+const RECONNECT_MAX_MS = 5 * 60_000
+
+/**
+ * Keep trying to connect until the chain client is usable.
+ *
+ * The wallet already has a supervisor; the contract client had none, so a
+ * single failed connect at boot left the process serving 500s forever with no
+ * path back other than a manual redeploy. This is that missing supervisor.
+ */
+async function superviseClient(): Promise<void> {
+  let delay = RECONNECT_MIN_MS
+  for (;;) {
+    try {
+      await initClient(config)
+      log.info('sidecar.client.connected', {})
+      console.log('[sidecar] MidnightClient connected')
+      return
+    } catch (e) {
+      // ERROR severity so a log-based alert can fire on it.
+      log.error('sidecar.client.connect_failed', {
+        error: String(e instanceof Error ? e.message : e),
+        retryInMs: delay,
+      })
+      console.error('[sidecar] Failed to connect MidnightClient:', e)
+      await new Promise((r) => setTimeout(r, delay))
+      delay = Math.min(delay * 2, RECONNECT_MAX_MS)
+    }
+  }
+}
+
 // Startup
 async function start() {
   console.log(`[sidecar] Starting Midnight Sidecar on port ${config.port}...`)
 
-  try {
-    await initClient(config)
-    console.log('[sidecar] MidnightClient connected')
-  } catch (e) {
-    console.error('[sidecar] Failed to connect MidnightClient:', e)
-    console.warn('[sidecar] Starting in degraded mode - health endpoint will report disconnected')
-  }
+  // Not awaited: the HTTP server is already serving (Bun starts it from the
+  // default export), and /health reports 503 until this succeeds.
+  void superviseClient()
 
   console.log(`[sidecar] Listening on http://localhost:${config.port}`)
   console.log('[sidecar] Contracts:')

@@ -277,14 +277,17 @@ export class OwlVerifier {
    *     const result = await verifier.requestPresentation({
    *       verifierName: 'Acme Bar',
    *       dcql: { credentials: [{ id: 'p', format: 'dc+sd-jwt',
-   *         claims: [{ path: ['isOver18'], values: [true] }] }] },
+   *         claims: [{ path: ['age_over'], values: [18] }] }] },
    *       onQr: (payload) => showQr(payload),
    *     })
    *     if (result.valid) console.log(result.subjects)
    */
   async requestPresentation(options: PresentationRequestOptions): Promise<VerifyDcqlResponse> {
     const session = await this.openPresentation()
-    return runPresentationFlow(session, options, (vp, ch, aud, q, vid) =>
+    // verifierId binds the per-verifier attestation salt; an undefined one
+    // would silently produce a different on-chain key than verifyDcql expects.
+    const resolved = { ...options, verifierId: options.verifierId ?? this.verifierId() }
+    return runPresentationFlow(session, resolved, (vp, ch, aud, q, vid) =>
       this.verifyDcql(vp, ch, aud, q, vid),
     )
   }
@@ -396,7 +399,12 @@ export class OwlVerifier {
         key = await emailVerifiedKey(rootHash)
         break
       case 'uniquePerson':
-        key = await uniquePersonhoodKey(rootHash, predicate.epoch, predicate.appId)
+        key = await uniquePersonhoodKey(
+          rootHash,
+          predicate.epoch,
+          predicate.appId,
+          this.verifierId(),
+        )
         break
       case 'nationalityIn':
         key = await nationalityKey(rootHash, this.verifierId(), predicate.countries)

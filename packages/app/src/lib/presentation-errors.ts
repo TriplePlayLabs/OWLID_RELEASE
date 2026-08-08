@@ -104,6 +104,19 @@ export function formatPresentationError(err: unknown): FriendlyPresentationError
   // String-pattern matches against unstructured server / orchestrator errors.
   const lower = raw.toLowerCase()
 
+  // Proving wall-clock exceeded (use-presentation aborts after
+  // PROVING_TIMEOUT_MS). Matched early so a slow proof server reads as a
+  // clear timeout instead of falling through to a generic failure.
+  if (lower.includes('timed out') || lower.includes('proof generation timeout')) {
+    return {
+      title: 'Proof is taking too long',
+      body: 'Generating your proof passed the time limit — the proof server or Midnight network may be slow right now.',
+      hint: 'Try again, or switch to the hosted proof server in Settings if you’re on a slow device.',
+      retryable: true,
+      raw,
+    }
+  }
+
   // Server-side DCQL miss: "DCQL credential <name> unsatisfied"
   const dcqlMiss = raw.match(/DCQL credential ([^\s]+) unsatisfied/i)
   if (dcqlMiss) {

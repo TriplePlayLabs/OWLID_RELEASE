@@ -10,6 +10,8 @@ bun add @owlid/sdk
 
 Pure TypeScript — runs in browsers, Node, and React Native shells. WebAuthn passkey support requires a browser context (or a native bridge that exposes the WebAuthn API).
 
+The happy path is the first four sections: register a passkey, store the credential, build a presentation, and answer a verifier QR with `respondToPresentation`. Everything below that — driving the WebSocket yourself, OpenID4VP `direct_post`, choosing a proving backend — is opt-in, and you only need it if the one-call helper doesn't fit.
+
 ## WebAuthn / passkey lifecycle
 
 WebAuthn is the **unlock + user-verification gate** for the wallet's holder key — never the JWS signer. KB-JWTs are signed by a wallet-held Ed25519 or P-256 key (standard EdDSA / ES256 JWS).
@@ -19,8 +21,8 @@ import {
   registerCredential,
   authenticate,
   isWebAuthnSupported,
-  wrapHolderKey,
-  unwrapHolderKey,
+  sealHolderKey,
+  openHolderKey,
   KeyPair,
 } from '@owlid/sdk'
 
@@ -34,18 +36,20 @@ const cred = await registerCredential({
   userVerification: 'required',
 })
 
-// 2. Mint the wallet's holder signing key + wrap its 32-byte seed with the
-//    passkey PRF. wrapHolderKey(credentialId, seedHex) → wrapped blob string.
+// 2. Mint the wallet's holder signing key + seal its 32-byte seed with the
+//    passkey PRF. Returns { blob, credentialId } — persist the blob, and the
+//    credentialId it reports, which is the passkey that actually supplied the
+//    PRF output (pass null to let the browser show the passkey picker).
 const holderKey = KeyPair.generate()
-const wrapped = await wrapHolderKey(cred.credentialId, holderKey.toHex())
+const { blob: wrapped } = await sealHolderKey(cred.credentialId, holderKey.toHex())
 
-// 3. Later — UV gate then unwrap. unwrapHolderKey returns the seed hex string.
+// 3. Later — UV gate, then open. Returns { seedHex, credentialId }.
 await authenticate({
   rpId: 'wallet.example.com',
   credentialId: cred.credentialId,
   userVerification: 'required',
 })
-const holderKeyHex = await unwrapHolderKey(cred.credentialId, wrapped)
+const { seedHex: holderKeyHex } = await openHolderKey(cred.credentialId, wrapped)
 ```
 
 ## Local credential storage
@@ -68,7 +72,7 @@ await storage.addCredential(
     verifiedClaims, // disclosed claims kept locally for the wallet UI
     cardShape: buildCardShape(providerId, verifiedClaims), // per-IdP card UI
   },
-  wrapped, // from wrapHolderKey() — see above
+  wrapped, // the blob from sealHolderKey() — see above
 )
 
 const list = await storage.listCredentials()
@@ -76,10 +80,11 @@ const keyBlob = await storage.getCredentialKeyWrapped(parsed.credentialId())
 
 // IndexedDB-backed proof history for the "recent proofs" UI.
 await proofStorage.saveProof({
-  id,
-  name,
-  claim, // the claim proven, e.g. 'age_over_18'
-  result, // boolean outcome
+  id: crypto.randomUUID(), // fresh per generation — a reused id overwrites the row
+  predicateId: 'age_over_18', // stable id, matches a stored row back to its predicate
+  name: 'Acme Bar', // display name — typically the verifier it was shown to
+  claim: 'age_over_18', // the claim proven
+  result: true, // boolean outcome
   presentation, // the SD-JWT VC presentation string
   createdAt: new Date().toISOString(),
 })
@@ -93,7 +98,7 @@ await proofStorage.saveProof({
 import { presentSdJwtVc } from '@owlid/sdk'
 
 // presentSdJwtVc(sdJwtVc, holderKeyHex, disclose, { aud, nonce }) — synchronous.
-// holderKeyHex is the seed hex returned by unwrapHolderKey().
+// holderKeyHex is the seedHex returned by openHolderKey().
 const presentation = presentSdJwtVc(
   storedCredential.sdJwtVc,
   holderKeyHex,
@@ -109,13 +114,13 @@ The resulting string is the full SD-JWT VC presentation: issuer JWT + selected d
 Scan a verifier QR, prompt the user for consent, and respond — all in one call:
 
 ```ts
-import { respondToPresentation, OwlWallet, unwrapHolderKey, storage } from '@owlid/sdk'
+import { respondToPresentation, OwlWallet, openHolderKey, storage } from '@owlid/sdk'
 
-// An OwlWallet wraps your local storage + key-unwrap + passkey resolution.
+// An OwlWallet wraps your local storage + key-unseal + passkey resolution.
 // It solves the verifier's DCQL query and signs the KB-JWTs.
 const wallet = new OwlWallet(
   storage,
-  (credentialId, wrapped) => unwrapHolderKey(credentialId, wrapped),
+  async (credentialId, wrapped) => (await openHolderKey(credentialId, wrapped)).seedHex,
   async () => (await storage.loadWebAuthnCredential())?.credentialId ?? null,
 )
 

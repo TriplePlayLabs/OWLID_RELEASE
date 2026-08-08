@@ -10,7 +10,7 @@ const verifier = new OwlVerifier({ apiKey: process.env.OWLID_API_KEY! })
 
 ## Constructor
 
-```ts
+```ts no-check
 new OwlVerifier(options: OwlVerifierOptions)
 ```
 

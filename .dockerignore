@@ -35,10 +35,6 @@ packages/native-sdk/*.wasi-browser.js
 packages/native-sdk/wasi-worker*.mjs
 packages/native-sdk/npm/
 
-# Groth16 proving keys are generated fresh inside Dockerfile.native-sdk-builder
-# (just generate-zk-keys equivalent). Host copies are untracked + might be stale.
-crates/zk-circuits/artifacts/
-
 # Terraform
 deploy/gcp/terraform/.terraform/
 deploy/gcp/terraform/*.tfstate*

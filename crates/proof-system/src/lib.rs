@@ -3,6 +3,7 @@
 #![allow(clippy::doc_lazy_continuation)]
 
 pub mod attestation;
+pub mod datasets;
 pub mod error;
 pub mod predicate_attestation;
 pub mod predicate_routing;

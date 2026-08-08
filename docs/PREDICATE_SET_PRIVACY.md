@@ -17,7 +17,7 @@ well-known policies (EU-27, OFAC, …) cannot link verifiers; the cost is
 that attestation reuse is now **per-verifier**, not global.
 
 The on-chain attestation key remains
-`SHA-256(tag || rootHash || setHash)`, so a credential's residency
+`SHA-256(tag || owl_root || setHash)`, so a credential's residency
 attestation against the EU-27 set under verifier A stays distinct from
 the same credential's attestation against {NL, BE, DE} under the same
 verifier, or against EU-27 under verifier B.
@@ -61,7 +61,7 @@ export circuit attestResidencyIn(
   assert(inSet, "residence country not in allowed set");
 
   record(keyOf(pad(32, "owlid:attest:resin:"),
-               disclose(rootHash), disclose(setHash)));
+               disclose(owlRoot), disclose(setHash)));
 }
 ```
 
@@ -154,7 +154,7 @@ If any one of them drifts the on-chain key won't match across boundaries.
   circuit shape changes; old addresses are dead.
 - The SSE attestation-set mirror in the sidecar is still the
   authoritative source of truth on the verifier side. The verification-
-  service looks up `attestations.member(SHA-256(tag || rootHash ||
+  service looks up `attestations.member(SHA-256(tag || owl_root ||
 setHash))` — same recipe, just shorter param.
 - DCQL stays standard. The verifier-app passes `claim.values =
 [["NL","BE","DE"]]` exactly as today; the wallet's SDK canonicalises

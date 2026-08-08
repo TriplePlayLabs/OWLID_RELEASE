@@ -16,7 +16,17 @@ pub async fn correlation_and_metrics(request: Request, next: Next) -> Response {
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     let method = request.method().to_string();
-    let path = request.uri().path().to_string();
+    // The ROUTE PATTERN, never the raw URI. Labelling by `uri().path()` mints a
+    // new time series per distinct path, so internet scanners probing `/.env`,
+    // `/.git/config`, `/wp-json/...` grow the registry without bound — a memory
+    // leak any anonymous client can drive. `MatchedPath` is the registered
+    // pattern (`/sessions/{id}`), so cardinality is capped by the route table.
+    // Unrouted requests (404s, the scanner traffic) collapse into one series.
+    let path = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| "<unmatched>".to_string());
 
     let start = Instant::now();
     let mut response = next.run(request).await;
@@ -39,8 +49,18 @@ pub async fn correlation_and_metrics(request: Request, next: Next) -> Response {
 /// Initialize the Prometheus metrics recorder
 /// Returns the handle for rendering metrics
 pub fn init_metrics() -> metrics_exporter_prometheus::PrometheusHandle {
-    let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
-    builder
+    // Emit histograms (`_bucket` series), not the default summaries. Summaries
+    // expose pre-computed `quantile=` labels that cannot be re-aggregated
+    // across instances, so `histogram_quantile()` over them yields nothing —
+    // which is why the shipped Grafana latency panels rendered empty.
+    // Buckets are seconds, sized for HTTP handlers that mostly finish in
+    // milliseconds but tail into the multi-second Midnight transaction path.
+    const LATENCY_BUCKETS: &[f64] = &[
+        0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0,
+    ];
+    metrics_exporter_prometheus::PrometheusBuilder::new()
+        .set_buckets(LATENCY_BUCKETS)
+        .expect("latency buckets must be non-empty")
         .install_recorder()
         .expect("Failed to install Prometheus recorder")
 }

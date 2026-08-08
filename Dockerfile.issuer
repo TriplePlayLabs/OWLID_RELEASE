@@ -16,11 +16,6 @@ RUN apt-get update && apt-get install -y \
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-# Generate Groth16 proving + verifying keys (see Dockerfile.verification
-# for rationale — owl-zk-circuits embeds the .bin files via include_bytes!
-# under its default features).
-RUN cargo run -p owl-zk-circuits --bin keygen --no-default-features --release
-
 # Build the issuer service in release mode
 RUN cargo build --release -p owl-issuer-service
 

@@ -42,7 +42,7 @@ import {
   createWalletFromMnemonic,
   DEVNET_GENESIS_SEED,
   getWalletBalances,
-  registerNightForDust,
+  ensureDustLanes,
   type HeadlessWallet,
 } from './wallet.js'
 import {
@@ -50,9 +50,33 @@ import {
   createRevocationRegistryWitnesses,
   createPredicateRegistryWitnesses,
 } from './witnesses.js'
+import { signingKeyFromBip340 } from '@midnight-ntwrk/ledger-v8'
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { randomBytes } from 'crypto'
+
+/** True when `address` still holds a contract on the chain behind `indexerUri`.
+ *  A public testnet reset removes every deployed contract, so an address that
+ *  worked yesterday can be absent today. */
+async function contractExistsOnChain(indexerUri: string, address: string): Promise<boolean> {
+  try {
+    const res = await fetch(indexerUri, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:String!){ contractAction(address:$a){ __typename } }`,
+        variables: { a: address },
+      }),
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (!res.ok) return false
+    const body = (await res.json()) as { data?: { contractAction?: unknown } }
+    return Boolean(body.data?.contractAction)
+  } catch {
+    // Treat an unreachable indexer as "unknown", not "absent" — deploying on
+    // top of a live contract would orphan it.
+    throw new Error(`indexer unreachable while checking ${address.slice(0, 12)}…`)
+  }
+}
 
 // =============================================================================
 // Deploy table — one row per Compact contract.
@@ -234,11 +258,45 @@ async function main() {
     /* older SDKs may not expose this; non-fatal. */
   }
   const balances = await getWalletBalances(wallet, networkId)
-  console.log(`  NIGHT balance: ${balances.unshielded + balances.shielded}`)
+  const night = balances.unshielded + balances.shielded
+  console.log(`  NIGHT balance: ${night}`)
   console.log(`  DUST balance:  ${balances.dust}`)
-  if (balances.dust === 0n) {
-    console.log('  Registering NIGHT UTXOs for DUST generation...')
-    await registerNightForDust(wallet)
+  // Without NIGHT there is no DUST, and every deploy below fails. Stopping
+  // here keeps the run from writing a half-updated address set, where the
+  // contracts that failed keep pointing at addresses from a previous chain.
+  if (night === 0n && balances.dust === 0n) {
+    console.error()
+    console.error(`  ERROR: wallet holds no NIGHT on '${networkId}'.`)
+    console.error(`  Fund it, then re-run. Address:`)
+    console.error(`    ${balances.unshieldedAddr}`)
+    if (networkId === 'preview') {
+      console.error(`  Faucet: https://faucet.preview.midnight.network`)
+    }
+    console.error()
+    console.error(`  A public testnet reset zeroes the balance AND removes every`)
+    console.error(`  deployed contract, so a reset means re-funding and re-deploying.`)
+    wallet.close()
+    process.exit(1)
+  }
+  // Deploying 10 contracts back-to-back needs real dust, and a freshly funded
+  // wallet has a single NIGHT UTXO — one dust lane, generating slowly. Splitting
+  // into K lanes multiplies the generation rate and gives the deploy loop K
+  // disjoint dust UTXOs to balance against instead of contending on one.
+  //
+  // This also closes the race that made the first post-reset deploy fail all 10
+  // contracts: registration alone returns as soon as dust is merely non-zero,
+  // which is far below what a deploy can spend.
+  const lanes = Number(process.env.DEPLOY_DUST_LANES ?? 8)
+  const minDust = BigInt(process.env.DEPLOY_MIN_DUST ?? 3_000_000_000_000_000n)
+  console.log(`  Ensuring ${lanes} dust lanes and >= ${minDust} dust...`)
+  const ready = await ensureDustLanes(wallet, { lanes, minDust })
+  console.log(`  Dust lanes: ${ready.lanes}, dust balance: ${ready.dust}`)
+  if (ready.dust < minDust) {
+    console.error()
+    console.error(`  ERROR: dust is ${ready.dust}, below the ${minDust} needed to deploy.`)
+    console.error(`  DUST accrues over time from registered NIGHT — wait and re-run.`)
+    wallet.close()
+    process.exit(1)
   }
   console.log()
 
@@ -250,7 +308,39 @@ async function main() {
     balanceTx: wallet.balanceTx,
   }
   const midnightProvider = { submitTx: wallet.submitTx }
-  const ownerSecretKey = randomBytes(32)
+
+  // ONE admin key for the whole contract lifecycle.
+  //
+  // `MIDNIGHT_OWNER_SECRET_KEY` is both:
+  //   - the contract owner (identity-registry witnesses, owner-only ops), and
+  //   - the contract MAINTENANCE AUTHORITY — the key the ledger checks on
+  //     `insertVerifierKey` / `removeVerifierKey` / `replaceAuthority`, which
+  //     are the only way to upgrade a circuit without minting a new address.
+  //
+  // It must be durable. When `signingKey` is omitted midnight-js mints a random
+  // authority and keeps it solely in the private-state LevelDB; losing that
+  // directory forfeits upgrades on every contract it deployed. Passing the key
+  // explicitly makes the authority reproducible from Secret Manager alone.
+  // Deliberately fatal when unset. Generating one here would hand back a key
+  // that exists nowhere durable, and the contracts it deployed could never be
+  // upgraded in place — a failure that only surfaces months later, when it is
+  // unfixable. Refusing to deploy is the recoverable outcome.
+  const ownerHex = process.env.MIDNIGHT_OWNER_SECRET_KEY?.trim()
+  if (!ownerHex) {
+    throw new Error(
+      'MIDNIGHT_OWNER_SECRET_KEY is required — it is the contract owner AND the ' +
+        'maintenance authority (the key that authorises in-place circuit upgrades). ' +
+        'Load it with:\n' +
+        '  export MIDNIGHT_OWNER_SECRET_KEY=$(gcloud secrets versions access latest \\\n' +
+        '    --secret=midnight-owner-secret-key --project=owlid-491411)',
+    )
+  }
+  if (!/^[0-9a-fA-F]{64}$/.test(ownerHex)) {
+    throw new Error('MIDNIGHT_OWNER_SECRET_KEY must be 32-byte hex (64 chars)')
+  }
+  const ownerSecretKey = Buffer.from(ownerHex, 'hex')
+  const signingKey = signingKeyFromBip340(ownerSecretKey)
+  console.log('  Admin key: MIDNIGHT_OWNER_SECRET_KEY (owner + maintenance authority)')
   const providersBase = {
     privateStateProvider: levelPrivateStateProvider({
       privateStateStoreName: 'owlid-deploy-state',
@@ -298,10 +388,34 @@ async function main() {
   console.log()
   const addresses: Record<string, string> = {}
   const failures: Array<{ name: string; error: string }> = []
+  const kept: string[] = []
+
+  // Maintenance mode (the default): a contract whose configured address is
+  // still live on chain is kept as-is and not redeployed.
+  //
+  // Midnight has no in-place upgrade — `deployContract` derives the address
+  // from the deploy transaction, so ANY redeploy mints a new address. Keeping
+  // an address stable therefore means not redeploying that contract. This
+  // makes re-runs idempotent: after a partial failure or a testnet reset,
+  // only the contracts that are actually missing get deployed, and the rest
+  // keep their addresses (and, for predicates, their attestation history).
+  //
+  // Set REDEPLOY_ALL=true to force a fresh address for every contract — which
+  // is what you want after changing a contract's Compact source.
+  const redeployAll = process.env.REDEPLOY_ALL === 'true'
 
   for (const row of table) {
     process.stdout.write(`  ${row.name.padEnd(24)} `)
     try {
+      if (!redeployAll) {
+        const existing = process.env[`MIDNIGHT_${row.envSuffix}_ADDRESS`]?.trim()
+        if (existing && (await contractExistsOnChain(indexerUrl, existing))) {
+          addresses[row.envSuffix] = existing
+          kept.push(row.name)
+          console.log(`kept   ${existing}`)
+          continue
+        }
+      }
       const zkConfigProvider = new NodeZkConfigProvider(join(contractsBase, row.name))
       // Compact-generated Contract classes vary in type per managed/<n>,
       // but at runtime midnight-js works on the structural shape only —
@@ -336,6 +450,9 @@ async function main() {
           privateStateId: row.privateStateId,
           initialPrivateState: row.initialPrivateState(ctx),
           args: row.args(ctx),
+          // Fixes the maintenance authority to the admin key. Omitting this
+          // lets midnight-js mint a random one into local-only private state.
+          signingKey,
         },
       )
       const addr = (deployed as { deployTxData: { public: { contractAddress: string } } })
@@ -415,15 +532,34 @@ async function main() {
   // ---- Summary --------------------------------------------------------
   console.log('=== Deployment Complete ===')
   console.log()
-  console.log(`Deployed ${Object.keys(addresses).length}/${DEPLOY_TABLE.length} contracts:`)
+  const freshCount = Object.keys(addresses).length - kept.length
+  console.log(
+    `${freshCount} newly deployed, ${kept.length} kept (already on chain), ` +
+      `${DEPLOY_TABLE.length} total:`,
+  )
   for (const [suffix, addr] of Object.entries(addresses)) {
     console.log(`  ${suffix.padEnd(24)} ${addr}`)
+  }
+  if (kept.length > 0) {
+    console.log()
+    console.log(`Kept (re-run with REDEPLOY_ALL=true to mint new addresses): ${kept.join(', ')}`)
   }
   if (failures.length > 0) {
     console.log()
     console.log(`Failed (${failures.length}):`)
     for (const f of failures) {
       console.log(`  ${f.name}: ${f.error}`)
+    }
+    // The written files now mix fresh addresses with whatever the failed
+    // contracts had before. Those stale entries point at contracts that may
+    // not exist, which the sidecar reports as a chain-connect failure rather
+    // than anything resembling "the deploy was incomplete".
+    console.log()
+    console.log('  WARNING: partial deploy. These still hold their PREVIOUS address')
+    console.log('  and must not be shipped — re-run until every contract succeeds:')
+    for (const f of failures) {
+      const row = DEPLOY_TABLE.find((r) => r.name === f.name)
+      if (row) console.log(`    midnight_${row.envSuffix.toLowerCase()}_address`)
     }
   }
 

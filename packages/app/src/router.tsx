@@ -1,6 +1,7 @@
 import { createRouter } from '@tanstack/react-router'
 
 import { LoadingScreen } from '~/components/LoadingScreen'
+import { NotFoundScreen } from '~/components/NotFoundScreen'
 // Import the generated route tree
 import { routeTree } from './routeTree.gen'
 
@@ -17,7 +18,7 @@ export const getRouter = () => {
     // hold it long enough that the transition doesn't flicker.
     defaultPendingMs: 0,
     defaultPendingMinMs: 400,
-    defaultNotFoundComponent: () => <LoadingScreen caption="Route not found" />,
+    defaultNotFoundComponent: () => <NotFoundScreen />,
   })
 
   return router

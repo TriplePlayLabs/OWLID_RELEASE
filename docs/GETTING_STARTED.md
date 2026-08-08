@@ -437,7 +437,6 @@ just deploy-contracts  # deploy OwlID Compact contracts
 just fund-accounts     # fund test accounts with NIGHT tokens
 
 just generate-api-client  # regenerate verifier/issuer/admin clients from OpenAPI
-just generate-zk-keys     # regenerate Groth16 PK/VK artifacts
 
 just clean && just build
 ```

@@ -10,11 +10,18 @@ export type Maybe<T> = { is_some: boolean; value: T };
 
 export type Witnesses<PS> = {
   emailVerifiedFlag(context: __compactRuntime.WitnessContext<Ledger, PS>): [PS, bigint];
+  claimSalt(context: __compactRuntime.WitnessContext<Ledger, PS>): [PS, Uint8Array];
+  claimPath(context: __compactRuntime.WitnessContext<Ledger, PS>): [PS, { leaf: Uint8Array,
+                                                                          path: { sibling: { field: bigint
+                                                                                           },
+                                                                                  goes_left: boolean
+                                                                                }[]
+                                                                        }];
 }
 
 export type ImpureCircuits<PS> = {
   attestEmailVerified(context: __compactRuntime.CircuitContext<PS>,
-                      rootHash_0: Uint8Array): __compactRuntime.CircuitResults<PS, []>;
+                      owlRoot_0: Uint8Array): __compactRuntime.CircuitResults<PS, []>;
   isAttested(context: __compactRuntime.CircuitContext<PS>, key_0: Uint8Array): __compactRuntime.CircuitResults<PS, boolean>;
   pause(context: __compactRuntime.CircuitContext<PS>): __compactRuntime.CircuitResults<PS, []>;
   unpause(context: __compactRuntime.CircuitContext<PS>): __compactRuntime.CircuitResults<PS, []>;
@@ -27,7 +34,7 @@ export type ImpureCircuits<PS> = {
 
 export type ProvableCircuits<PS> = {
   attestEmailVerified(context: __compactRuntime.CircuitContext<PS>,
-                      rootHash_0: Uint8Array): __compactRuntime.CircuitResults<PS, []>;
+                      owlRoot_0: Uint8Array): __compactRuntime.CircuitResults<PS, []>;
   isAttested(context: __compactRuntime.CircuitContext<PS>, key_0: Uint8Array): __compactRuntime.CircuitResults<PS, boolean>;
   pause(context: __compactRuntime.CircuitContext<PS>): __compactRuntime.CircuitResults<PS, []>;
   unpause(context: __compactRuntime.CircuitContext<PS>): __compactRuntime.CircuitResults<PS, []>;
@@ -43,7 +50,7 @@ export type PureCircuits = {
 
 export type Circuits<PS> = {
   attestEmailVerified(context: __compactRuntime.CircuitContext<PS>,
-                      rootHash_0: Uint8Array): __compactRuntime.CircuitResults<PS, []>;
+                      owlRoot_0: Uint8Array): __compactRuntime.CircuitResults<PS, []>;
   isAttested(context: __compactRuntime.CircuitContext<PS>, key_0: Uint8Array): __compactRuntime.CircuitResults<PS, boolean>;
   pause(context: __compactRuntime.CircuitContext<PS>): __compactRuntime.CircuitResults<PS, []>;
   unpause(context: __compactRuntime.CircuitContext<PS>): __compactRuntime.CircuitResults<PS, []>;

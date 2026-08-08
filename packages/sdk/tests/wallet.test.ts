@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { matchDcqlAgainst } from '../src/wallet.js'
+import { matchDcqlAgainst, unattestedRequiredPredicates } from '../src/wallet.js'
 import type { WalletCredential } from '../src/storage.js'
 import type { DcqlRequest } from '@owlid/verifier-client'
 
@@ -188,5 +188,35 @@ describe('matchDcqlAgainst', () => {
     // Insertion order is preserved on the candidates list; the
     // selector inside present() picks newest-by-issuedAt.
     expect(r.entries[0]!.candidates.map((c) => c.credentialId)).toEqual(['b1', 'b2'])
+  })
+})
+
+describe('unattestedRequiredPredicates', () => {
+  test('no required predicates → nothing missing', () => {
+    expect(unattestedRequiredPredicates(undefined, [])).toEqual([])
+    expect(unattestedRequiredPredicates([], [{ predicate: 'age' }])).toEqual([])
+  })
+
+  test('required predicate that failed to attest is reported missing', () => {
+    // email_verified required but the orchestrator returned no result for it
+    // (prove failed / skipped) → present() must NOT send a "Shared" proof.
+    const missing = unattestedRequiredPredicates([{ predicate: 'email_verified' }], [])
+    expect(missing).toEqual(['email_verified'])
+  })
+
+  test('required predicate present in results → not missing', () => {
+    const missing = unattestedRequiredPredicates(
+      [{ predicate: 'email_verified' }],
+      [{ predicate: 'email_verified' }],
+    )
+    expect(missing).toEqual([])
+  })
+
+  test('mixed: one attested, one skipped → only the skipped is missing', () => {
+    const missing = unattestedRequiredPredicates(
+      [{ predicate: 'age' }, { predicate: 'email_verified' }],
+      [{ predicate: 'age' }],
+    )
+    expect(missing).toEqual(['email_verified'])
   })
 })

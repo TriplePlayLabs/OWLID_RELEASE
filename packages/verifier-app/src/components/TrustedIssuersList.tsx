@@ -4,6 +4,7 @@ import { Card, CardContent } from '@owlid/ui/components/ui/card'
 import { Badge } from '@owlid/ui/components/ui/badge'
 import { Button } from '@owlid/ui/components/ui/button'
 import { listTrustedIssuers, type TrustedIssuerInfo } from '../api'
+import { formatTimestamp } from '../format'
 
 /** Shows the verifier-service's trusted-issuer set so the operator can
  *  see (a) which issuers are accepted, (b) whether they're active. */
@@ -81,6 +82,15 @@ export function TrustedIssuersList() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <p className="text-sm font-medium text-white truncate">{i.name}</p>
+                    {/* Rotated keys share the same display name — a short
+                        fingerprint of the pubkey gives each row a glanceable
+                        unique id so the list doesn't read as duplicate bugs. */}
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] font-mono border-white/15 text-muted-foreground"
+                    >
+                      {i.publicKey.slice(0, 8)}
+                    </Badge>
                     {!i.isActive && (
                       <Badge variant="outline" className="text-[10px] border-white/15">
                         Inactive
@@ -90,6 +100,11 @@ export function TrustedIssuersList() {
                   {i.description && (
                     <p className="text-xs text-muted-foreground mt-0.5">{i.description}</p>
                   )}
+                  {/* Rotated keys re-register under the same display name —
+                      the registration date is what tells them apart. */}
+                  <p className="text-[10px] text-muted-foreground/70 mt-0.5">
+                    Key added {formatTimestamp(i.addedAt)}
+                  </p>
                   <p className="text-[10px] font-mono text-muted-foreground/80 break-all mt-1">
                     {i.publicKey}
                   </p>

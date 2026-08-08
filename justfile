@@ -241,22 +241,6 @@ build-backend:
 build-frontend:
     bun run build
 
-# Regenerate Groth16 proving + verifying keys for the ZK circuits.
-# Writes ark-serialize compressed bytes into
-# crates/zk-circuits/artifacts/{age_range,kyc_status,nationality}.{pk,vk}.bin.
-# Deterministic — running this on a clean checkout produces byte-identical
-# output. Re-run after editing a circuit; commit the regenerated artifacts.
-#
-# SECURITY: dev/test only. Production deployment must replace these with
-# the output of a Phase-2 MPC ceremony (see crates/zk-circuits/CEREMONY.md).
-generate-zk-keys:
-    #!/usr/bin/env bash
-    set -e
-    echo "Generating Groth16 keys (deterministic dev seeds)…"
-    # --no-default-features so the lib does not include_bytes! the very
-    # files we are about to write.
-    cargo run -p owl-zk-circuits --bin keygen --no-default-features --release
-    echo "Done. Commit crates/zk-circuits/artifacts/ to track changes."
 
 build-sdk:
     #!/usr/bin/env bash
@@ -310,7 +294,13 @@ lint:
     cargo clippy --workspace --all-targets -- -D warnings
     bun run lint
 
-check: fmt lint test
+# Type-check every docs code fence against packages/sdk/src, and assert the
+# docs' links, predicate claim paths, HTTP route tables, and SDK reference
+# pages still match the code.
+check-docs:
+    bun run check:docs
+
+check: fmt lint check-docs test
     @echo "All checks passed"
 
 # ============================================================================
@@ -629,16 +619,6 @@ _cleanup:
 _ensure-sdk:
     #!/usr/bin/env bash
     set -e
-    cd packages/native-sdk
-
-    # Check if WASM needs to be built (build:wasm includes wasm-opt)
-    if [ ! -f "npm/wasm32-wasi/owl-id.wasm32-wasi.wasm" ]; then
-        echo "Building native SDK WASM (this may take a few minutes)..."
-        bun run build:wasm
-    fi
-
-    cd ../..
-
     # Build TypeScript SDK if needed
     if [ ! -d "packages/sdk/dist" ] || \
        [ "packages/sdk/src/index.ts" -nt "packages/sdk/dist/index.js" ]; then

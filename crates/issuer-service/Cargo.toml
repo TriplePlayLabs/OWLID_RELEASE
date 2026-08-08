@@ -52,9 +52,6 @@ rand.workspace = true
 # Crypto & Proof System (for direct credential issuance)
 owl-crypto       = { path = "../crypto" }
 owl-proof-system = { path = "../proof-system" }
-# zk-circuits — canonical source of EU member-state set used by the
-# nationality Merkle tree. Exposed via GET /eu-countries.
-owl-zk-circuits = { path = "../zk-circuits" }
 
 # OpenAPI
 utoipa.workspace            = true

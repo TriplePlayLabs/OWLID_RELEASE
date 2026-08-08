@@ -48,7 +48,7 @@ fn derive_available_predicates(attrs: &BTreeMap<String, Value>) -> Vec<String> {
                     Some(v) => v,
                     None => continue,
                 };
-                let dataset = match owl_zk_circuits::data::lookup(name) {
+                let dataset = match owl_proof_system::datasets::lookup(name) {
                     Some(d) => d,
                     None => continue,
                 };

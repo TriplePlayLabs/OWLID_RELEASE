@@ -4,7 +4,6 @@ members = [
   "crates/proof-system",
   "crates/verification-service",
   "crates/issuer-service",
-  "crates/zk-circuits",
 ]
 resolver = "2"
 

@@ -652,6 +652,9 @@ pub async fn verify_dcql(
                 let cred_id_for_key = outcome.credential_id.as_deref().unwrap_or_default();
                 let cred_id_hex = owl_proof_system::sd_jwt::credential_id_hex(cred_id_for_key)
                     .unwrap_or_default();
+                // F-1 binding anchor: owl_root-bound predicates (kyc) key on the
+                // issuer-signed owl_root read from the verified presentation.
+                let owl_root_hex = owl_proof_system::sd_jwt::owl_root_hex(presentation);
                 // Verifier identity for the per-verifier salt mixed into
                 // nationality / residency setHash. Falls back to the
                 // `audience` (which OID4VP defaults to the response_uri /
@@ -662,7 +665,13 @@ pub async fn verify_dcql(
                     .as_deref()
                     .or(request.audience.as_deref())
                     .unwrap_or("");
-                match dcql::derive_attest_key(q, vct, &cred_id_hex, verifier_id) {
+                match dcql::derive_attest_key(
+                    q,
+                    vct,
+                    &cred_id_hex,
+                    owl_root_hex.as_deref(),
+                    verifier_id,
+                ) {
                     Ok(ak) => {
                         // DB-first (SSE-mirrored, hot path). On a miss fall
                         // through to an authoritative on-chain read: the
@@ -836,6 +845,7 @@ pub async fn list_trusted_issuers(
             name: i.name,
             description: i.description,
             is_active: i.is_active,
+            added_at: i.added_at,
         })
         .collect();
 
@@ -849,6 +859,10 @@ pub struct TrustedIssuerInfo {
     name: String,
     description: Option<String>,
     is_active: bool,
+    /// When this key was registered — lets the UI distinguish rotated
+    /// keys that otherwise share the same display name.
+    #[schema(value_type = String, format = DateTime)]
+    added_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Request to revoke a credential
@@ -1232,6 +1246,16 @@ pub async fn check_revocation(
     State(state): State<AppState>,
     Json(request): Json<CheckRevocationRequest>,
 ) -> Result<Json<CheckRevocationResponse>, ApiError> {
+    // Reject malformed ids up front with an actionable 400 — otherwise
+    // they fall through to the chain lookup, fail to decode there, and
+    // surface in the verifier UI as an opaque 500.
+    if owl_proof_system::sd_jwt::credential_id_hex(&request.credential_id).is_err() {
+        return Err(ApiError::InvalidInput(
+            "Invalid credential id format — expected the credential's SHA-256 id as 64 hex \
+             characters or its base64url form."
+                .to_string(),
+        ));
+    }
     // PG mirror first (fast path, sub-ms). If the mirror says "not
     // revoked" we DOUBLE-CHECK the chain — the SSE feed could be
     // mid-replay and a credential might already be revoked on-chain
@@ -1287,6 +1311,10 @@ pub async fn check_revocation(
 pub struct CheckPredicateRequest {
     /// SD-JWT VC credential_id (hex, 32 bytes) — issuer-signed.
     pub credential_id: String,
+    /// Issuer-signed `owl_root` (hex, 32 bytes). Required: every predicate key
+    /// is bound to it (F-1). Absent on a pre-owl_root credential → reissue.
+    #[serde(default)]
+    pub owl_root: Option<String>,
     /// One of: `age` | `kyc` | `nationality` | `residency` | `age_range`
     /// | `email_verified` | `unique_personhood`.
     pub predicate: String,
@@ -1395,7 +1423,8 @@ pub async fn check_predicate_attested(
 ) -> Result<Json<CheckPredicateResponse>, ApiError> {
     let cred_vec = hex::decode(req.credential_id.trim_start_matches("0x"))
         .map_err(|_| ApiError::InvalidInput("credential_id not hex".to_string()))?;
-    let cred_id: [u8; 32] = cred_vec
+    // Validated for shape; predicate keys now anchor on owl_root, not cred_id.
+    let _cred_id: [u8; 32] = cred_vec
         .as_slice()
         .try_into()
         .map_err(|_| ApiError::InvalidInput("credential_id must be 32 bytes".to_string()))?;
@@ -1408,15 +1437,24 @@ pub async fn check_predicate_attested(
             .try_into()
             .map_err(|_| ApiError::InvalidInput(format!("{label} must be 32 bytes")))
     };
+    // All predicate keys bind the issuer-signed owl_root (F-1), not the
+    // credential id. A credential without owl_root must be reissued.
+    let owl_anchor = decode_hex32(
+        "owl_root",
+        req.owl_root.as_deref().ok_or_else(|| {
+            ApiError::InvalidInput("owl_root required (predicate keys bind it)".to_string())
+        })?,
+    )?;
     let key = match req.predicate.as_str() {
         "age" => attestation::age_key(
-            &cred_id,
+            &owl_anchor,
             req.threshold
                 .ok_or_else(|| ApiError::InvalidInput("threshold required for age".to_string()))?
                 as u128,
+            attestation::current_age_epoch(),
         ),
         "kyc" => attestation::kyc_key(
-            &cred_id,
+            &owl_anchor,
             req.threshold
                 .ok_or_else(|| ApiError::InvalidInput("threshold required for kyc".to_string()))?
                 as u128,
@@ -1442,7 +1480,7 @@ pub async fn check_predicate_attested(
                     )
                 })?;
             let refs: Vec<&str> = codes.iter().map(String::as_str).collect();
-            attestation::nationality_key(&cred_id, verifier_id, &refs)
+            attestation::nationality_key(&owl_anchor, verifier_id, &refs)
         }
         "residency" => {
             let codes = req.countries.as_deref().ok_or_else(|| {
@@ -1465,28 +1503,44 @@ pub async fn check_predicate_attested(
                     )
                 })?;
             let refs: Vec<&str> = codes.iter().map(String::as_str).collect();
-            attestation::residency_key(&cred_id, verifier_id, &refs)
+            attestation::residency_key(&owl_anchor, verifier_id, &refs)
         }
         "age_range" => attestation::age_range_key(
-            &cred_id,
+            &owl_anchor,
             req.min_age.ok_or_else(|| {
                 ApiError::InvalidInput("min_age required for age_range".to_string())
             })?,
             req.max_age.ok_or_else(|| {
                 ApiError::InvalidInput("max_age required for age_range".to_string())
             })?,
+            attestation::current_age_epoch(),
         ),
-        "email_verified" => attestation::email_verified_key(&cred_id),
+        "email_verified" => attestation::email_verified_key(&owl_anchor),
         "unique_personhood" => {
             let epoch_hex = req.epoch.as_deref().ok_or_else(|| {
                 ApiError::InvalidInput("epoch required for unique_personhood".to_string())
             })?;
+            let epoch = decode_hex32("epoch", epoch_hex)?;
             let app_id_hex = req.app_id.as_deref().ok_or_else(|| {
                 ApiError::InvalidInput("app_id required for unique_personhood".to_string())
             })?;
-            let epoch = decode_hex32("epoch", epoch_hex)?;
-            let app_id = decode_hex32("app_id", app_id_hex)?;
-            attestation::unique_personhood_key(&cred_id, &epoch, &app_id)
+            let campaign = decode_hex32("app_id", app_id_hex)?;
+            // F-2: the campaign app_id is meaningful (per-campaign sybil scope)
+            // but bound under the authenticated verifier client_id, so a
+            // different verifier choosing the same campaign lands in a
+            // different namespace and no verifier can forge a foreign scope.
+            let verifier_id = req
+                .verifier_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    ApiError::InvalidInput(
+                        "verifierId required for unique_personhood (binds the campaign scope to the verifier identity)"
+                            .to_string(),
+                    )
+                })?;
+            let app_id = attestation::personhood_app_id(verifier_id, &campaign);
+            attestation::unique_personhood_key(&owl_anchor, &epoch, &app_id)
         }
         other => {
             return Err(ApiError::InvalidInput(format!(

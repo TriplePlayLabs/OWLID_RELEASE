@@ -29,7 +29,7 @@ const SECTIONS: Section[] = [
       },
       {
         q: 'How does a verification happen?',
-        a: "The verifier either scans the holder's QR code with a camera to open a live session, or, if there's no camera, uses a manual \"challenge and paste\" flow. Either way, the holder's wallet supplies a proof, and the verifier checks it.",
+        a: "The verifier scans the holder's QR code to open a live session. The holder's wallet supplies a proof over that session, and the verifier checks it.",
       },
       {
         q: 'What\'s the "challenge" step for?',

@@ -251,12 +251,71 @@ Add `-v` to wipe Postgres + proof server SRS + Grafana volumes (irreversible).
 Exposed by both Rust services:
 
 ```bash
-curl http://localhost:8000/prometheus
+# Requires an API key with the `admin` permission — the endpoint exposes a
+# per-route operational profile, so it is not public.
+curl -H "Authorization: Bearer $OWLID_ADMIN_KEY" http://localhost:8000/prometheus
 curl http://localhost:8001/prometheus
 ```
 
-Prod stack also runs Prometheus (`:9090`) + Grafana (`:3001`) in compose.
-Configs live under `monitoring/`.
+### Which monitoring stack applies
+
+Two exist. They are not alternatives to choose between at runtime — each
+belongs to a different deployment target:
+
+| Deployment                         | Stack                               | Status                       |
+| ---------------------------------- | ----------------------------------- | ---------------------------- |
+| **GCP Cloud Run** (`*.owlid.app`)  | **Cloud Monitoring** — the live one | production                   |
+| docker-compose (self-host / local) | Prometheus + Grafana                | optional, no live deployment |
+
+**GCP runs neither Prometheus nor Grafana.** Do not look for them there.
+
+### Cloud Monitoring (production)
+
+Defined as code in `deploy/gcp/terraform/monitoring.tf`. Apply with `-target`
+on the `google_monitoring_*` / `google_logging_metric` resources — never a bare
+`terraform apply` (see RUNBOOK §0 #7).
+
+| Surface            | Where                                                        |
+| ------------------ | ------------------------------------------------------------ |
+| Dashboard          | Console → Monitoring → Dashboards → **"OwlID — production"** |
+| Alert policies (7) | Console → Monitoring → Alerting                              |
+| Uptime checks (3)  | Console → Monitoring → Uptime checks                         |
+| Logs               | Console → Logging → Logs Explorer                            |
+
+Dashboard panels, ordered by the question asked during an incident:
+
+1. **Is it up?** — `/health` uptime per service; 5xx by service
+2. **What is the load?** — request rate; p95 latency
+3. **Is the chain healthy?** — chain-connect failures, issuer registration
+   failures, container start failures (each backed by the alert policy of the
+   same name, so dashboard and pager agree on what "broken" means)
+4. **Data layer** — container instances; Cloud SQL CPU
+
+Uptime checks poll `api` / `issuer` / `sidecar` `/health` every 60 s and depend
+on each service returning **non-2xx when it is not usable**. A health endpoint
+that answers 200 while degraded silently defeats every policy — that is exactly
+how a four-day outage went unnoticed.
+
+Alerts go to the addresses in `alert_emails` (`terraform.tfvars`).
+
+Logs reach Cloud Logging automatically (`_Default` bucket, 30-day retention;
+`_Required` 400). The sidecar emits structured JSON (`jsonPayload.event`); the
+Rust services emit text, so the log-based metrics match on substrings and will
+break if a log line is reworded.
+
+### Prometheus + Grafana (self-hosted only)
+
+Configs under `monitoring/`, wired into `docker-compose.prod.yml`. Kept for
+anyone self-hosting the stack; **no live deployment uses it**. It is not part
+of the GCP deploy path and does not need to be running.
+
+(The Temps deploy target this once served — `deploy/owlid/`,
+`deploy/owlid-infra/`, `prometheus-temps.yml` — has been removed. GCP is the
+only deployment.)
+
+`/prometheus` requires an API key with the `admin` permission — it exposes a
+per-route operational profile. Scrape configs authenticate with
+`authorization: { type: Bearer, credentials_file: ... }`.
 
 ### Health endpoints
 

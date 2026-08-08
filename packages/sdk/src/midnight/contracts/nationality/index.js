@@ -111,30 +111,30 @@ class _MerkleTreePath_0 {
 
 const _descriptor_10 = new _MerkleTreePath_0();
 
-const _descriptor_11 = new __compactRuntime.CompactTypeVector(2, _descriptor_1);
-
-const _descriptor_12 = new __compactRuntime.CompactTypeVector(3, _descriptor_1);
-
-const _descriptor_13 = new __compactRuntime.CompactTypeVector(2, _descriptor_6);
-
-const _descriptor_14 = new __compactRuntime.CompactTypeBytes(6);
+const _descriptor_11 = new __compactRuntime.CompactTypeBytes(6);
 
 class _LeafPreimage_0 {
   alignment() {
-    return _descriptor_14.alignment().concat(_descriptor_1.alignment());
+    return _descriptor_11.alignment().concat(_descriptor_1.alignment());
   }
   fromValue(value_0) {
     return {
-      domain_sep: _descriptor_14.fromValue(value_0),
+      domain_sep: _descriptor_11.fromValue(value_0),
       data: _descriptor_1.fromValue(value_0)
     }
   }
   toValue(value_0) {
-    return _descriptor_14.toValue(value_0.domain_sep).concat(_descriptor_1.toValue(value_0.data));
+    return _descriptor_11.toValue(value_0.domain_sep).concat(_descriptor_1.toValue(value_0.data));
   }
 }
 
-const _descriptor_15 = new _LeafPreimage_0();
+const _descriptor_12 = new _LeafPreimage_0();
+
+const _descriptor_13 = new __compactRuntime.CompactTypeVector(2, _descriptor_1);
+
+const _descriptor_14 = new __compactRuntime.CompactTypeVector(2, _descriptor_6);
+
+const _descriptor_15 = new __compactRuntime.CompactTypeVector(3, _descriptor_1);
 
 const _descriptor_16 = new __compactRuntime.CompactTypeUnsignedInteger(18446744073709551615n, 8);
 
@@ -179,6 +179,12 @@ export class Contract {
     if (typeof(witnesses_0.allowedCountryPath) !== 'function') {
       throw new __compactRuntime.CompactError('first (witnesses) argument to Contract constructor does not contain a function-valued field named allowedCountryPath');
     }
+    if (typeof(witnesses_0.claimSalt) !== 'function') {
+      throw new __compactRuntime.CompactError('first (witnesses) argument to Contract constructor does not contain a function-valued field named claimSalt');
+    }
+    if (typeof(witnesses_0.claimPath) !== 'function') {
+      throw new __compactRuntime.CompactError('first (witnesses) argument to Contract constructor does not contain a function-valued field named claimPath');
+    }
     this.witnesses = witnesses_0;
     this.circuits = {
       attestNationalityIn: (...args_1) => {
@@ -186,33 +192,33 @@ export class Contract {
           throw new __compactRuntime.CompactError(`attestNationalityIn: expected 3 arguments (as invoked from Typescript), received ${args_1.length}`);
         }
         const contextOrig_0 = args_1[0];
-        const rootHash_0 = args_1[1];
+        const owlRoot_0 = args_1[1];
         const setHash_0 = args_1[2];
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.currentQueryContext != undefined)) {
           __compactRuntime.typeError('attestNationalityIn',
                                      'argument 1 (as invoked from Typescript)',
-                                     'predicate_nationality.compact line 39 char 1',
+                                     'predicate_nationality.compact line 42 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
-        if (!(rootHash_0.buffer instanceof ArrayBuffer && rootHash_0.BYTES_PER_ELEMENT === 1 && rootHash_0.length === 32)) {
+        if (!(owlRoot_0.buffer instanceof ArrayBuffer && owlRoot_0.BYTES_PER_ELEMENT === 1 && owlRoot_0.length === 32)) {
           __compactRuntime.typeError('attestNationalityIn',
                                      'argument 1 (argument 2 as invoked from Typescript)',
-                                     'predicate_nationality.compact line 39 char 1',
+                                     'predicate_nationality.compact line 42 char 1',
                                      'Bytes<32>',
-                                     rootHash_0)
+                                     owlRoot_0)
         }
         if (!(setHash_0.buffer instanceof ArrayBuffer && setHash_0.BYTES_PER_ELEMENT === 1 && setHash_0.length === 32)) {
           __compactRuntime.typeError('attestNationalityIn',
                                      'argument 2 (argument 3 as invoked from Typescript)',
-                                     'predicate_nationality.compact line 39 char 1',
+                                     'predicate_nationality.compact line 42 char 1',
                                      'Bytes<32>',
                                      setHash_0)
         }
         const context = { ...contextOrig_0, gasCost: __compactRuntime.emptyRunningCost() };
         const partialProofData = {
           input: {
-            value: _descriptor_1.toValue(rootHash_0).concat(_descriptor_1.toValue(setHash_0)),
+            value: _descriptor_1.toValue(owlRoot_0).concat(_descriptor_1.toValue(setHash_0)),
             alignment: _descriptor_1.alignment().concat(_descriptor_1.alignment())
           },
           output: undefined,
@@ -221,7 +227,7 @@ export class Contract {
         };
         const result_0 = this._attestNationalityIn_0(context,
                                                      partialProofData,
-                                                     rootHash_0,
+                                                     owlRoot_0,
                                                      setHash_0);
         partialProofData.output = { value: [], alignment: [] };
         return { result: result_0, context: context, proofData: partialProofData, gasCost: context.gasCost };
@@ -235,14 +241,14 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.currentQueryContext != undefined)) {
           __compactRuntime.typeError('isAttested',
                                      'argument 1 (as invoked from Typescript)',
-                                     'predicate_nationality.compact line 69 char 1',
+                                     'predicate_nationality.compact line 83 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
         if (!(key_0.buffer instanceof ArrayBuffer && key_0.BYTES_PER_ELEMENT === 1 && key_0.length === 32)) {
           __compactRuntime.typeError('isAttested',
                                      'argument 1 (argument 2 as invoked from Typescript)',
-                                     'predicate_nationality.compact line 69 char 1',
+                                     'predicate_nationality.compact line 83 char 1',
                                      'Bytes<32>',
                                      key_0)
         }
@@ -268,7 +274,7 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.currentQueryContext != undefined)) {
           __compactRuntime.typeError('pause',
                                      'argument 1 (as invoked from Typescript)',
-                                     'predicate_nationality.compact line 73 char 1',
+                                     'predicate_nationality.compact line 87 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
@@ -291,7 +297,7 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.currentQueryContext != undefined)) {
           __compactRuntime.typeError('unpause',
                                      'argument 1 (as invoked from Typescript)',
-                                     'predicate_nationality.compact line 74 char 1',
+                                     'predicate_nationality.compact line 88 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
@@ -315,14 +321,14 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.currentQueryContext != undefined)) {
           __compactRuntime.typeError('transferOwnership',
                                      'argument 1 (as invoked from Typescript)',
-                                     'predicate_nationality.compact line 75 char 1',
+                                     'predicate_nationality.compact line 89 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
         if (!(typeof(newOwner_0) === 'object' && typeof(newOwner_0.is_left) === 'boolean' && typeof(newOwner_0.left) === 'object' && newOwner_0.left.bytes.buffer instanceof ArrayBuffer && newOwner_0.left.bytes.BYTES_PER_ELEMENT === 1 && newOwner_0.left.bytes.length === 32 && typeof(newOwner_0.right) === 'object' && newOwner_0.right.bytes.buffer instanceof ArrayBuffer && newOwner_0.right.bytes.BYTES_PER_ELEMENT === 1 && newOwner_0.right.bytes.length === 32)) {
           __compactRuntime.typeError('transferOwnership',
                                      'argument 1 (argument 2 as invoked from Typescript)',
-                                     'predicate_nationality.compact line 75 char 1',
+                                     'predicate_nationality.compact line 89 char 1',
                                      'struct Either<is_left: Boolean, left: struct ZswapCoinPublicKey<bytes: Bytes<32>>, right: struct ContractAddress<bytes: Bytes<32>>>',
                                      newOwner_0)
         }
@@ -350,7 +356,7 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.currentQueryContext != undefined)) {
           __compactRuntime.typeError('owner',
                                      'argument 1 (as invoked from Typescript)',
-                                     'predicate_nationality.compact line 78 char 1',
+                                     'predicate_nationality.compact line 92 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
@@ -373,7 +379,7 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.currentQueryContext != undefined)) {
           __compactRuntime.typeError('isPaused',
                                      'argument 1 (as invoked from Typescript)',
-                                     'predicate_nationality.compact line 79 char 1',
+                                     'predicate_nationality.compact line 93 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
@@ -429,7 +435,7 @@ export class Contract {
     if (!(typeof(initialOwner_0) === 'object' && typeof(initialOwner_0.is_left) === 'boolean' && typeof(initialOwner_0.left) === 'object' && initialOwner_0.left.bytes.buffer instanceof ArrayBuffer && initialOwner_0.left.bytes.BYTES_PER_ELEMENT === 1 && initialOwner_0.left.bytes.length === 32 && typeof(initialOwner_0.right) === 'object' && initialOwner_0.right.bytes.buffer instanceof ArrayBuffer && initialOwner_0.right.bytes.BYTES_PER_ELEMENT === 1 && initialOwner_0.right.bytes.length === 32)) {
       __compactRuntime.typeError('Contract state constructor',
                                  'argument 1 (argument 2 as invoked from Typescript)',
-                                 'predicate_nationality.compact line 23 char 1',
+                                 'predicate_nationality.compact line 26 char 1',
                                  'struct Either<is_left: Boolean, left: struct ZswapCoinPublicKey<bytes: Bytes<32>>, right: struct ContractAddress<bytes: Bytes<32>>>',
                                  initialOwner_0)
     }
@@ -552,7 +558,7 @@ export class Contract {
     return { field:
                this._folder_0((...args_0) =>
                                 this._merkleTreePathEntryRoot_0(...args_0),
-                              this._degradeToTransient_0(this._persistentHash_0({ domain_sep:
+                              this._degradeToTransient_0(this._persistentHash_1({ domain_sep:
                                                                                     new Uint8Array([109, 100, 110, 58, 108, 104]),
                                                                                   data:
                                                                                     path_0.leaf })),
@@ -566,7 +572,7 @@ export class Contract {
     return this._transientHash_0([left_0, right_0]);
   }
   _transientHash_0(value_0) {
-    const result_0 = __compactRuntime.transientHash(_descriptor_13, value_0);
+    const result_0 = __compactRuntime.transientHash(_descriptor_14, value_0);
     return result_0;
   }
   _persistentHash_0(value_0) {
@@ -574,11 +580,11 @@ export class Contract {
     return result_0;
   }
   _persistentHash_1(value_0) {
-    const result_0 = __compactRuntime.persistentHash(_descriptor_11, value_0);
+    const result_0 = __compactRuntime.persistentHash(_descriptor_12, value_0);
     return result_0;
   }
   _persistentHash_2(value_0) {
-    const result_0 = __compactRuntime.persistentHash(_descriptor_12, value_0);
+    const result_0 = __compactRuntime.persistentHash(_descriptor_13, value_0);
     return result_0;
   }
   _degradeToTransient_0(x_0) {
@@ -882,8 +888,42 @@ export class Contract {
     });
     return result_0;
   }
+  _claimSalt_0(context, partialProofData) {
+    const witnessContext_0 = __compactRuntime.createWitnessContext(ledger(context.currentQueryContext.state), context.currentPrivateState, context.currentQueryContext.address);
+    const [nextPrivateState_0, result_0] = this.witnesses.claimSalt(witnessContext_0);
+    context.currentPrivateState = nextPrivateState_0;
+    if (!(result_0.buffer instanceof ArrayBuffer && result_0.BYTES_PER_ELEMENT === 1 && result_0.length === 32)) {
+      __compactRuntime.typeError('claimSalt',
+                                 'return value',
+                                 'predicate_nationality.compact line 19 char 1',
+                                 'Bytes<32>',
+                                 result_0)
+    }
+    partialProofData.privateTranscriptOutputs.push({
+      value: _descriptor_1.toValue(result_0),
+      alignment: _descriptor_1.alignment()
+    });
+    return result_0;
+  }
+  _claimPath_0(context, partialProofData) {
+    const witnessContext_0 = __compactRuntime.createWitnessContext(ledger(context.currentQueryContext.state), context.currentPrivateState, context.currentQueryContext.address);
+    const [nextPrivateState_0, result_0] = this.witnesses.claimPath(witnessContext_0);
+    context.currentPrivateState = nextPrivateState_0;
+    if (!(typeof(result_0) === 'object' && result_0.leaf.buffer instanceof ArrayBuffer && result_0.leaf.BYTES_PER_ELEMENT === 1 && result_0.leaf.length === 32 && Array.isArray(result_0.path) && result_0.path.length === 8 && result_0.path.every((t) => typeof(t) === 'object' && typeof(t.sibling) === 'object' && typeof(t.sibling.field) === 'bigint' && t.sibling.field >= 0 && t.sibling.field <= __compactRuntime.MAX_FIELD && typeof(t.goes_left) === 'boolean'))) {
+      __compactRuntime.typeError('claimPath',
+                                 'return value',
+                                 'predicate_nationality.compact line 20 char 1',
+                                 'struct MerkleTreePath<leaf: Bytes<32>, path: Vector<8, struct MerkleTreePathEntry<sibling: struct MerkleTreeDigest<field: Field>, goes_left: Boolean>>>',
+                                 result_0)
+    }
+    partialProofData.privateTranscriptOutputs.push({
+      value: _descriptor_10.toValue(result_0),
+      alignment: _descriptor_10.alignment()
+    });
+    return result_0;
+  }
   _keyOf_0(tag_0, dRootHash_0, dParam_0) {
-    return this._persistentHash_2([tag_0, dRootHash_0, dParam_0]);
+    return this._persistentHash_0([tag_0, dRootHash_0, dParam_0]);
   }
   _record_0(context, partialProofData, key_0) {
     if (!_descriptor_0.fromValue(__compactRuntime.queryLedgerState(context,
@@ -993,11 +1033,11 @@ export class Contract {
     }
     return [];
   }
-  _attestNationalityIn_0(context, partialProofData, rootHash_0, setHash_0) {
+  _attestNationalityIn_0(context, partialProofData, owlRoot_0, setHash_0) {
     this._assertNotPaused_0(context, partialProofData);
-    __compactRuntime.assert(!this._equal_3(rootHash_0,
+    __compactRuntime.assert(!this._equal_3(owlRoot_0,
                                            new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])),
-                            'zero rootHash');
+                            'zero owlRoot');
     __compactRuntime.assert(!this._equal_4(setHash_0,
                                            new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])),
                             'zero setHash');
@@ -1012,17 +1052,29 @@ export class Contract {
                             'missing verifierIdHash');
     __compactRuntime.assert(this._equal_7(path_0.leaf, country_0),
                             'merkle path leaf != nationality');
+    const cSalt_0 = this._claimSalt_0(context, partialProofData);
+    const cPath_0 = this._claimPath_0(context, partialProofData);
+    const leaf_0 = this._persistentHash_0([new Uint8Array([110, 97, 116, 105, 111, 110, 97, 108, 105, 116, 121, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                                           country_0,
+                                           cSalt_0]);
+    __compactRuntime.assert(this._equal_8(cPath_0.leaf, leaf_0),
+                            'claim commitment != nationality witness');
+    __compactRuntime.assert(this._equal_9(owlRoot_0,
+                                          __compactRuntime.convertFieldToBytes(32,
+                                                                               this._merkleTreePathRoot_0(cPath_0).field,
+                                                                               'predicate_nationality.compact line 66 char 21')),
+                            'owl_root mismatch');
     const rootDigest_0 = this._merkleTreePathRoot_0(path_0);
-    const computed_0 = this._persistentHash_1([vId_0,
+    const computed_0 = this._persistentHash_2([vId_0,
                                                __compactRuntime.convertFieldToBytes(32,
                                                                                     rootDigest_0.field,
-                                                                                    'predicate_nationality.compact line 58 char 21')]);
-    __compactRuntime.assert(this._equal_8(setHash_0, computed_0),
+                                                                                    'predicate_nationality.compact line 72 char 21')]);
+    __compactRuntime.assert(this._equal_10(setHash_0, computed_0),
                             'setHash mismatch');
     this._record_0(context,
                    partialProofData,
                    this._keyOf_0(new Uint8Array([111, 119, 108, 105, 100, 58, 97, 116, 116, 101, 115, 116, 58, 110, 97, 116, 58, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-                                 rootHash_0,
+                                 owlRoot_0,
                                  setHash_0));
     return [];
   }
@@ -1115,6 +1167,14 @@ export class Contract {
     if (!x0.every((x, i) => y0[i] === x)) { return false; }
     return true;
   }
+  _equal_9(x0, y0) {
+    if (!x0.every((x, i) => y0[i] === x)) { return false; }
+    return true;
+  }
+  _equal_10(x0, y0) {
+    if (!x0.every((x, i) => y0[i] === x)) { return false; }
+    return true;
+  }
 }
 export function ledger(stateOrChargedState) {
   const state = stateOrChargedState instanceof __compactRuntime.StateValue ? stateOrChargedState : stateOrChargedState.state;
@@ -1179,7 +1239,7 @@ export function ledger(stateOrChargedState) {
         if (!(elem_0.buffer instanceof ArrayBuffer && elem_0.BYTES_PER_ELEMENT === 1 && elem_0.length === 32)) {
           __compactRuntime.typeError('member',
                                      'argument 1',
-                                     'predicate_nationality.compact line 19 char 1',
+                                     'predicate_nationality.compact line 22 char 1',
                                      'Bytes<32>',
                                      elem_0)
         }
@@ -1245,7 +1305,7 @@ export function ledger(stateOrChargedState) {
         if (!(typeof(rt_0) === 'object' && typeof(rt_0.field) === 'bigint' && rt_0.field >= 0 && rt_0.field <= __compactRuntime.MAX_FIELD)) {
           __compactRuntime.typeError('checkRoot',
                                      'argument 1',
-                                     'predicate_nationality.compact line 20 char 1',
+                                     'predicate_nationality.compact line 23 char 1',
                                      'struct MerkleTreeDigest<field: Field>',
                                      rt_0)
         }
@@ -1295,14 +1355,14 @@ export function ledger(stateOrChargedState) {
         if (!(typeof(index_0) === 'bigint' && index_0 >= 0 && index_0 <= __compactRuntime.MAX_FIELD)) {
           __compactRuntime.typeError('path_for_leaf',
                                      'argument 1',
-                                     'predicate_nationality.compact line 20 char 1',
+                                     'predicate_nationality.compact line 23 char 1',
                                      'Field',
                                      index_0)
         }
         if (!(leaf_0.buffer instanceof ArrayBuffer && leaf_0.BYTES_PER_ELEMENT === 1 && leaf_0.length === 32)) {
           __compactRuntime.typeError('path_for_leaf',
                                      'argument 2',
-                                     'predicate_nationality.compact line 20 char 1',
+                                     'predicate_nationality.compact line 23 char 1',
                                      'Bytes<32>',
                                      leaf_0)
         }
@@ -1317,7 +1377,7 @@ export function ledger(stateOrChargedState) {
         if (!(leaf_0.buffer instanceof ArrayBuffer && leaf_0.BYTES_PER_ELEMENT === 1 && leaf_0.length === 32)) {
           __compactRuntime.typeError('find_path_for_leaf',
                                      'argument 1',
-                                     'predicate_nationality.compact line 20 char 1',
+                                     'predicate_nationality.compact line 23 char 1',
                                      'Bytes<32>',
                                      leaf_0)
         }
@@ -1354,7 +1414,9 @@ const _emptyContext = {
 const _dummyContract = new Contract({
   nationalityCode: (...args) => undefined,
   verifierIdHash: (...args) => undefined,
-  allowedCountryPath: (...args) => undefined
+  allowedCountryPath: (...args) => undefined,
+  claimSalt: (...args) => undefined,
+  claimPath: (...args) => undefined
 });
 export const pureCircuits = {};
 export const contractReferenceLocations =

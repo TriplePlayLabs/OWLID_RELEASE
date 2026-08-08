@@ -14,6 +14,12 @@ variable "artifact_repo" {
   default = "owlid"
 }
 
+variable "alert_emails" {
+  type        = list(string)
+  description = "Addresses that receive production alerts. Each becomes a Cloud Monitoring notification channel; an empty list creates the policies with no recipient."
+  default     = []
+}
+
 variable "sql_instance_name" {
   type    = string
   default = "owlid-pg"

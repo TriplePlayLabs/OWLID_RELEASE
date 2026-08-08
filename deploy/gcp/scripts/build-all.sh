@@ -13,23 +13,37 @@ cd "$REPO_ROOT"
 
 TAG="${IMAGE_TAG:-latest}"
 
+# Only cloudbuild configs that declare a substitution may receive it, so
+# per-service extras are opt-in. docs stamps the commit into /version.json so a
+# live deployment can be checked against a git sha.
+subs_for() {
+  case "$1" in
+  docs) echo ",_GIT_SHA=${TAG}" ;;
+  *) echo "" ;;
+  esac
+}
+
 submit_async() {
   local svc="$1"
+  local EXTRA_SUBS
+  EXTRA_SUBS="$(subs_for "$svc")"
   echo "  -> $svc"
   gcp builds submit \
     --region="$REGION" \
     --config="$GCP_DIR/cloudbuild/${svc}.yaml" \
-    --substitutions="_IMAGE_TAG=${TAG},_REGION=${REGION},_REPO=${ARTIFACT_REPO}" \
+    --substitutions="_IMAGE_TAG=${TAG},_REGION=${REGION},_REPO=${ARTIFACT_REPO}${EXTRA_SUBS:-}" \
     --async >/dev/null
 }
 
 submit_sync() {
   local svc="$1"
+  local EXTRA_SUBS
+  EXTRA_SUBS="$(subs_for "$svc")"
   echo "  -> $svc (foreground)"
   gcp builds submit \
     --region="$REGION" \
     --config="$GCP_DIR/cloudbuild/${svc}.yaml" \
-    --substitutions="_IMAGE_TAG=${TAG},_REGION=${REGION},_REPO=${ARTIFACT_REPO}"
+    --substitutions="_IMAGE_TAG=${TAG},_REGION=${REGION},_REPO=${ARTIFACT_REPO}${EXTRA_SUBS:-}"
 }
 
 log "Phase 1: backend services (parallel async submit)"

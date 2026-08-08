@@ -52,6 +52,9 @@ witness verifierIdHash(): Bytes<32>;
 // off-chain (sorted, deduped, zero-padded to 256 leaves); the holder
 // derives this path from the verifier's DCQL `values` array.
 witness allowedCountryPath(): MerkleTreePath<8, Bytes<32>>;
+// F-1 binding: the country's issuer commitment + its Merkle path under owl_root.
+witness claimSalt(): Bytes<32>;
+witness claimPath(): MerkleTreePath<8, Bytes<32>>;
 
 export ledger attestations: Set<Bytes<32>>;
 export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
@@ -74,11 +77,11 @@ circuit record(key: Bytes<32>): [] {
 }
 
 export circuit attestResidencyIn(
-  rootHash: Bytes<32>,
+  owlRoot: Bytes<32>,
   setHash:  Bytes<32>
 ): [] {
   Pausable_assertNotPaused();
-  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
+  assert(owlRoot != pad(32, "") as Bytes<32>, "zero owlRoot");
   assert(setHash  != pad(32, "") as Bytes<32>, "zero setHash");
 
   const country = residentCountry();
@@ -88,6 +91,16 @@ export circuit attestResidencyIn(
   assert(country != pad(32, "") as Bytes<32>, "no residence country in credential");
   assert(vId     != pad(32, "") as Bytes<32>, "missing verifierIdHash");
   assert(path.leaf == country, "merkle path leaf != residence country");
+
+  // F-1: bind `country` to the issuer-signed owl_root.
+  const cSalt = claimSalt();
+  const cPath = claimPath();
+  const cLeaf = persistentHash<Vector<3, Bytes<32>>>(
+    [pad(32, "residentCountry"), country, cSalt]
+  );
+  assert(cPath.leaf == cLeaf, "claim commitment != residentCountry witness");
+  assert(owlRoot == disclose(merkleTreePathRoot<8, Bytes<32>>(cPath).field) as Bytes<32>,
+    "owl_root mismatch");
 
   // Reconstruct the verifier's allowed-set Merkle root from the path.
   // merkleTreePathRoot uses 1 persistentHash (SHA-256, leaf domain) +
@@ -106,7 +119,7 @@ export circuit attestResidencyIn(
 
   record(keyOf(
     pad(32, "owlid:attest:resin:"),
-    disclose(rootHash),
+    disclose(owlRoot),
     disclose(setHash)
   ));
 }

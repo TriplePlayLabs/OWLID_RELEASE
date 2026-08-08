@@ -15,6 +15,9 @@ export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
 witness nationalityCode(): Bytes<32>;
 witness verifierIdHash(): Bytes<32>;
 witness allowedCountryPath(): MerkleTreePath<8, Bytes<32>>;
+// F-1 binding: the country's issuer commitment + its Merkle path under owl_root.
+witness claimSalt(): Bytes<32>;
+witness claimPath(): MerkleTreePath<8, Bytes<32>>;
 
 export ledger attestations: Set<Bytes<32>>;
 export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
@@ -37,11 +40,11 @@ circuit record(key: Bytes<32>): [] {
 }
 
 export circuit attestNationalityIn(
-  rootHash: Bytes<32>,
+  owlRoot: Bytes<32>,
   setHash:  Bytes<32>
 ): [] {
   Pausable_assertNotPaused();
-  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
+  assert(owlRoot != pad(32, "") as Bytes<32>, "zero owlRoot");
   assert(setHash  != pad(32, "") as Bytes<32>, "zero setHash");
 
   const country = nationalityCode();
@@ -52,6 +55,17 @@ export circuit attestNationalityIn(
   assert(vId     != pad(32, "") as Bytes<32>, "missing verifierIdHash");
   assert(path.leaf == country, "merkle path leaf != nationality");
 
+  // F-1: bind `country` to the issuer-signed owl_root, so the holder cannot
+  // assert membership for a country their credential does not carry.
+  const cSalt = claimSalt();
+  const cPath = claimPath();
+  const leaf = persistentHash<Vector<3, Bytes<32>>>(
+    [pad(32, "nationality"), country, cSalt]
+  );
+  assert(cPath.leaf == leaf, "claim commitment != nationality witness");
+  assert(owlRoot == disclose(merkleTreePathRoot<8, Bytes<32>>(cPath).field) as Bytes<32>,
+    "owl_root mismatch");
+
   const rootDigest = merkleTreePathRoot<8, Bytes<32>>(path);
 
   const computed = persistentHash<Vector<2, Bytes<32>>>(
@@ -61,7 +75,7 @@ export circuit attestNationalityIn(
 
   record(keyOf(
     pad(32, "owlid:attest:nat:"),
-    disclose(rootHash),
+    disclose(owlRoot),
     disclose(setHash)
   ));
 }

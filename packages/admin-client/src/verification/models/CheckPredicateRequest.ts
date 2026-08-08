@@ -60,6 +60,13 @@ export interface CheckPredicateRequest {
    */
   minAge?: number | null
   /**
+   * Issuer-signed `owl_root` (hex, 32 bytes). Required: every predicate key
+   * is bound to it (F-1). Absent on a pre-owl_root credential → reissue.
+   * @type {string}
+   * @memberof CheckPredicateRequest
+   */
+  owlRoot?: string | null
+  /**
    * One of: `age` | `kyc` | `nationality` | `residency` | `age_range`
    * | `email_verified` | `unique_personhood`.
    * @type {string}
@@ -110,6 +117,7 @@ export function CheckPredicateRequestFromJSONTyped(
     epoch: json['epoch'] == null ? undefined : json['epoch'],
     maxAge: json['maxAge'] == null ? undefined : json['maxAge'],
     minAge: json['minAge'] == null ? undefined : json['minAge'],
+    owlRoot: json['owlRoot'] == null ? undefined : json['owlRoot'],
     predicate: json['predicate'],
     threshold: json['threshold'] == null ? undefined : json['threshold'],
     verifierId: json['verifierId'] == null ? undefined : json['verifierId'],
@@ -135,6 +143,7 @@ export function CheckPredicateRequestToJSONTyped(
     epoch: value['epoch'],
     maxAge: value['maxAge'],
     minAge: value['minAge'],
+    owlRoot: value['owlRoot'],
     predicate: value['predicate'],
     threshold: value['threshold'],
     verifierId: value['verifierId'],

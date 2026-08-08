@@ -15,7 +15,13 @@ if [ -n "$leaked" ]; then
   exit 1
 fi
 
-leaked_tfvars=$(staged | grep -E '\.tfvars$' || true)
+# deploy/gcp/terraform/terraform.tfvars is the one audited exception: it holds
+# no credentials (every secret reaches Cloud Run as a Secret Manager reference
+# in run.tf, and no variable it sets is marked sensitive) and it carries the
+# deployed contract addresses, which are public on-chain data. It is still
+# subject to the content scan below.
+leaked_tfvars=$(staged | grep -E '\.tfvars$' |
+  grep -vE '^deploy/gcp/terraform/terraform\.tfvars$' || true)
 if [ -n "$leaked_tfvars" ]; then
   echo "✘ Blocked: refusing to commit tfvars (use *.tfvars.example):" >&2
   echo "$leaked_tfvars" | sed 's/^/   /' >&2

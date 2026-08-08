@@ -28,7 +28,9 @@ import {
 // (verifier-side concern). SDK consumers reach it via OwlVerifier.
 import { apiKeyHeaders } from '@owlid/config'
 
-const DEFAULT_BASE_URL = 'https://api.owlid.app'
+// The issuer service, not the verification service — they serve disjoint
+// route sets, so pointing this at api.owlid.app 404s every call.
+const DEFAULT_BASE_URL = 'https://issuer.owlid.app'
 
 export interface OwlIssuerOptions {
   /** Owl API key issued from your account dashboard. Required. */

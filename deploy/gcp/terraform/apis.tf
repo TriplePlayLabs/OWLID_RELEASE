@@ -12,6 +12,7 @@ locals {
     "dns.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
+    "monitoring.googleapis.com",
   ]
 }
 

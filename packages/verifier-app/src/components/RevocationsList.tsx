@@ -3,6 +3,7 @@ import { Ban, ListX, Loader2, RefreshCw, CircleCheck } from 'lucide-react'
 import { Card, CardContent } from '@owlid/ui/components/ui/card'
 import { Button } from '@owlid/ui/components/ui/button'
 import { listRevoked, type RevocationEntry } from '../api'
+import { formatTimestamp } from '../format'
 
 /** Cached projection of the on-chain revocation set. Useful for the
  *  verifier dashboard to spot a flood of revocations (e.g. an issuer
@@ -90,9 +91,7 @@ export function RevocationsList() {
                   {r.reason && <p className="text-xs text-muted-foreground mt-0.5">{r.reason}</p>}
                   {r.revokedAt && (
                     <p className="text-[10px] text-muted-foreground/70 mt-0.5">
-                      {r.revokedAt instanceof Date
-                        ? r.revokedAt.toLocaleString()
-                        : new Date(r.revokedAt).toLocaleString()}
+                      {formatTimestamp(r.revokedAt)}
                     </p>
                   )}
                 </div>

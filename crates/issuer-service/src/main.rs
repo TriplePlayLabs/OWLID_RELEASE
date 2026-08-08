@@ -60,6 +60,11 @@ use uuid::Uuid;
 /// client timeout is therefore generous (4 min) and the call is retried
 /// with capped backoff so a transient blip during startup does not abort
 /// the whole service.
+/// Whether the startup on-chain registration has succeeded. Read by `/health`
+/// so an unregistered issuer is visible instead of silently issuing
+/// credentials that cannot verify.
+static ISSUER_REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 async fn register_trusted_issuer(
     verification_url: &str,
     admin_key: &str,
@@ -558,13 +563,41 @@ async fn main() -> anyhow::Result<()> {
                      ISSUER_SKIP_STARTUP_REGISTRATION=true to bypass for spec-generation runs."
                 )
             })?;
-        register_trusted_issuer(
-            &issuer_config.verification_service_url,
-            admin_key,
-            &pubkey_hex,
-            &issuer_name,
-        )
-        .await?;
+        // Registration needs the chain. When the chain is unavailable a
+        // failure here used to abort startup, which Cloud Run turns into a
+        // crash-loop that also takes down the routes needing no chain at all
+        // — including `/.well-known/did.json`, which every verifier resolves
+        // to check this issuer's DID. Retry in the background instead and let
+        // the service serve; `/health` reports the unregistered state.
+        let verification_url = issuer_config.verification_service_url.clone();
+        let admin_key = admin_key.to_string();
+        tokio::spawn(async move {
+            let mut backoff_secs = 30u64;
+            loop {
+                match register_trusted_issuer(
+                    &verification_url,
+                    &admin_key,
+                    &pubkey_hex,
+                    &issuer_name,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        ISSUER_REGISTERED.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Startup: issuer on-chain registration failed: {e} — retrying in \
+                             {backoff_secs}s. Credentials issued before this succeeds will not \
+                             verify."
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                        backoff_secs = (backoff_secs * 2).min(600);
+                    }
+                }
+            }
+        });
     }
 
     // Midnight is required — refuse to start if the sidecar is
@@ -703,14 +736,44 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => {
                         let s = e.to_string();
                         if s.contains("already") {
-                            info!("did:web doc-hash already anchored on-chain for {did}");
-                            return;
+                            // Anchored before — but possibly to an OLDER
+                            // document (key reload, URL change, doc shape
+                            // change). A stale anchor makes the verifier
+                            // reject every credential with "doc-hash anchor
+                            // mismatch", so compare and re-anchor via the
+                            // owner-gated updateCommitment when they differ.
+                            match midnight.get_identity_commitment(&did_hash).await {
+                                Ok(Some(current)) if current.eq_ignore_ascii_case(&doc_hash) => {
+                                    info!("did:web doc-hash already anchored on-chain for {did}");
+                                    return;
+                                }
+                                _ => match midnight
+                                    .update_identity(&did_hash, &doc_hash, &issuer_key_hash)
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        info!(
+                                            "did:web doc-hash re-anchored on-chain for {did} \
+                                             (document changed since last anchor)"
+                                        );
+                                        return;
+                                    }
+                                    Err(e2) => {
+                                        tracing::warn!(
+                                            "did:web doc-hash re-anchor attempt {attempt}/8 \
+                                             failed: {e2}; retrying in {:?}",
+                                            delay
+                                        );
+                                    }
+                                },
+                            }
+                        } else {
+                            tracing::warn!(
+                                "did:web doc-hash anchor attempt {attempt}/8 failed: {e}; \
+                                 retrying in {:?}",
+                                delay
+                            );
                         }
-                        tracing::warn!(
-                            "did:web doc-hash anchor attempt {attempt}/8 failed: {e}; \
-                             retrying in {:?}",
-                            delay
-                        );
                     }
                 }
                 tokio::time::sleep(delay).await;
@@ -842,8 +905,28 @@ async fn main() -> anyhow::Result<()> {
 
 /// Health check endpoint
 #[utoipa::path(get, path = "/health", tag = "info", responses((status = 200, description = "Service is running", body = String)))]
-async fn health() -> &'static str {
-    "Issuer Service is running"
+async fn health() -> impl axum::response::IntoResponse {
+    let registered = ISSUER_REGISTERED.load(std::sync::atomic::Ordering::Relaxed);
+    let skipped = std::env::var("ISSUER_SKIP_STARTUP_REGISTRATION")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let healthy = registered || skipped;
+    let status = if healthy {
+        StatusCode::OK
+    } else {
+        // Not registered on-chain means credentials issued now will not
+        // verify. 503 so uptime checks and alerts see it.
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status,
+        axum::Json(serde_json::json!({
+            "status": if healthy { "ok" } else { "degraded" },
+            "issuerRegisteredOnChain": registered,
+            "error": if healthy { serde_json::Value::Null }
+                     else { serde_json::json!("issuer pubkey not yet registered on-chain") },
+        })),
+    )
 }
 
 /// `did:web` DID document for this issuer (DID Core 1.0). The SD-JWT VC

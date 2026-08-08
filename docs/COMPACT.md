@@ -1236,23 +1236,27 @@ Anchors DIDs and Merkle root commitments on-chain.
 - **Privacy**: Only cryptographic commitments stored, never raw identity data
 - **Witnesses**: For providing private identity data during proof generation
 
-#### 4. `predicate_registry.compact`
+#### 4. `predicate_<kind>.compact` (seven per-predicate contracts)
 
-Chain-attested zero-knowledge predicates (age/kyc/nationality).
+Chain-attested zero-knowledge predicates — one Compact contract per kind
+(`predicate_{kyc,email,age,age_range,nationality,residency,personhood}`),
+forced by Midnight's per-extrinsic deploy-weight cap.
 
-- **Ledger**: `attestations: Set<Bytes<32>>` + `attestTree:
-HistoricMerkleTree`; owner-seeded `approvedNationality`; `attestCount`
-- **Circuits**: attestAgeGte, attestKycGte, attestNationalityIn,
-  seedNationality, isAttested
-- **Witnesses**: `ageValue`, `kycLevel`, `nationalityPath` (private;
-  asserted in-circuit, never disclosed)
-- **Verify model**: the Midnight node verifies the proof in consensus;
-  a session-independent key `persistentHash(tag‖rootHash‖param)` is
-  recorded only for a valid proof. The verifier recomputes the key
-  off-chain from the issuer-signed root and checks an SSE-mirrored set
-  (no inline ZK, no chain in the hot path).
+- **Ledger** (each): `attestations: Set<Bytes<32>>` + `attestTree:
+HistoricMerkleTree` + `attestCount`; `personhood` adds a `nullifiers` set.
+- **Circuits**: `attest{KycGte,EmailVerified,AgeGte,AgeRange,NationalityIn,
+ResidencyIn,UniquePersonhood}`, `isAttested`, plus Ownable/Pausable.
+- **Witnesses**: the claim value (e.g. `kycLevel`, `dobValue`) **plus the
+  F-1 binding witness** `claimSalt` + `claimPath` — a `MerkleTreePath` proving
+  the value is a leaf under the issuer-signed `owl_root`. The circuit opens it
+  before the predicate check, so a fabricated value has no valid path.
+- **Verify model**: the Midnight node verifies the proof in consensus; a
+  session-independent key `persistentHash(tag‖owl_root‖param)` is recorded
+  only for a valid proof. The verifier recomputes the key off-chain from the
+  issuer-signed `owl_root` and checks an SSE-mirrored set (no chain in the
+  hot path).
 
-> All four contracts inherit the vendored OpenZeppelin Compact stdlib
+> All contracts inherit the vendored OpenZeppelin Compact stdlib
 > (`contracts/lib`: Ownable/Pausable/Initializable). Holder predicate
 > proving runs on the device in-process (zkir-v2 WASM). See
 > [`MIDNIGHT.md`](./MIDNIGHT.md).

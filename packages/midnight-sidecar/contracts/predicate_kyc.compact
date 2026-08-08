@@ -1,5 +1,10 @@
 // OwlID predicate contract — kyc level >= public threshold.
 // Attestation key recipe matches `owl_proof_system::attestation::kyc_key`.
+//
+// The witness kycLevel is bound to the issuer-signed credential: its claim
+// commitment persistentHash([pad32("kycLevel"), level, salt]) must be a leaf
+// under the issuer-signed owl_root (the public arg). Without this a holder
+// could attest any level from a fabricated witness.
 
 pragma language_version >= 0.23;
 
@@ -9,7 +14,13 @@ import "./lib/security/Pausable" prefix Pausable_;
 
 export { ZswapCoinPublicKey, ContractAddress, Either, Maybe };
 
+// The issuer-committed kyc level.
 witness kycLevel(): Uint<8>;
+// The per-claim salt (sha256 of the SD-JWT disclosure salt) used in the
+// issuer's claim commitment.
+witness claimSalt(): Bytes<32>;
+// Merkle inclusion proof of this claim's commitment under owl_root.
+witness claimPath(): MerkleTreePath<8, Bytes<32>>;
 
 export ledger attestations: Set<Bytes<32>>;
 export ledger attestTree: HistoricMerkleTree<32, Bytes<32>>;
@@ -31,14 +42,27 @@ circuit record(key: Bytes<32>): [] {
   }
 }
 
-export circuit attestKycGte(rootHash: Bytes<32>, threshold: Uint<8>): [] {
+export circuit attestKycGte(owlRoot: Bytes<32>, threshold: Uint<8>): [] {
   Pausable_assertNotPaused();
-  assert(rootHash != pad(32, "") as Bytes<32>, "zero rootHash");
-  const lvl = kycLevel();
+  assert(owlRoot != pad(32, "") as Bytes<32>, "zero owlRoot");
+
+  const lvl  = kycLevel();
+  const salt = claimSalt();
+  const path = claimPath();
+
+  // Bind the level to the issuer: its commitment must be a leaf under the
+  // issuer-signed owl_root, so a fabricated witness has no valid path.
+  const leaf = persistentHash<Vector<3, Bytes<32>>>(
+    [pad(32, "verification_level"), lvl as Field as Bytes<32>, salt]
+  );
+  assert(path.leaf == leaf, "claim commitment != kycLevel witness");
+  const root = merkleTreePathRoot<8, Bytes<32>>(path);
+  assert(owlRoot == disclose(root.field) as Bytes<32>, "owl_root mismatch");
+
   assert(lvl >= threshold, "kyc below threshold");
   record(keyOf(
     pad(32, "owlid:attest:kyc:"),
-    disclose(rootHash),
+    disclose(owlRoot),
     disclose(threshold) as Field as Bytes<32>
   ));
 }

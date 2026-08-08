@@ -69,8 +69,11 @@ pub fn spawn(state: Arc<AppState>) {
     }
 
     tokio::spawn(async move {
+        // Reset the attestation mirror exactly ONCE, on the first
+        // successful connect — not on every reconnect (see `consume`).
+        let mut reset_pending = true;
         loop {
-            match consume(&state, &url, &api_key).await {
+            match consume(&state, &url, &api_key, &mut reset_pending).await {
                 Ok(()) => tracing::warn!("sidecar SSE stream ended; reconnecting"),
                 Err(e) => tracing::warn!("sidecar SSE error: {e}; reconnecting"),
             }
@@ -83,6 +86,7 @@ async fn consume(
     state: &Arc<AppState>,
     base_url: &str,
     api_key: &str,
+    reset_pending: &mut bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let url = format!(
         "{}/events?topics={}",
@@ -98,6 +102,29 @@ async fn consume(
         .error_for_status()?;
 
     tracing::info!("Subscribed to sidecar SSE: {}", url);
+
+    // Reset the attestation mirror ONCE, on the first successful SSE
+    // connection. The sidecar replays an authoritative on-chain snapshot
+    // right after connect, so a chain reset / contract redeploy (which in
+    // practice coincides with a service restart that re-primed the stale
+    // DB cache) is purged before that snapshot rebuilds the current set.
+    // We deliberately do NOT reset on later reconnects: a flaky sidecar
+    // reconnecting would empty the cache while the on-chain read-through
+    // fallback (the SAME sidecar) is also down, turning a transient blip
+    // into spurious "not attested" verify failures. The on-chain set is
+    // monotonic within a chain instance, so a warm cache stays correct
+    // across reconnects. Attestations are the only mirror safe to wipe
+    // here — revocations/issuers must NOT be cleared (a missing revocation
+    // would fail OPEN). Only clear on success so a transient reset error
+    // retries on the next connect.
+    if *reset_pending {
+        match state.attestations.reset().await {
+            Ok(()) => *reset_pending = false,
+            Err(e) => {
+                tracing::warn!("attestation mirror reset on first SSE connect failed: {e}")
+            }
+        }
+    }
 
     let mut buf = String::new();
     let mut stream = resp.bytes_stream();

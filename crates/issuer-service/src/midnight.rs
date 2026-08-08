@@ -197,4 +197,57 @@ impl MidnightSidecar {
         }
         Ok(())
     }
+
+    /// Read the current on-chain identity commitment for a DID hash.
+    pub async fn get_identity_commitment(
+        &self,
+        did_hash_hex: &str,
+    ) -> Result<Option<String>, MidnightError> {
+        #[derive(serde::Deserialize)]
+        struct CommitmentResponse {
+            commitment: Option<String>,
+            error: Option<String>,
+        }
+        let resp: CommitmentResponse = self
+            .http
+            .get(format!(
+                "{}/api/identities/{}/commitment",
+                self.base_url, did_hash_hex
+            ))
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(err) = resp.error {
+            return Err(MidnightError::Sidecar(err));
+        }
+        Ok(resp.commitment)
+    }
+
+    /// Update an existing identity commitment on-chain (DID-owner gated).
+    pub async fn update_identity(
+        &self,
+        did_hash_hex: &str,
+        commitment_hex: &str,
+        issuer_key_hash_hex: &str,
+    ) -> Result<(), MidnightError> {
+        let resp: SidecarResponse = self
+            .http
+            .post(format!(
+                "{}/api/identities/{}/update",
+                self.base_url, did_hash_hex
+            ))
+            .json(&serde_json::json!({
+                "newCommitment": commitment_hex,
+                "issuerKeyHash": issuer_key_hash_hex,
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(err) = resp.error {
+            return Err(MidnightError::Sidecar(err));
+        }
+        Ok(())
+    }
 }

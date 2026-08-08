@@ -20,6 +20,13 @@ import { mapValues } from '../runtime.js'
  */
 export interface TrustedIssuerInfo {
   /**
+   * When this key was registered — lets the UI distinguish rotated
+   * keys that otherwise share the same display name.
+   * @type {Date}
+   * @memberof TrustedIssuerInfo
+   */
+  addedAt: Date
+  /**
    *
    * @type {string}
    * @memberof TrustedIssuerInfo
@@ -49,6 +56,7 @@ export interface TrustedIssuerInfo {
  * Check if a given object implements the TrustedIssuerInfo interface.
  */
 export function instanceOfTrustedIssuerInfo(value: object): value is TrustedIssuerInfo {
+  if (!('addedAt' in value) || value['addedAt'] === undefined) return false
   if (!('isActive' in value) || value['isActive'] === undefined) return false
   if (!('name' in value) || value['name'] === undefined) return false
   if (!('publicKey' in value) || value['publicKey'] === undefined) return false
@@ -67,6 +75,7 @@ export function TrustedIssuerInfoFromJSONTyped(
     return json
   }
   return {
+    addedAt: new Date(json['addedAt']),
     description: json['description'] == null ? undefined : json['description'],
     isActive: json['isActive'],
     name: json['name'],
@@ -87,6 +96,7 @@ export function TrustedIssuerInfoToJSONTyped(
   }
 
   return {
+    addedAt: value['addedAt'].toISOString(),
     description: value['description'],
     isActive: value['isActive'],
     name: value['name'],

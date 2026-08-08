@@ -10,7 +10,7 @@ const issuer = new OwlIssuer({ apiKey: process.env.OWLID_API_KEY! })
 
 ## Constructor
 
-```ts
+```ts no-check
 new OwlIssuer(options: OwlIssuerOptions)
 ```
 
@@ -62,6 +62,8 @@ const session = await issuer.startSession('didit')
 `session.start` is a discriminated union:
 
 ```ts
+import type { FormField } from '@owlid/sdk'
+
 type SessionStart =
   | { type: 'form'; fields: FormField[] }
   | { type: 'redirect'; url: string; relayState?: string }
@@ -142,6 +144,8 @@ The platform does not retain unhashed claims past the session TTL.
 ## Types
 
 ```ts
+import type { SessionStart } from '@owlid/sdk'
+
 interface OwlIssuerOptions {
   apiKey: string
   baseUrl?: string

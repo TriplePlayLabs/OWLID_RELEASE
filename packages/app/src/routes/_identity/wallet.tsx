@@ -1,7 +1,7 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ClipboardPaste, Fingerprint, Plus, Trash2 } from 'lucide-react'
+import { Fingerprint, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { storage, type WalletCredential } from '@owlid/sdk'
 import { Button } from '@owlid/ui/components/ui/button'
@@ -9,7 +9,6 @@ import { Card, CardContent } from '@owlid/ui/components/ui/card'
 import { CardRenderer } from '~/components/cards/CardRenderer'
 import { CardBackFace } from '~/components/cards/CardBackFace'
 import { openPresentationModal } from '~/features/identity/presentation/PresentationModal'
-import { openManualProofModal } from '~/features/identity/manual-proof/ManualProofModal'
 import { readAuthState, ROUTE_FOR_STATE } from '~/lib/auth-gate'
 
 export const Route = createFileRoute('/_identity/wallet')({
@@ -93,30 +92,18 @@ function WalletPage() {
         })}
       </div>
 
-      {/* Present / Manual sit side-by-side. Disabled when wallet is
-          empty — neither flow has anything to disclose. Title spells
-          out why on hover. */}
-      <div className="mt-10 grid grid-cols-2 gap-2">
+      {/* Disabled when wallet is empty — nothing to disclose. Title
+          spells out why on hover. */}
+      <div className="mt-10">
         <Button
           onClick={() => openPresentationModal({})}
           disabled={list.length === 0}
-          className="h-11 text-sm font-medium bg-white text-black hover:bg-white/90 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="w-full h-11 text-sm font-medium bg-white text-black hover:bg-white/90 disabled:opacity-40 disabled:cursor-not-allowed"
           title={list.length === 0 ? 'Add a card first' : 'Show a code for someone to scan'}
           data-testid="button-present-id"
         >
           <Fingerprint className="w-4 h-4 mr-1.5" />
           Present
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => openManualProofModal({})}
-          disabled={list.length === 0}
-          className="h-11 text-sm font-medium border-white/15 hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed"
-          title={list.length === 0 ? 'Add a card first' : 'Paste a request from a website'}
-          data-testid="button-manual-proof"
-        >
-          <ClipboardPaste className="w-4 h-4 mr-1.5" />
-          Manual
         </Button>
       </div>
 

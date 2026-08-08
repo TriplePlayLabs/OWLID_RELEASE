@@ -120,10 +120,23 @@ pub struct AttestKey {
     pub kind: &'static str,
 }
 
+fn owl_root_anchor(owl_root_hex: Option<&str>) -> Option<[u8; 32]> {
+    let v = hex::decode(owl_root_hex?.trim_start_matches("0x")).ok()?;
+    v.as_slice().try_into().ok()
+}
+
+fn owl_root_required(query_id: &str, predicate: &str) -> String {
+    format!(
+        "DCQL credential {query_id}: {predicate} is bound to an issuer-signed owl_root, which \
+         this credential lacks (reissue it)"
+    )
+}
+
 pub fn derive_attest_key(
     query: &DcqlCredentialQuery,
     vct: &str,
     cred_id_hex: &str,
+    owl_root_hex: Option<&str>,
     verifier_id: &str,
 ) -> Result<AttestKey, String> {
     use owl_proof_system::attestation;
@@ -142,7 +155,8 @@ pub fn derive_attest_key(
 
     let cred_vec = hex::decode(cred_id_hex.trim_start_matches("0x"))
         .map_err(|_| "credential_id not hex".to_string())?;
-    let cred_id: [u8; 32] = cred_vec
+    // Validated for shape; predicate keys now anchor on owl_root, not cred_id.
+    let _cred_id: [u8; 32] = cred_vec
         .as_slice()
         .try_into()
         .map_err(|_| "credential_id must be 32 bytes".to_string())?;
@@ -174,14 +188,37 @@ pub fn derive_attest_key(
 
     let (attest_key, kind) = match predicate {
         OwlPredicate::AgeGte { threshold } => {
-            (attestation::age_key(&cred_id, *threshold as u128), "age")
+            let anchor =
+                owl_root_anchor(owl_root_hex).ok_or_else(|| owl_root_required(&query.id, "age"))?;
+            (
+                attestation::age_key(
+                    &anchor,
+                    *threshold as u128,
+                    attestation::current_age_epoch(),
+                ),
+                "age",
+            )
         }
-        OwlPredicate::AgeRange { min, max } => (
-            attestation::age_range_key(&cred_id, *min as u16, *max as u16),
-            "age_range",
-        ),
+        OwlPredicate::AgeRange { min, max } => {
+            let anchor = owl_root_anchor(owl_root_hex)
+                .ok_or_else(|| owl_root_required(&query.id, "age_range"))?;
+            (
+                attestation::age_range_key(
+                    &anchor,
+                    *min as u16,
+                    *max as u16,
+                    attestation::current_age_epoch(),
+                ),
+                "age_range",
+            )
+        }
         OwlPredicate::KycGte { threshold } => {
-            (attestation::kyc_key(&cred_id, *threshold as u128), "kyc")
+            // F-1: kyc is bound to the issuer-signed owl_root, so its key
+            // anchors on owl_root (not the credential id). A credential without
+            // owl_root cannot satisfy a kyc query under the bound contract.
+            let anchor =
+                owl_root_anchor(owl_root_hex).ok_or_else(|| owl_root_required(&query.id, "kyc"))?;
+            (attestation::kyc_key(&anchor, *threshold as u128), "kyc")
         }
         OwlPredicate::NationalityIn { countries } => {
             if verifier_id.is_empty() {
@@ -191,9 +228,11 @@ pub fn derive_attest_key(
                     query.id
                 ));
             }
+            let anchor = owl_root_anchor(owl_root_hex)
+                .ok_or_else(|| owl_root_required(&query.id, "nationality_in"))?;
             let refs: Vec<&str> = countries.iter().map(String::as_str).collect();
             (
-                attestation::nationality_key(&cred_id, verifier_id, &refs),
+                attestation::nationality_key(&anchor, verifier_id, &refs),
                 "nationality",
             )
         }
@@ -205,20 +244,40 @@ pub fn derive_attest_key(
                     query.id
                 ));
             }
+            let anchor = owl_root_anchor(owl_root_hex)
+                .ok_or_else(|| owl_root_required(&query.id, "residency_in"))?;
             let refs: Vec<&str> = countries.iter().map(String::as_str).collect();
             (
-                attestation::residency_key(&cred_id, verifier_id, &refs),
+                attestation::residency_key(&anchor, verifier_id, &refs),
                 "residency",
             )
         }
-        OwlPredicate::EmailVerified => (attestation::email_verified_key(&cred_id), "email"),
+        OwlPredicate::EmailVerified => {
+            let anchor = owl_root_anchor(owl_root_hex)
+                .ok_or_else(|| owl_root_required(&query.id, "email_verified"))?;
+            (attestation::email_verified_key(&anchor), "email")
+        }
         OwlPredicate::UniquePersonhood { epoch, app_id } => {
+            // F-2: the campaign app_id stays meaningful but is bound under the
+            // verifier's authenticated client_id, so a different verifier
+            // choosing the same campaign cannot share the nullifier namespace
+            // and no verifier can forge a foreign scope.
+            if verifier_id.is_empty() {
+                return Err(format!(
+                    "DCQL credential {}: verifier_id required for unique_personhood \
+                     (binds the campaign scope to the verifier identity)",
+                    query.id
+                ));
+            }
+            let anchor = owl_root_anchor(owl_root_hex)
+                .ok_or_else(|| owl_root_required(&query.id, "unique_personhood"))?;
             let epoch_bytes = decode_hex32(epoch)
                 .map_err(|e| format!("DCQL credential {}: epoch {}", query.id, e))?;
-            let app_id_bytes = decode_hex32(app_id)
+            let campaign = decode_hex32(app_id)
                 .map_err(|e| format!("DCQL credential {}: app_id {}", query.id, e))?;
+            let app_id_bytes = attestation::personhood_app_id(verifier_id, &campaign);
             (
-                attestation::unique_personhood_key(&cred_id, &epoch_bytes, &app_id_bytes),
+                attestation::unique_personhood_key(&anchor, &epoch_bytes, &app_id_bytes),
                 "personhood",
             )
         }

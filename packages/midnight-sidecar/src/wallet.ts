@@ -683,6 +683,104 @@ export async function registerNightForDust(
   }
 }
 
+/** Spendable NIGHT UTXO count. Each one backs exactly one dust output, so this
+ *  is also the number of parallel dust lanes the wallet has. */
+export function nightUtxoCount(state: unknown): number {
+  const coins = (state as { unshielded?: { availableCoins?: unknown[] } }).unshielded
+    ?.availableCoins
+  return Array.isArray(coins) ? coins.length : 0
+}
+
+/** Poll until at least `target` NIGHT UTXOs are spendable. A split consumes the
+ *  old UTXOs and leaves the new ones pending for a beat, so the count dips
+ *  before settling. Returns the last observed count. */
+export async function waitForNightUtxoCount(
+  wallet: HeadlessWallet,
+  target: number,
+  timeoutMs: number,
+): Promise<number> {
+  const start = Date.now()
+  let last = 0
+  while (Date.now() - start < timeoutMs) {
+    last = nightUtxoCount(await Rx.firstValueFrom(wallet.facade.state()))
+    if (last >= target) return last
+    await new Promise((r) => setTimeout(r, 2_000))
+  }
+  return last
+}
+
+/**
+ * Poll until the dust balance reaches `min`.
+ *
+ * `registerNightForDust` only waits for dust > 0, which resolves at a trivially
+ * small balance — enough to look registered, nowhere near enough to balance a
+ * transaction. Anything that submits straight after registering must wait on a
+ * real threshold or it fails with "Insufficient Funds: could not balance dust".
+ */
+export async function waitForDustAtLeast(
+  wallet: HeadlessWallet,
+  min: bigint,
+  timeoutMs: number,
+): Promise<bigint> {
+  const start = Date.now()
+  let last = 0n
+  while (Date.now() - start < timeoutMs) {
+    const s = await Rx.firstValueFrom(wallet.facade.state())
+    last = s.dust?.balance(new Date()) ?? 0n
+    if (last >= min) return last
+    await new Promise((r) => setTimeout(r, 5_000))
+  }
+  return last
+}
+
+/**
+ * Bring the wallet to `lanes` dust-generating NIGHT UTXOs and at least
+ * `minDust` spendable dust.
+ *
+ * One NIGHT UTXO backs one dust output, so an unsplit wallet generates dust on
+ * a single lane — the reason a freshly funded wallet can sit below the fee
+ * floor for minutes. Splitting gives K independent lanes.
+ *
+ * Ordering is forced: the split transaction itself costs dust, so NIGHT must be
+ * registered and generating before the split can be paid for.
+ *
+ * Idempotent — a wallet already at or above `lanes` UTXOs is only re-registered,
+ * never split again, so repeated runs don't fragment NIGHT indefinitely.
+ */
+export async function ensureDustLanes(
+  wallet: HeadlessWallet,
+  opts: { lanes: number; minDust: bigint; timeoutMs?: number },
+): Promise<{ lanes: number; dust: bigint }> {
+  const timeoutMs = opts.timeoutMs ?? 300_000
+
+  // 1. Register whatever NIGHT is not yet generating dust.
+  await registerNightForDust(wallet)
+
+  const state = await Rx.firstValueFrom(wallet.facade.state())
+  let utxos = nightUtxoCount(state)
+
+  // 2. Split, if more lanes are wanted than exist. Needs dust for its own fee.
+  if (opts.lanes > 1 && utxos < opts.lanes) {
+    console.log(`[wallet] ${utxos} NIGHT UTXO(s); splitting into ${opts.lanes} dust lanes...`)
+    await waitForDustAtLeast(wallet, 1n, timeoutMs)
+    const fresh = await Rx.firstValueFrom(wallet.facade.state())
+    const unshielded = fresh.unshielded?.balances[ledger.nativeToken().raw] ?? 0n
+    if (unshielded > 0n) {
+      const txId = await splitNight(wallet, unshielded, opts.lanes)
+      console.log(`[wallet] split submitted: ${txId}`)
+      utxos = await waitForNightUtxoCount(wallet, opts.lanes, timeoutMs)
+      console.log(`[wallet] ${utxos} NIGHT UTXOs spendable; registering each for dust...`)
+      // 3. The split outputs are fresh and unregistered — register them so all
+      //    K lanes actually generate.
+      await registerNightForDust(wallet)
+    }
+  }
+
+  // 4. Only now is it safe to submit: wait for a usable dust balance.
+  const dust = await waitForDustAtLeast(wallet, opts.minDust, timeoutMs)
+  return { lanes: utxos, dust }
+}
+
 /**
  * Transfer NIGHT tokens from one wallet to a receiver address.
  */
@@ -719,6 +817,59 @@ export async function transferNight(
 
   const finalized = await senderWallet.facade.finalizeRecipe(signed)
   return await senderWallet.facade.submitTransaction(finalized)
+}
+
+/** Build the K equal-ish NIGHT outputs a split spends into. Exposed for unit
+ *  testing the partition arithmetic without a live wallet: K-1 outputs of
+ *  `floor(total/lanes)` and a final output carrying the remainder, so the sum
+ *  is exactly `total` (no dust of NIGHT left stranded). */
+export function splitOutputs(total: bigint, lanes: number): bigint[] {
+  if (lanes < 1) throw new Error('lanes must be >= 1')
+  if (total <= 0n) throw new Error('nothing to split')
+  const per = total / BigInt(lanes)
+  if (per <= 0n) throw new Error(`total ${total} too small to split into ${lanes} lanes`)
+  const out = Array.from({ length: lanes - 1 }, () => per)
+  out.push(total - per * BigInt(lanes - 1))
+  return out
+}
+
+/**
+ * Split the wallet's spendable NIGHT into `lanes` UTXOs back to its OWN
+ * unshielded address, in a single transaction. Each resulting NIGHT UTXO backs
+ * one independent dust output once registered (`registerNightForDust`), so the
+ * relay pipeline — which already serializes only balance+reserve and overlaps
+ * broadcasts — can keep `lanes` batches in flight against disjoint dust UTXOs
+ * instead of stalling on a single shared one. Caller registers for dust after.
+ */
+export async function splitNight(
+  wallet: HeadlessWallet,
+  amount: bigint,
+  lanes: number,
+): Promise<string> {
+  const selfAddress = await wallet.facade.unshielded.getAddress()
+  const amounts = splitOutputs(amount, lanes)
+  const ttl = new Date(Date.now() + 30 * 60 * 1000)
+
+  const recipe = await wallet.facade.transferTransaction(
+    [
+      {
+        type: 'unshielded',
+        outputs: amounts.map((a) => ({
+          type: ledger.nativeToken().raw,
+          receiverAddress: selfAddress,
+          amount: a,
+        })),
+      },
+    ],
+    { shieldedSecretKeys: wallet.secretKeys, dustSecretKey: wallet.dustSecretKey },
+    { ttl },
+  )
+
+  const signed = await wallet.facade.signRecipe(recipe, (payload) =>
+    wallet.unshieldedKeystore.signData(payload),
+  )
+  const finalized = await wallet.facade.finalizeRecipe(signed)
+  return await wallet.facade.submitTransaction(finalized)
 }
 
 /**

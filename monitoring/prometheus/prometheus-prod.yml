@@ -5,6 +5,10 @@ global:
 scrape_configs:
   - job_name: verification-service
     metrics_path: /prometheus
+    # /prometheus requires an API key with the `admin` permission.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/owlid-admin-key
     static_configs:
       - targets: ['verification-service:8000']
         labels:

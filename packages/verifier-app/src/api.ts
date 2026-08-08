@@ -43,22 +43,6 @@ export function getVerifierApiKey(): string {
   return apiKey
 }
 
-/** Request a server-generated challenge. Must be done before verification. */
-export async function getChallenge(): Promise<ChallengeResponse> {
-  return getVerificationApi({ apiKey: getVerifierApiKey() }).generateChallenge()
-}
-
-/**
- * Verify a single-credential SD-JWT VC presentation: wraps it as a
- * 1-entry DCQL vp_token, calls `/verify/dcql`, flattens the response
- * to the legacy `{valid, subjects, error}` shape consumed by the
- * manual-paste flow.
- */
-export async function verifyToken(presentation: string, challenge: string): Promise<VerifyResult> {
-  // OID4VP 1.0 §8.1 — vp_token values are always arrays of presentations.
-  return verifyDcqlVpToken({ cred0: [presentation] }, challenge)
-}
-
 export type { DcqlRequest }
 
 /**
@@ -73,8 +57,7 @@ export async function verifyDcqlVpToken(
   /** The exact DCQL request sent to the holder. The server re-checks
    *  every credential query's `owl_predicate` extension against the
    *  Midnight attestation set — drop it and the predicate / personhood
-   *  checks are never enforced. Omitted only by the manual-paste flow,
-   *  which carries no predicate claims. */
+   *  checks are never enforced. */
   query?: DcqlRequest,
   /** OID4VP verifier `client_id` — required for nationality_in /
    *  resident_in claims. Must match the value the holder used when
@@ -97,7 +80,10 @@ export async function verifyDcqlVpToken(
     return {
       valid: r.valid,
       subjects: r.subjects as Record<string, unknown> | undefined,
-      error: r.error ?? firstFailure?.error ?? undefined,
+      // Per-credential errors first: the set-level error is the generic
+      // "credential X not satisfied" which hides the actual reason
+      // (signature, revocation, missing attestation, …).
+      error: firstFailure?.error ?? r.error ?? undefined,
     }
   } catch (err) {
     const response = err && typeof err === 'object' && 'response' in err ? err.response : null

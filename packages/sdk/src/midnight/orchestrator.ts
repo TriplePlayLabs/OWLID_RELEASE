@@ -17,8 +17,36 @@
  * credential's own attributes (never a caller parameter).
  */
 
+import { buildOwlRootTree, findClaimPath, salt32For } from './owl-root.js'
 import { proveAttestationUnsubmitted } from './prove.js'
 import { resolveProvingConfig, type ProvingProviderConfig } from './prover.js'
+
+/** Standard SD-JWT claim name each owl_root-bound predicate opens in-circuit.
+ *  All seven predicates bind their witness to the issuer-signed owl_root. */
+const OWL_BOUND_CLAIM: Partial<Record<PredicateKind, string>> = {
+  kyc: 'verification_level',
+  email: 'email_verified',
+  nationality: 'nationality',
+  residency: 'residentCountry',
+  personhood: 'personhoodSecret',
+  age: 'birthdate',
+  age_range: 'birthdate',
+}
+
+/** Date of birth "YYYY-MM-DD" → YYYYMMDD integer (the value the issuer commits
+ *  and the age circuits open). */
+function dobYmd(dateOfBirth: string): bigint {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateOfBirth.trim())
+  if (!m) throw new Error(`invalid dateOfBirth: ${dateOfBirth}`)
+  return BigInt(Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]))
+}
+
+/** First day of the current UTC month as YYYYMM01 — the age freshness epoch.
+ *  Mirrors Rust `attestation::current_age_epoch`. */
+function currentAgeEpoch(): bigint {
+  const now = new Date()
+  return BigInt(now.getUTCFullYear() * 10000 + (now.getUTCMonth() + 1) * 100 + 1)
+}
 import type { PredicateSnapshot } from './snapshot.js'
 import { bytesToHex, hexToBytes } from '../encoding.js'
 import {
@@ -72,7 +100,7 @@ const FAMILIES: Record<string, FamilySpec | undefined> = {
     circuitId: 'attestAgeGte',
     attribute: 'dateOfBirth',
     witness(attrs) {
-      return { ageValue: BigInt(ageFromDateOfBirth(String(attrs['dateOfBirth']))) }
+      return { dobValue: dobYmd(String(attrs['dateOfBirth'])) }
     },
   },
   age_range: {
@@ -80,7 +108,7 @@ const FAMILIES: Record<string, FamilySpec | undefined> = {
     circuitId: 'attestAgeRange',
     attribute: 'dateOfBirth',
     witness(attrs) {
-      return { ageValue: BigInt(ageFromDateOfBirth(String(attrs['dateOfBirth']))) }
+      return { dobValue: dobYmd(String(attrs['dateOfBirth'])) }
     },
   },
   kyc: {
@@ -125,19 +153,6 @@ const FAMILIES: Record<string, FamilySpec | undefined> = {
       return { personhoodSecret: hexToBytes(String(attrs['personhoodSecret'])) }
     },
   },
-}
-
-/** Whole years since `dateOfBirth` (YYYY-MM-DD). The predicate only
- *  needs `age >= threshold`; the issuer stamped it because the
- *  credential satisfies it, so the real age is the witness. */
-function ageFromDateOfBirth(dob: string): number {
-  const d = new Date(dob)
-  if (Number.isNaN(d.getTime())) throw new Error(`unparseable dateOfBirth: ${dob}`)
-  const now = new Date()
-  let age = now.getUTCFullYear() - d.getUTCFullYear()
-  const m = now.getUTCMonth() - d.getUTCMonth()
-  if (m < 0 || (m === 0 && now.getUTCDate() < d.getUTCDate())) age--
-  return age
 }
 
 /** verificationLevel may be a number or a label. Accepts both the
@@ -223,6 +238,17 @@ async function computeVerifierIdHash(verifierId: string): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
 }
 
+/** Effective personhood scope: the verifier's campaign `appId` bound under
+ *  its authenticated identity — `SHA-256(verifierIdHash(client_id) || appId)`.
+ *  Mirror of Rust `attestation::personhood_app_id`. */
+async function personhoodAppId(verifierId: string, appId: Uint8Array): Promise<Uint8Array> {
+  const vidHash = await computeVerifierIdHash(verifierId)
+  const buf = new Uint8Array(64)
+  buf.set(vidHash, 0)
+  buf.set(appId.subarray(0, 32), 32)
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', buf))
+}
+
 /** emailVerified is typically a boolean from OIDC providers; tolerate
  *  the same string/number coercions as isResident for robustness. */
 function emailVerifiedToNumber(v: unknown): number {
@@ -248,6 +274,9 @@ export interface PredicateTransport {
   isAttested(args: {
     predicate: string
     rootHash: string
+    /** Issuer-signed `owl_root` (hex). Every predicate attestation key binds
+     *  it (F-1); the server rejects the check without it. */
+    owlRoot?: string
     threshold?: number
     minAge?: number
     maxAge?: number
@@ -310,6 +339,7 @@ export function createPredicateTransport(): PredicateTransport {
     async isAttested({
       predicate,
       rootHash,
+      owlRoot,
       threshold,
       minAge,
       maxAge,
@@ -321,6 +351,7 @@ export function createPredicateTransport(): PredicateTransport {
       const r = await api.checkPredicateAttested({
         checkPredicateRequest: {
           credentialId: rootHash,
+          owlRoot,
           predicate,
           threshold,
           minAge,
@@ -441,6 +472,12 @@ interface StampedAttestation {
 
 interface CredentialJson {
   root_hash: string
+  /** Issuer-signed predicate-binding commitment (hex); absent for pre-owl_root
+   *  credentials. */
+  owl_root?: string | null
+  /** Raw `{name,value,salt}` disclosures — inputs to the owl_root tree the
+   *  wallet rebuilds to extract a claim's Merkle path (F-1 binding). */
+  claim_disclosures?: Array<{ name: string; value: unknown; salt: string }>
   attributes: Record<string, unknown>
   predicate_attestations?: StampedAttestation[]
 }
@@ -536,6 +573,12 @@ export async function ensureCredentialPredicatesAttested(
     })
   }
 
+  // A cancel (holder closes the modal / taps Cancel) aborts `signal`.
+  // We surface that as an AbortError so it propagates as a user cancel
+  // (the caller swallows it) rather than a predicate failure.
+  const abortError = () =>
+    Object.assign(new Error('Presentation aborted by holder'), { name: 'AbortError' })
+
   const results: EnsureResult[] = []
   for (const sp of stamped) {
     if (!isRequired(sp)) continue
@@ -553,14 +596,28 @@ export async function ensureCredentialPredicatesAttested(
     // verifier's campaign DCQL — the issuer stamps it open. Pull the
     // scope from the matching `required` entry; with no scope there is
     // nothing to attest against, so skip rather than guess.
-    let scope: { epoch: string; appId: string } | undefined
+    // `appId` is the raw campaign id (sent to the verifier service, which
+    // binds it); `effectiveAppId` is that campaign bound under the verifier
+    // identity — the value the circuit actually nullifies on.
+    let scope: { epoch: string; appId: string; effectiveAppId: string } | undefined
     if (spec.kind === 'personhood') {
-      const reqEntry = required?.find((r) => r.predicate === sp.predicate && !!r.epoch && !!r.appId)
-      if (!reqEntry?.epoch || !reqEntry.appId) {
+      const reqEntry = required?.find(
+        (r) => r.predicate === sp.predicate && !!r.epoch && !!r.appId && !!r.verifierId,
+      )
+      if (!reqEntry?.epoch || !reqEntry.appId || !reqEntry.verifierId) {
         emit({ stage: 'skip-unsupported', predicate: sp.predicate })
         continue
       }
-      scope = { epoch: reqEntry.epoch, appId: reqEntry.appId }
+      // F-2: the verifier's campaign appId stays meaningful (per-campaign
+      // sybil scope) but is bound under its authenticated client_id, so a
+      // different verifier choosing the same campaign cannot share the
+      // nullifier namespace and no verifier can force a foreign scope. Same
+      // recipe the verification-service uses (attestation::personhood_app_id):
+      // SHA-256(verifierIdHash(client_id) || appId).
+      const effectiveAppId = bytesToHex(
+        await personhoodAppId(reqEntry.verifierId, hexToBytes(reqEntry.appId)),
+      )
+      scope = { epoch: reqEntry.epoch, appId: reqEntry.appId, effectiveAppId }
     }
 
     // `age` / `age_range` are presence-stamped — the threshold / bounds
@@ -630,22 +687,46 @@ export async function ensureCredentialPredicatesAttested(
     }
 
     emit({ stage: 'check', predicate: sp.predicate })
-    if (
-      await transport.isAttested({
+    // F-1 binding: every predicate anchors its attestation key on the
+    // issuer-signed owl_root (not the credential id) so the key the verifier
+    // recomputes matches what the bound circuit records.
+    const bindsOwlRoot =
+      OWL_BOUND_CLAIM[spec.kind] !== undefined && typeof doc.owl_root === 'string'
+    const anchorHex = bindsOwlRoot ? (doc.owl_root as string) : doc.root_hash
+    // Every predicate attestation key binds the issuer-signed owl_root (F-1);
+    // the /attested check and the on-chain key both require it. A credential
+    // issued before owl_root can't satisfy any predicate — skip it with a
+    // reissue hint rather than firing a request the server 400s on
+    // ("owl_root required"), which would abort the whole presentation.
+    if (!bindsOwlRoot) {
+      emit({
+        stage: 'skip-unsatisfiable',
         predicate: sp.predicate,
-        rootHash: doc.root_hash,
         threshold,
-        minAge,
-        maxAge,
-        epoch: scope?.epoch,
-        appId: scope?.appId,
-        countries: canonCountries,
-        verifierId:
-          sp.predicate === 'nationality' || sp.predicate === 'residency'
-            ? required?.find((r) => r.predicate === sp.predicate)?.verifierId
-            : undefined,
+        reason: 'credential predates owl_root binding — request a fresh credential',
       })
-    ) {
+      continue
+    }
+    // Reused twice: the up-front membership check and, on a personhood
+    // replay failure below, a re-check of THIS credential's attest key.
+    const attestQuery = {
+      predicate: sp.predicate,
+      rootHash: anchorHex,
+      owlRoot: doc.owl_root as string,
+      threshold,
+      minAge,
+      maxAge,
+      epoch: scope?.epoch,
+      appId: scope?.appId,
+      countries: canonCountries,
+      verifierId:
+        sp.predicate === 'nationality' ||
+        sp.predicate === 'residency' ||
+        sp.predicate === 'unique_personhood'
+          ? required?.find((r) => r.predicate === sp.predicate)?.verifierId
+          : undefined,
+    }
+    if (await transport.isAttested(attestQuery)) {
       emit({ stage: 'already-attested', predicate: sp.predicate })
       results.push({ predicate: sp.predicate, threshold, alreadyOnChain: true })
       continue
@@ -675,6 +756,33 @@ export async function ensureCredentialPredicatesAttested(
       }
     }
 
+    // F-1 binding witness: prove the claim value is the one the issuer
+    // committed under owl_root. Build the same tree the issuer signed from the
+    // raw disclosures and extract this claim's Merkle path; the circuit folds
+    // it to owl_root and rejects any fabricated value (no valid path).
+    if (bindsOwlRoot) {
+      const claimName = OWL_BOUND_CLAIM[spec.kind]
+      if (!claimName) throw new Error(`no owl_root claim mapping for ${spec.kind}`)
+      try {
+        const built = buildOwlRootTree(doc.claim_disclosures ?? [])
+        const salt = (doc.claim_disclosures ?? []).find((d) => d.name === claimName)?.salt
+        if (salt === undefined) throw new Error(`no disclosure salt for ${claimName}`)
+        witness = {
+          ...witness,
+          claimSalt: salt32For(salt),
+          claimPath: findClaimPath(built, claimName),
+        }
+      } catch (e) {
+        emit({
+          stage: 'skip-unsatisfiable',
+          predicate: sp.predicate,
+          threshold,
+          reason: `owl_root binding unavailable: ${e instanceof Error ? e.message : String(e)}`,
+        })
+        continue
+      }
+    }
+
     // Pre-flight: the Compact circuit asserts `value >= threshold` on
     // device. If the credential carries a stamped predicate that the
     // value doesn't satisfy (typically an older credential issued
@@ -695,142 +803,218 @@ export async function ensureCredentialPredicatesAttested(
       continue
     }
 
-    const rootBytes = hexToBytes(doc.root_hash)
+    const rootBytes = hexToBytes(anchorHex)
     // Per-circuit public arg shape:
     //   attestUniquePersonhood(rootHash, epoch, appId)
     //   attestAgeRange(rootHash, minAge, maxAge)
     //   attestNationalityIn / attestResidencyIn(rootHash, setHash) — set
     //     + verifierIdHash live in the witness; setHash is its hash
     //   age/kyc presence-only with optional threshold
+    // age / age_range now take the freshness epoch (asOfYmd) as a bound public
+    // arg; age requires a threshold (the bound circuit has no presence-only form).
+    const ageEpoch = currentAgeEpoch()
     const args = scope
-      ? [rootBytes, hexToBytes(scope.epoch), hexToBytes(scope.appId)]
+      ? [rootBytes, hexToBytes(scope.epoch), hexToBytes(scope.effectiveAppId)]
       : spec.kind === 'age_range'
-        ? [rootBytes, BigInt(minAge!), BigInt(maxAge!)]
-        : setHashBytes !== undefined
-          ? [rootBytes, setHashBytes]
-          : threshold === undefined
-            ? [rootBytes]
-            : [rootBytes, BigInt(threshold)]
-    emit({ stage: 'snapshot', predicate: sp.predicate, kind: spec.kind })
-    const resolvedProving = resolveProvingConfig(provingConfig)
-    let provenTx: Uint8Array
-    try {
-      // Snapshot fetch lives INSIDE the try so a kind whose contract is
-      // undeployed/unconfigured (sidecar 400 "no configured address") or
-      // a transient snapshot failure degrades to a per-predicate skip —
-      // the verifier rejects only if it actually required this predicate.
-      // Previously this ran outside the try and a single bad kind (e.g.
-      // `email`) aborted the entire presentation.
-      const snapshot = await transport.snapshot(spec.kind)
-      emit({
-        stage: 'prove',
-        predicate: sp.predicate,
-        kind: spec.kind,
-        circuitId: spec.circuitId,
-        mode: resolvedProving.mode,
-      })
-      provenTx = await proveAttestationUnsubmitted({
-        compiledContract: assets.compiledContract(spec.kind, witness),
-        zkConfigProvider: assets.zkConfigProvider,
-        snapshot,
-        circuitId: spec.circuitId,
-        args,
-        privateStateId: `owlid-predicate-${spec.kind}`,
-        proofProvider: resolvedProving,
-      })
-    } catch (e) {
-      // Catches: snapshot fetch failures (undeployed/unconfigured kind,
-      // transient network), stale stamped attestations the witness can't
-      // satisfy even after the pre-flight (e.g. nationality set drift),
-      // zkir failures. The whole presentation continues — the verifier
-      // rejects only if this predicate was required by the DCQL.
-      const msg = e instanceof Error ? e.message : String(e)
-      emit({
-        stage: 'skip-unsatisfiable',
-        predicate: sp.predicate,
-        threshold,
-        reason: `attestation prep failed: ${msg}`,
-      })
-      continue
-    }
-    emit({ stage: 'relay', predicate: sp.predicate, kind: spec.kind })
-    // /relay returns a job-id in ≤10 ms. The sidecar runs
-    // balanceTx + submitTx in the background and pushes phase
-    // transitions over SSE. We subscribe to that stream once and
-    // emit one `confirming` event per push, completing on the
-    // terminal status. No polling at any layer.
-    const submit = await transport.relay(spec.kind, bytesToHex(provenTx))
-    const jobId = submit.jobId
-    if (!jobId) {
-      throw new Error(`relay for '${sp.predicate}' returned no jobId`)
-    }
-    const submitTs = Date.now()
-    const IN_FLIGHT = new Set(['queued', 'balancing', 'submitting'])
-    const SUCCESS = 'SucceedEntirely'
-    const ABORT_BUDGET_MS = 5 * 60_000
-    // Chain the caller's signal so cancelling the wallet.present()
-    // promise upstream actually closes the SSE socket — without this
-    // the holder modal can close while the orchestrator keeps
-    // streaming until the chain finality or the budget timer fires.
-    const abort = new AbortController()
-    const onCallerAbort = () => abort.abort()
-    if (signal) {
-      if (signal.aborted) abort.abort()
-      else signal.addEventListener('abort', onCallerAbort, { once: true })
-    }
-    const budgetTimer = setTimeout(() => abort.abort(), ABORT_BUDGET_MS)
-    let terminal: string | null = null
-    let terminalError: string | undefined
-    try {
-      for await (const ev of transport.statusEvents(jobId, abort.signal)) {
-        if (IN_FLIGHT.has(ev.status)) {
-          emit({
-            stage: 'confirming',
-            predicate: sp.predicate,
-            kind: spec.kind,
-            jobId,
-            elapsedMs: Date.now() - submitTs,
-            phase: ev.status as 'queued' | 'balancing' | 'submitting' | 'pending',
-          })
-          continue
-        }
-        if (ev.status === 'submitted') {
-          // Job moved into the chain-finalization phase. UI keeps
-          // the "submitting" → "pending" label until the chain emits
-          // a terminal status; surface it as `pending` here.
-          emit({
-            stage: 'confirming',
-            predicate: sp.predicate,
-            kind: spec.kind,
-            jobId,
-            elapsedMs: Date.now() - submitTs,
-            phase: 'pending',
-          })
-          continue
-        }
-        terminal = ev.status
-        terminalError = ev.error
+        ? [rootBytes, BigInt(minAge!), BigInt(maxAge!), ageEpoch]
+        : spec.kind === 'age'
+          ? [rootBytes, BigInt(threshold ?? 18), ageEpoch]
+          : setHashBytes !== undefined
+            ? [rootBytes, setHashBytes]
+            : threshold === undefined
+              ? [rootBytes]
+              : [rootBytes, BigInt(threshold)]
+    // Cancel checkpoint BEFORE the expensive prove + relay. A relay POST
+    // makes the sidecar submit an attest tx on-chain (detached, ~10ms
+    // ack), so relaying after the holder cancelled would write to chain
+    // and spend DUST post-cancel. Thrown OUTSIDE the try below so it
+    // propagates as an abort instead of being swallowed as
+    // skip-unsatisfiable.
+    if (signal?.aborted) throw abortError()
+    // Optimistic concurrency. The holder proves against an indexer snapshot
+    // that already trails the node by a couple of blocks, and every
+    // attestation to the SAME predicate contract mutates one shared
+    // `attestTree`. Any other attestation landing inside the
+    // prove -> relay -> include window supersedes the root the transcript was
+    // built on, so the fallible section is rejected on replay. Re-proving
+    // against a fresh snapshot is the resolution.
+    const MAX_ATTEST_ATTEMPTS = 3
+    let attestSkipped = false
+    let attestSettled = false
+    for (let attempt = 1; attempt <= MAX_ATTEST_ATTEMPTS; attempt++) {
+      emit({ stage: 'snapshot', predicate: sp.predicate, kind: spec.kind })
+      const resolvedProving = resolveProvingConfig(provingConfig)
+      let provenTx: Uint8Array
+      try {
+        // Snapshot fetch lives INSIDE the try so a kind whose contract is
+        // undeployed/unconfigured (sidecar 400 "no configured address") or
+        // a transient snapshot failure degrades to a per-predicate skip —
+        // the verifier rejects only if it actually required this predicate.
+        // Previously this ran outside the try and a single bad kind (e.g.
+        // `email`) aborted the entire presentation.
+        const snapshot = await transport.snapshot(spec.kind)
+        emit({
+          stage: 'prove',
+          predicate: sp.predicate,
+          kind: spec.kind,
+          circuitId: spec.circuitId,
+          mode: resolvedProving.mode,
+        })
+        provenTx = await proveAttestationUnsubmitted({
+          compiledContract: assets.compiledContract(spec.kind, witness),
+          zkConfigProvider: assets.zkConfigProvider,
+          snapshot,
+          circuitId: spec.circuitId,
+          args,
+          privateStateId: `owlid-predicate-${spec.kind}`,
+          proofProvider: resolvedProving,
+        })
+      } catch (e) {
+        // Catches: snapshot fetch failures (undeployed/unconfigured kind,
+        // transient network), stale stamped attestations the witness can't
+        // satisfy even after the pre-flight (e.g. nationality set drift),
+        // zkir failures. The whole presentation continues — the verifier
+        // rejects only if this predicate was required by the DCQL.
+        const msg = e instanceof Error ? e.message : String(e)
+        emit({
+          stage: 'skip-unsatisfiable',
+          predicate: sp.predicate,
+          threshold,
+          reason: `attestation prep failed: ${msg}`,
+        })
+        attestSkipped = true
         break
       }
-    } finally {
-      clearTimeout(budgetTimer)
-      abort.abort()
-      signal?.removeEventListener('abort', onCallerAbort)
+      // The WASM prove above is not interruptible; the holder may have
+      // cancelled while it ran. Re-check before relaying so no attest tx
+      // hits the chain post-cancel.
+      if (signal?.aborted) throw abortError()
+      emit({ stage: 'relay', predicate: sp.predicate, kind: spec.kind })
+      // /relay returns a job-id in ≤10 ms. The sidecar runs
+      // balanceTx + submitTx in the background and pushes phase
+      // transitions over SSE. We subscribe to that stream once and
+      // emit one `confirming` event per push, completing on the
+      // terminal status. No polling at any layer.
+      const submit = await transport.relay(spec.kind, bytesToHex(provenTx))
+      const jobId = submit.jobId
+      if (!jobId) {
+        throw new Error(`relay for '${sp.predicate}' returned no jobId`)
+      }
+      const submitTs = Date.now()
+      const IN_FLIGHT = new Set(['queued', 'balancing', 'submitting'])
+      const SUCCESS = 'SucceedEntirely'
+      const ABORT_BUDGET_MS = 5 * 60_000
+      // Chain the caller's signal so cancelling the wallet.present()
+      // promise upstream actually closes the SSE socket — without this
+      // the holder modal can close while the orchestrator keeps
+      // streaming until the chain finality or the budget timer fires.
+      const abort = new AbortController()
+      const onCallerAbort = () => abort.abort()
+      if (signal) {
+        if (signal.aborted) abort.abort()
+        else signal.addEventListener('abort', onCallerAbort, { once: true })
+      }
+      const budgetTimer = setTimeout(() => abort.abort(), ABORT_BUDGET_MS)
+      let terminal: string | null = null
+      let terminalError: string | undefined
+      try {
+        for await (const ev of transport.statusEvents(jobId, abort.signal)) {
+          if (IN_FLIGHT.has(ev.status)) {
+            emit({
+              stage: 'confirming',
+              predicate: sp.predicate,
+              kind: spec.kind,
+              jobId,
+              elapsedMs: Date.now() - submitTs,
+              phase: ev.status as 'queued' | 'balancing' | 'submitting' | 'pending',
+            })
+            continue
+          }
+          if (ev.status === 'submitted') {
+            // Job moved into the chain-finalization phase. UI keeps
+            // the "submitting" → "pending" label until the chain emits
+            // a terminal status; surface it as `pending` here.
+            emit({
+              stage: 'confirming',
+              predicate: sp.predicate,
+              kind: spec.kind,
+              jobId,
+              elapsedMs: Date.now() - submitTs,
+              phase: 'pending',
+            })
+            continue
+          }
+          terminal = ev.status
+          terminalError = ev.error
+          break
+        }
+      } finally {
+        clearTimeout(budgetTimer)
+        abort.abort()
+        signal?.removeEventListener('abort', onCallerAbort)
+      }
+      if (signal?.aborted) {
+        throw new Error(`presentation aborted by caller (jobId=${jobId})`)
+      }
+      if (terminal === null) {
+        throw new Error(
+          `on-chain attestation for '${sp.predicate}' timed out after ${ABORT_BUDGET_MS}ms (jobId=${jobId})`,
+        )
+      }
+      if (terminal !== SUCCESS) {
+        // A concurrent (or prior) presentation in the same campaign may have
+        // already inserted this credential's personhood nullifier; the racing
+        // tx then fails the on-chain `personhood replay` assert even though the
+        // attestation it duplicates is on chain. Re-check THIS credential's
+        // attest key (the nullifier can be per-person, so a replay alone does
+        // not prove MY key landed) — if it is now attested, the goal is met, so
+        // treat it as already-attested instead of failing the presentation.
+        if (
+          sp.predicate === 'unique_personhood' &&
+          (terminalError ?? '').toLowerCase().includes('personhood replay') &&
+          (await transport.isAttested(attestQuery))
+        ) {
+          emit({ stage: 'already-attested', predicate: sp.predicate })
+          results.push({ predicate: sp.predicate, threshold, alreadyOnChain: true })
+          attestSettled = true
+          break
+        }
+        // The goal is "this key is attested on chain", not "my transaction is
+        // the one that put it there". A `FailFallible` means the fallible
+        // section was rejected when replayed against the ledger — which happens
+        // when the state moved between the snapshot the holder proved against
+        // and inclusion (a concurrent attest, or the sidecar's cached state
+        // lagging the chain right after a contract redeploy). `record()` is
+        // idempotent, so the key may well be present regardless. Ask the chain
+        // before failing a presentation the holder can do nothing about.
+        if (await transport.isAttested(attestQuery)) {
+          emit({ stage: 'already-attested', predicate: sp.predicate })
+          results.push({ predicate: sp.predicate, threshold, alreadyOnChain: true })
+          attestSettled = true
+          break
+        }
+        // `FailFallible` means the fallible section was rejected when replayed
+        // against the ledger: the tree root the transcript was proven against
+        // has been superseded. That is recoverable — re-snapshot and re-prove.
+        if (terminal === 'FailFallible' && attempt < MAX_ATTEST_ATTEMPTS) {
+          emit({ stage: 'snapshot', predicate: sp.predicate, kind: spec.kind })
+          continue
+        }
+        throw new Error(
+          `on-chain attestation for '${sp.predicate}' failed: status=${terminal}, jobId=${jobId}` +
+            (terminalError ? ` (${terminalError})` : '') +
+            (terminal === 'FailFallible'
+              ? ` — contract state moved between proving and inclusion on all ` +
+                `${MAX_ATTEST_ATTEMPTS} attempts`
+              : ''),
+        )
+      }
+      // Reached only on SucceedEntirely — the result is pushed after the loop.
+      break
     }
-    if (signal?.aborted) {
-      throw new Error(`presentation aborted by caller (jobId=${jobId})`)
-    }
-    if (terminal === null) {
-      throw new Error(
-        `on-chain attestation for '${sp.predicate}' timed out after ${ABORT_BUDGET_MS}ms (jobId=${jobId})`,
-      )
-    }
-    if (terminal !== SUCCESS) {
-      throw new Error(
-        `on-chain attestation for '${sp.predicate}' failed: status=${terminal}, jobId=${jobId}` +
-          (terminalError ? ` (${terminalError})` : ''),
-      )
-    }
+    if (attestSkipped) continue
+    if (attestSettled) continue
+
     emit({ stage: 'attested', predicate: sp.predicate, kind: spec.kind })
     results.push({ predicate: sp.predicate, threshold, alreadyOnChain: false })
   }
@@ -843,8 +1027,12 @@ export async function ensureCredentialPredicatesAttested(
 function numericWitnessValue(kind: PredicateKind, w: PredicateWitness): number | undefined {
   switch (kind) {
     case 'age':
-    case 'age_range':
-      return w.ageValue !== undefined ? Number(w.ageValue) : undefined
+    case 'age_range': {
+      if (w.dobValue === undefined) return undefined
+      const now = new Date()
+      const today = now.getUTCFullYear() * 10000 + (now.getUTCMonth() + 1) * 100 + now.getUTCDate()
+      return Math.floor((today - Number(w.dobValue)) / 10000)
+    }
     case 'kyc':
       return w.kycLevel !== undefined ? Number(w.kycLevel) : undefined
     case 'email':

@@ -32,11 +32,19 @@ export interface SubmitPipelineDeps {
   reserve: (balanced: unknown) => Promise<void>
   broadcast: (balanced: unknown) => Promise<unknown>
   revert: (balanced: unknown) => Promise<void>
-  reapStalePending: () => Promise<void>
+  /** Reap stale local pending entries hostage-holding dust. The optional
+   *  grace override lets the dust-shortfall retry reap more aggressively than
+   *  the periodic sweep. */
+  reapStalePending: (graceMsOverride?: number) => Promise<void>
   /** The supervisor's single-writer serializer. */
   serialize: <T>(fn: () => Promise<T>) => Promise<T>
-  /** Bounded settle-wait before the dust-shortfall retry. */
+  /** Bounded settle-wait before each dust-shortfall retry. */
   dustRetryWaitMs: number
+  /** Grace passed to `reapStalePending` on a shortfall — short, because the
+   *  shortfall itself proves the pending dust is already released on-chain. */
+  dustShortfallReapGraceMs?: number
+  /** How many times to retry the balance on a dust shortfall (default 1). */
+  dustRetryAttempts?: number
   /** Injectable for tests; defaults to setTimeout. */
   sleep?: (ms: number) => Promise<void>
   /** Optional structured telemetry hook. */
@@ -54,21 +62,30 @@ export function createSubmitPipeline(deps: SubmitPipelineDeps): (tx: unknown) =>
       return balanced
     }
 
-    // Phase 1: serialized balance + reserve, with a single dust-shortfall retry.
+    // Phase 1: serialized balance + reserve, with bounded dust-shortfall retries.
     const t0 = Date.now()
+    const maxRetries = Math.max(0, deps.dustRetryAttempts ?? 1)
     const reserved = await deps.serialize(async () => {
       await deps.ensureReady()
-      try {
-        return await balanceAndReserve()
-      } catch (e) {
-        if (!isDustShortfallError(e)) throw e
-        emit('submit.dust-short.retry', {
-          err: e instanceof Error ? e.message : String(e),
-          waitMs: deps.dustRetryWaitMs,
-        })
-        await deps.reapStalePending()
-        await sleep(deps.dustRetryWaitMs)
-        return balanceAndReserve()
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await balanceAndReserve()
+        } catch (e) {
+          // Only a dust shortfall is retryable, and only up to the cap; every
+          // other failure (node reject, contract assert) is terminal.
+          if (!isDustShortfallError(e) || attempt >= maxRetries) throw e
+          emit('submit.dust-short.retry', {
+            attempt: attempt + 1,
+            maxRetries,
+            err: e instanceof Error ? e.message : String(e),
+            waitMs: deps.dustRetryWaitMs,
+          })
+          // The shortfall proves the local pending set is hostage-holding dust
+          // the chain already released — reap with the short shortfall grace,
+          // then let the dust observable settle before re-balancing.
+          await deps.reapStalePending(deps.dustShortfallReapGraceMs)
+          await sleep(deps.dustRetryWaitMs)
+        }
       }
     })
     emit('submit.reserved', { balanceMs: Date.now() - t0 })

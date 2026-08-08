@@ -437,16 +437,17 @@
   .card-stack__item:first-child {
     margin-top: 0;
   }
-  /* Cards behind the front one sit slightly smaller — a real deck
-     recedes with depth. Scale the inner container, not the stack
-     item, so the hover/peek transforms on the item are untouched. */
+  /* Cards behind the front one sit slightly smaller and dimmer — a
+     real deck recedes with depth, and the dimming makes the front card
+     unambiguously "on top" even when two cards share the same brand
+     colors. Scale/dim the inner container, not the stack item, so the
+     hover/peek transforms on the item are untouched. */
   .card-stack__item:not(:last-child) .card-book-container {
     transform: scale(0.975);
-    transition: transform 220ms ease;
-  }
-  .card-stack__item:hover .card-book-container,
-  .card-stack__item:focus-within .card-book-container {
-    transform: scale(1);
+    filter: brightness(0.72) saturate(0.85);
+    transition:
+      transform 220ms ease,
+      filter 220ms ease;
   }
   /* With a single card there's nothing to peek behind, so the negative
      margin would just leave a useless empty band above the card.
@@ -454,22 +455,59 @@
   .card-stack__item:only-child {
     margin-top: 0;
   }
-  .card-stack__item:hover,
-  .card-stack__item:focus-within {
-    transform: translateY(-6px);
-    /* Local to the stack only — must stay below the modal overlay
-       (z-50) so an open Present/Manual dialog covers the cards. */
-    z-index: 20;
+  /* Hover peek effects only on devices that actually hover. On touch,
+     iOS keeps :hover "stuck" after a tap, so the 4rem push-down of the
+     following cards landed permanently on top of the Present button. */
+  @media (hover: hover) and (pointer: fine) {
+    .card-stack__item:hover .card-book-container,
+    .card-stack__item:focus-within .card-book-container {
+      transform: scale(1);
+      filter: none;
+    }
+    .card-stack__item:hover,
+    .card-stack__item:focus-within {
+      transform: translateY(-6px);
+      /* Local to the stack only — must stay below the modal overlay
+         (z-50) so an open Present dialog covers the cards. */
+      z-index: 20;
+    }
+    /* Lifted card floats higher — one deeper shadow. */
+    .card-stack__item:hover .card-book__face,
+    .card-stack__item:focus-within .card-book__face {
+      box-shadow:
+        0 -10px 20px -10px rgba(0, 0, 0, 0.6),
+        0 30px 46px -16px rgba(0, 0, 0, 0.95);
+    }
+    .card-stack__item:hover ~ .card-stack__item {
+      transform: translateY(4rem);
+    }
+    /* The fan-out above slides every following card down 4rem with a
+       transform, which does NOT grow the stack's layout box — so the
+       pushed-down last card would slide over the Present button just below
+       the stack (the natural gap is smaller than 4rem). Reserve that 4rem
+       at the foot of the stack PERMANENTLY (hover-capable devices only, the
+       only place the fan-out runs) so the fan slides into reserved space —
+       the button never moves, no overlap and no jump on hover. */
+    .card-stack {
+      padding-bottom: 4rem;
+    }
   }
-  /* Lifted card floats higher — one deeper shadow. */
-  .card-stack__item:hover .card-book__face,
-  .card-stack__item:focus-within .card-book__face {
-    box-shadow:
-      0 -10px 20px -10px rgba(0, 0, 0, 0.6),
-      0 30px 46px -16px rgba(0, 0, 0, 0.95);
+  /* Touch press feedback — the stack has no hover, so a quick press
+     scale is the only "this is tappable" cue. */
+  @media (hover: none) {
+    .card-stack__item:active .card-book-container {
+      transform: scale(0.985);
+      transition: transform 120ms ease;
+    }
   }
-  .card-stack__item:hover ~ .card-stack__item {
-    transform: translateY(4rem);
+  /* Motion sensitivity: keep the states, drop the animation. */
+  @media (prefers-reduced-motion: reduce) {
+    .card-stack__item,
+    .card-stack__item .card-book-container,
+    .card-book,
+    .passport-flip-container {
+      transition: none !important;
+    }
   }
   /* While one card is open the rest of the stack is hidden — only the
      flipped card and its details remain. The open card keeps its
